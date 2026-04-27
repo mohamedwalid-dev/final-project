@@ -34,10 +34,10 @@ const _INVOICES = [
 ];
 
 const _STAT_CARDS = [
-  { id: "revenue",  icon: "💵", label: "Total Revenue",        value: "$1,482,900", change: "+12.5%", changeType: "up"      },
-  { id: "profit",   icon: "📈", label: "Net Profit",           value: "$452,000",   change: "+8.2%",  changeType: "up"      },
-  { id: "expenses", icon: "📉", label: "Operational Expenses", value: "$920,400",   change: "+14.1%", changeType: "down"    },
-  { id: "unpaid",   icon: "🧾", label: "Unpaid Invoices",      value: "$124,500",   change: "-2.4%",  changeType: "neutral" },
+  { id: "revenue",  label: "Total Revenue",        value: "$1,482,900", change: "+12.5%", changeType: "up"      },
+  { id: "profit",   label: "Net Profit",           value: "$452,000",   change: "+8.2%",  changeType: "up"      },
+  { id: "expenses", label: "Operational Expenses", value: "$920,400",   change: "+14.1%", changeType: "down"    },
+  { id: "unpaid",   label: "Unpaid Invoices",      value: "$124,500",   change: "-2.4%",  changeType: "neutral" },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -69,4 +69,4 @@ const financeService = {
   fetchInvoices:         (signal) => fetchSafe(async () => { await delay(300); return _INVOICES;    }),
 };
 
-export default financeService;
+export default financeService; 

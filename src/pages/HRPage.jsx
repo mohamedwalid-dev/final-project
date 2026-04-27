@@ -1,22 +1,13 @@
 // ─── Pages/HRPage.jsx ────────────────────────────────────────────────────────
-// ✅ Pure JS — no TypeScript
-// ✅ Production-ready, Senior-level
-// ✅ Matches screenshot: stat cards + employee grid/list + leave sidebar + capacity
-// ✅ All buttons functional: Add Employee, Approve/Decline, View toggle, Filter, Search
-// ✅ Add Employee modal with form validation
-// ✅ Same Sidebar + Header structure as Finance.jsx
-
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 import useHRPage from "../hooks/useHRPage";
 import ComplianceModal from "../components/HR/ComplianceModal";
+import SmartHRPanel    from "../components/HR/SmartHRPanel";
 import s from "../styles/HRPage.module.css";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Stat Card
-// ─────────────────────────────────────────────────────────────────────────────
 function StatCard({ icon, label, value, change, changeType, loading }) {
   if (loading) {
     return (
@@ -43,9 +34,6 @@ function StatCard({ icon, label, value, change, changeType, loading }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Employee Avatar
-// ─────────────────────────────────────────────────────────────────────────────
 function Avatar({ emp, size = 56 }) {
   const statusColor = emp.status === "active" ? "#2F9E44" : emp.status === "leave" ? "#F59F00" : "#ADB5BD";
   return (
@@ -62,9 +50,6 @@ function Avatar({ emp, size = 56 }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Employee Card (Grid View)
-// ─────────────────────────────────────────────────────────────────────────────
 function EmployeeCard({ emp }) {
   const deptColors = {
     Engineering: "#3B5BDB", Design: "#845EF7", Marketing: "#F59F00",
@@ -82,24 +67,21 @@ function EmployeeCard({ emp }) {
         </p>
         <div className={s.empMeta}>
           <span className={s.empDept}>{emp.dept}</span>
-          <span className={s.empLocation}>📍 {emp.location}</span>
+          <span className={s.empLocation}>{emp.location}</span>
         </div>
       </div>
       <div className={s.empActions}>
         <button className={s.empActionBtn} onClick={() => {}} aria-label={`Message ${emp.name}`}>
-          ✉ Message
+          Message
         </button>
         <button className={s.empActionBtn} onClick={() => {}} aria-label={`Schedule with ${emp.name}`}>
-          🗓 Schedule
+          Schedule
         </button>
       </div>
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Employee Row (List View)
-// ─────────────────────────────────────────────────────────────────────────────
 function EmployeeRow({ emp }) {
   const statusLabel = emp.status === "active" ? "Active" : emp.status === "leave" ? "On Leave" : "Inactive";
   const statusClass = emp.status === "active" ? s.badgeActive : emp.status === "leave" ? s.badgeLeave : s.badgeInactive;
@@ -116,21 +98,18 @@ function EmployeeRow({ emp }) {
         </div>
       </td>
       <td className={s.td}><span className={s.tdText}>{emp.dept}</span></td>
-      <td className={s.td}><span className={s.tdText}>📍 {emp.location}</span></td>
+      <td className={s.td}><span className={s.tdText}>{emp.location}</span></td>
       <td className={s.td}><span className={`${s.badge} ${statusClass}`}>{statusLabel}</span></td>
       <td className={s.td}>
         <div className={s.rowActionBtns}>
-          <button className={s.empActionBtn} onClick={() => {}} aria-label={`Message ${emp.name}`}>✉ Message</button>
-          <button className={s.empActionBtn} onClick={() => {}} aria-label={`Schedule with ${emp.name}`}>🗓 Schedule</button>
+          <button className={s.empActionBtn} onClick={() => {}} aria-label={`Message ${emp.name}`}>Message</button>
+          <button className={s.empActionBtn} onClick={() => {}} aria-label={`Schedule with ${emp.name}`}>Schedule</button>
         </div>
       </td>
     </tr>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Skeleton Employee Cards
-// ─────────────────────────────────────────────────────────────────────────────
 function SkeletonCard() {
   return (
     <div className={s.empCard}>
@@ -144,9 +123,6 @@ function SkeletonCard() {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Leave Request Card
-// ─────────────────────────────────────────────────────────────────────────────
 function LeaveCard({ request, onAction, responding }) {
   const isApproving  = responding === "approving";
   const isDeclining  = responding === "declining";
@@ -163,7 +139,7 @@ function LeaveCard({ request, onAction, responding }) {
           <p className={s.leaveType}>{request.type} · {request.days} day{request.days !== 1 ? "s" : ""}</p>
         </div>
       </div>
-      <p className={s.leaveDates}>📅 {request.from} – {request.to}</p>
+      <p className={s.leaveDates}>{request.from} – {request.to}</p>
       <div className={s.leaveActions}>
         <button
           className={s.approveBtn}
@@ -171,7 +147,7 @@ function LeaveCard({ request, onAction, responding }) {
           disabled={isBusy}
           aria-label={`Approve leave for ${request.name}`}
         >
-          {isApproving ? <span className={s.miniSpinner} /> : "✓"} Approve
+          {isApproving ? <span className={s.miniSpinner} /> : "+"} Approve
         </button>
         <button
           className={s.declineBtn}
@@ -179,16 +155,13 @@ function LeaveCard({ request, onAction, responding }) {
           disabled={isBusy}
           aria-label={`Decline leave for ${request.name}`}
         >
-          {isDeclining ? <span className={s.miniSpinner} /> : "✕"} Decline
+          {isDeclining ? <span className={s.miniSpinner} /> : "x"} Decline
         </button>
       </div>
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Team Capacity Bar
-// ─────────────────────────────────────────────────────────────────────────────
 function CapacityBar({ dept, pct, color }) {
   return (
     <div className={s.capRow}>
@@ -211,9 +184,6 @@ function CapacityBar({ dept, pct, color }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Add Employee Modal
-// ─────────────────────────────────────────────────────────────────────────────
 const DEPT_OPTIONS = ["Engineering", "Design", "Marketing", "Finance", "HR", "Sales", "Support", "Product"];
 
 function AddEmployeeModal({ onClose, onSubmit }) {
@@ -263,8 +233,8 @@ function AddEmployeeModal({ onClose, onSubmit }) {
     >
       <div className={s.modal}>
         <div className={s.modalHeader}>
-          <h2 className={s.modalTitle}>➕ Add New Employee</h2>
-          <button className={s.modalClose} onClick={onClose} aria-label="Close">✕</button>
+          <h2 className={s.modalTitle}>Add New Employee</h2>
+          <button className={s.modalClose} onClick={onClose} aria-label="Close">x</button>
         </div>
 
         <div className={s.modalBody}>
@@ -315,7 +285,7 @@ function AddEmployeeModal({ onClose, onSubmit }) {
         <div className={s.modalFooter}>
           <button className={s.btnGhost} onClick={onClose}>Cancel</button>
           <button className={s.btnPrimary} onClick={handleSubmit} disabled={loading}>
-            {loading ? <><span className={s.miniSpinner} /> Adding...</> : "✓ Add Employee"}
+            {loading ? <><span className={s.miniSpinner} /> Adding...</> : "Add Employee"}
           </button>
         </div>
       </div>
@@ -323,9 +293,6 @@ function AddEmployeeModal({ onClose, onSubmit }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Inline Absence Calendar (in-page, no modal)
-// ─────────────────────────────────────────────────────────────────────────────
 const CAL_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const CAL_DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const LEAVE_COLORS = { "Sick Leave":"#FA5252", "Vacation":"#3B5BDB", "Personal Day":"#F59F00", "Maternity":"#845EF7", "Paternity":"#4DABF7" };
@@ -385,10 +352,9 @@ function AbsenceCalendar({ leaveRequests = [] }) {
 
   return (
     <div className={s.calendarSection} id="absence-calendar" aria-label="Absence Calendar">
-      {/* Header */}
       <div className={s.calHeader}>
         <div>
-          <h2 className={s.calTitle}>📅 Absence Calendar</h2>
+          <h2 className={s.calTitle}>Absence Calendar</h2>
           <p className={s.calSub}>Track team leave and absences by date.</p>
         </div>
         {leaveTypes.length > 0 && (
@@ -403,14 +369,12 @@ function AbsenceCalendar({ leaveRequests = [] }) {
         )}
       </div>
 
-      {/* Month Nav */}
       <div className={s.calMonthNav}>
-        <button className={s.calNavBtn} onClick={prevMonth} aria-label="Previous month">‹</button>
+        <button className={s.calNavBtn} onClick={prevMonth} aria-label="Previous month">&#8249;</button>
         <h3 className={s.calMonthTitle}>{CAL_MONTHS[month]} {year}</h3>
-        <button className={s.calNavBtn} onClick={nextMonth} aria-label="Next month">›</button>
+        <button className={s.calNavBtn} onClick={nextMonth} aria-label="Next month">&#8250;</button>
       </div>
 
-      {/* Grid */}
       <div className={s.calGrid}>
         {CAL_DAYS.map(d => (
           <div key={d} className={s.calDayHeader}>{d}</div>
@@ -442,15 +406,14 @@ function AbsenceCalendar({ leaveRequests = [] }) {
         })}
       </div>
 
-      {/* Selected day detail */}
       {selected && (
         <div className={s.calSelectedPanel}>
           <div className={s.calSelectedHeader}>
             <h4 className={s.calSelectedTitle}>{CAL_MONTHS[month]} {selected.day}, {year}</h4>
-            <button className={s.calSelectedClose} onClick={() => setSelected(null)} aria-label="Close">✕</button>
+            <button className={s.calSelectedClose} onClick={() => setSelected(null)} aria-label="Close">x</button>
           </div>
           {selected.requests.length === 0 ? (
-            <p className={s.calSelectedEmpty}>✓ No absences on this day</p>
+            <p className={s.calSelectedEmpty}>No absences on this day</p>
           ) : (
             <div className={s.calSelectedList}>
               {selected.requests.map(req => (
@@ -473,9 +436,6 @@ function AbsenceCalendar({ leaveRequests = [] }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Main Page
-// ─────────────────────────────────────────────────────────────────────────────
 export default function HRPage() {
   const [activeNav, setActiveNav] = useState("hr");
   const [showCalendar,   setShowCalendar]   = useState(false);
@@ -485,7 +445,6 @@ export default function HRPage() {
 
   const scrollToCalendar = () => {
     setShowCalendar(true);
-    // Small timeout to let React render the section first
     setTimeout(() => {
       calendarRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 50);
@@ -507,27 +466,20 @@ export default function HRPage() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA" }}>
-
-      {/* ── Sidebar ── */}
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-      {/* ── Main Area ── */}
       <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
-
-        {/* ── Header ── */}
         <Header breadcrumbs={["Synergy ERP", "Human Resources", "Employee Directory"]} />
 
         <main className={s.page}>
 
-          {/* ── Error ── */}
           {error && (
             <div className={s.errorCard} role="alert">
-              <span>⚠ {error}</span>
-              <button className={s.btnOutline} onClick={reload}>↺ Retry</button>
+              <span>{error}</span>
+              <button className={s.btnOutline} onClick={reload}>Retry</button>
             </div>
           )}
 
-          {/* ── Stat Cards ── */}
           <div className={s.statGrid}>
             {loadingStats
               ? Array.from({ length: 4 }).map((_, i) => <StatCard key={i} loading />)
@@ -535,38 +487,33 @@ export default function HRPage() {
             }
           </div>
 
-          {/* ── Content: Directory + Sidebar ── */}
           <div className={s.contentLayout}>
 
-            {/* ── Left: Employee Directory ── */}
             <section className={s.directorySection} aria-label="Employee directory">
 
-              {/* Directory Header */}
               <div className={s.dirHeader}>
                 <div>
                   <h2 className={s.dirTitle}>Employee Directory</h2>
                   <p className={s.dirSub}>Manage and track your global workforce.</p>
                 </div>
                 <div className={s.dirHeaderActions}>
-                  {/* View Toggle */}
                   <div className={s.viewToggle} role="group" aria-label="View mode">
                     <button
                       className={`${s.viewBtn} ${viewMode === "grid" ? s.viewBtnActive : ""}`}
                       onClick={() => setViewMode("grid")}
                       aria-label="Grid view" aria-pressed={viewMode === "grid"}
                     >
-                      ⊞
+                      Grid
                     </button>
                     <button
                       className={`${s.viewBtn} ${viewMode === "list" ? s.viewBtnActive : ""}`}
                       onClick={() => setViewMode("list")}
                       aria-label="List view" aria-pressed={viewMode === "list"}
                     >
-                      ≡
+                      List
                     </button>
                   </div>
 
-                  {/* Add Employee */}
                   <button
                     className={s.btnPrimary}
                     onClick={() => setShowAddEmployee(true)}
@@ -577,11 +524,8 @@ export default function HRPage() {
                 </div>
               </div>
 
-              {/* Filter Toolbar */}
               <div className={s.filterBar}>
-                {/* Search */}
                 <div className={s.searchWrap}>
-                  <span className={s.searchIcon}>🔍</span>
                   <input
                     className={s.searchInput}
                     value={searchQuery}
@@ -591,7 +535,6 @@ export default function HRPage() {
                   />
                 </div>
 
-                {/* Department Filter — كل الـ departments من الـ data */}
                 <div className={s.filterTabsScroll} role="tablist" aria-label="Filter by department">
                   {departments.map((dept) => (
                     <button
@@ -606,7 +549,6 @@ export default function HRPage() {
                   ))}
                 </div>
 
-                {/* Status Filter */}
                 <div className={s.filterTabs} role="group" aria-label="Filter by status">
                   {["All", "Active", "On Leave"].map((st) => (
                     <button
@@ -621,7 +563,6 @@ export default function HRPage() {
                 </div>
               </div>
 
-              {/* Employee Count */}
               {!loadingEmployees && (
                 <p className={s.empCount}>
                   Showing <strong>{employees.length}</strong> employee{employees.length !== 1 ? "s" : ""}
@@ -629,7 +570,6 @@ export default function HRPage() {
                 </p>
               )}
 
-              {/* ── Grid View ── */}
               {viewMode === "grid" && (
                 <div className={s.empGrid}>
                   {loadingEmployees
@@ -637,7 +577,6 @@ export default function HRPage() {
                     : employees.length === 0
                       ? (
                         <div className={s.emptyState}>
-                          <p className={s.emptyIcon}>👤</p>
                           <p className={s.emptyTitle}>No employees found</p>
                           <p className={s.emptySub}>Try adjusting your filters or search query.</p>
                         </div>
@@ -647,7 +586,6 @@ export default function HRPage() {
                 </div>
               )}
 
-              {/* ── List View ── */}
               {viewMode === "list" && (
                 <div className={s.tableWrap}>
                   <table className={s.table} aria-label="Employee list">
@@ -680,10 +618,11 @@ export default function HRPage() {
 
             </section>
 
-            {/* ── Right Sidebar ── */}
             <aside className={s.sidebarPanel}>
 
-              {/* Leave Requests */}
+              {/* ── Smart HR Operations Center ── */}
+              <SmartHRPanel employees={employees} />
+
               <div className={s.sideCard}>
                 <div className={s.sideCardHeader}>
                   <h3 className={s.sideCardTitle}>Leave Requests</h3>
@@ -700,7 +639,7 @@ export default function HRPage() {
                     </div>
                   ))
                 ) : leaveRequests.length === 0 ? (
-                  <p className={s.emptyNote}>✓ No pending leave requests</p>
+                  <p className={s.emptyNote}>No pending leave requests</p>
                 ) : (
                   leaveRequests.map((req) => (
                     <LeaveCard
@@ -717,11 +656,10 @@ export default function HRPage() {
                   onClick={scrollToCalendar}
                   aria-label="View absence calendar"
                 >
-                  View Absence Calendar →
+                  View Absence Calendar
                 </button>
               </div>
 
-              {/* Team Capacity */}
               <div className={s.sideCard}>
                 <div className={s.sideCardHeader}>
                   <div>
@@ -751,14 +689,12 @@ export default function HRPage() {
                 </button>
               </div>
 
-              {/* Quick Actions */}
               <div className={s.quickActions}>
                 <button
                   className={s.quickActionBtn}
                   onClick={() => navigate("/finance")}
                   aria-label="Run Payroll"
                 >
-                  <span className={s.qaIcon}>💵</span>
                   <span className={s.qaLabel}>Run Payroll</span>
                 </button>
                 <button
@@ -766,15 +702,13 @@ export default function HRPage() {
                   onClick={() => setShowCompliance(true)}
                   aria-label="Compliance"
                 >
-                  <span className={s.qaIcon}>📋</span>
                   <span className={s.qaLabel}>Compliance</span>
                 </button>
               </div>
 
             </aside>
-          </div>{/* end contentLayout */}
+          </div>
 
-          {/* ── Absence Calendar Section (in-page) ── */}
           {showCalendar && (
             <div ref={calendarRef} style={{ scrollMarginTop: 24 }}>
               <AbsenceCalendar leaveRequests={leaveRequests} />
@@ -784,7 +718,6 @@ export default function HRPage() {
         </main>
       </div>
 
-      {/* ── Add Employee Modal ── */}
       {showAddEmployee && (
         <AddEmployeeModal
           onClose={() => setShowAddEmployee(false)}
@@ -792,7 +725,6 @@ export default function HRPage() {
         />
       )}
 
-      {/* ── Compliance Modal ── */}
       <ComplianceModal
         isOpen={showCompliance}
         onClose={() => setShowCompliance(false)}

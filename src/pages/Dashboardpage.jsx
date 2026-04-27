@@ -1,48 +1,33 @@
 // ─── Pages/DashboardPage.jsx ──────────────────────────────────────────────────
-// ✅ Pure JS — no TypeScript
-// ✅ Senior-level, production-ready
-// ✅ Matches screenshot 1:1 — Analytics Overview Executive Dashboard
-// ✅ Full animations (fade-up, counter, shimmer skeleton, chart draw)
-// ✅ Sidebar + Header integration (same pattern as Finance.jsx)
-// ✅ AI Business Insights panel (live badge, deep dive CTA)
-// ✅ Revenue Growth Trend — Recharts AreaChart (Revenue vs Target)
-// ✅ Efficiency by Department — horizontal bar chart
-// ✅ Recent Operations — live feed with time-ago
-// ✅ Executive Tasks — checkboxes with priority badges + Sync Calendar
-// ✅ Enterprise Shortcuts — icon grid at bottom
-// ✅ Weekly / Monthly / Yearly toggle
-// ✅ Backend-ready stubs (swap dashboardService calls for real API)
 
 import { useState, useEffect, useCallback, useRef, memo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
+  Tooltip, ResponsiveContainer,
 } from "recharts";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── BACKEND SERVICE STUB (swap with real API calls)
+// BACKEND SERVICE STUB (swap with real API calls)
 // ─────────────────────────────────────────────────────────────────────────────
 const dashboardService = {
   async fetchStats(range = "monthly", signal) {
-    // TODO: replace with → fetch(`/api/dashboard/stats?range=${range}`, { signal })
     await new Promise(r => setTimeout(r, 700));
     const multiplier = range === "weekly" ? 0.25 : range === "yearly" ? 12 : 1;
     return {
       data: [
-        { id: "revenue",   icon: "$",  label: "Total Revenue",  value: Math.round(2482900 * multiplier), raw: 2482900 * multiplier, change: "+12.5%", changeType: "up"      },
-        { id: "expenses",  icon: "↘",  label: "Total Expenses", value: Math.round(1102450 * multiplier), raw: 1102450 * multiplier, change: "+4.2%",  changeType: "down"    },
-        { id: "profit",    icon: "↗",  label: "Net Profit",     value: Math.round(1380450 * multiplier), raw: 1380450 * multiplier, change: "+18.1%", changeType: "up"      },
-        { id: "orders",    icon: "🛒", label: "Sales Orders",   value: Math.round(1240  * multiplier),   raw: 1240  * multiplier,   change: "+8.4%",  changeType: "up"      },
-        { id: "employees", icon: "👤", label: "Employees",      value: 458,                               raw: 458,                   change: "+2.1%",  changeType: "up"      },
+        { id: "revenue",   label: "Total Revenue",  value: Math.round(2482900 * multiplier), raw: 2482900 * multiplier, change: "+12.5%", changeType: "up"   },
+        { id: "expenses",  label: "Total Expenses", value: Math.round(1102450 * multiplier), raw: 1102450 * multiplier, change: "+4.2%",  changeType: "down" },
+        { id: "profit",    label: "Net Profit",     value: Math.round(1380450 * multiplier), raw: 1380450 * multiplier, change: "+18.1%", changeType: "up"   },
+        { id: "orders",    label: "Sales Orders",   value: Math.round(1240  * multiplier),   raw: 1240  * multiplier,   change: "+8.4%",  changeType: "up"   },
+        { id: "employees", label: "Employees",      value: 458,                               raw: 458,                   change: "+2.1%",  changeType: "up"   },
       ],
     };
   },
 
   async fetchRevenueChart(range = "monthly", signal) {
-    // TODO: replace with → fetch(`/api/dashboard/revenue-chart?range=${range}`, { signal })
     await new Promise(r => setTimeout(r, 900));
     const months = ["Jan","Feb","Mar","Apr","May","Jun"];
     return {
@@ -55,48 +40,45 @@ const dashboardService = {
   },
 
   async fetchEfficiency(signal) {
-    // TODO: replace with → fetch(`/api/dashboard/efficiency`, { signal })
     await new Promise(r => setTimeout(r, 600));
     return {
       data: [
-        { dept: "Sales",     pct: 92, color: "#3B5BDB" },
-        { dept: "HR",        pct: 74, color: "#3B5BDB" },
-        { dept: "Finance",   pct: 81, color: "#3B5BDB" },
-        { dept: "Inventory", pct: 68, color: "#3B5BDB" },
-        { dept: "Support",   pct: 77, color: "#3B5BDB" },
+        { dept: "Sales",     pct: 92 },
+        { dept: "HR",        pct: 74 },
+        { dept: "Finance",   pct: 81 },
+        { dept: "Inventory", pct: 68 },
+        { dept: "Support",   pct: 77 },
       ],
     };
   },
 
   async fetchRecentOperations(signal) {
-    // TODO: replace with → fetch(`/api/dashboard/operations`, { signal })
     await new Promise(r => setTimeout(r, 500));
     return {
       data: [
-        { id: "op1", user: "Sarah Chen",   action: "completed payroll run for July",           icon: "$",   hoursAgo: 2,  color: "#2F9E44" },
-        { id: "op2", user: "James Wilson", action: "approved 12 new sales leads",              icon: "↗",   hoursAgo: 4,  color: "#3B5BDB" },
-        { id: "op3", user: "System",       action: "Inventory alert: Warehouse A low on stock",icon: "⚙",   hoursAgo: 6,  color: "#F59F00", isSystem: true },
-        { id: "op4", user: "Maria Garcia", action: "scheduled team-building for HR",           icon: "👤",  hoursAgo: 24, color: "#845EF7" },
+        { id: "op1", user: "Sarah Chen",   action: "completed payroll run for July",            hoursAgo: 2,  color: "#2F9E44" },
+        { id: "op2", user: "James Wilson", action: "approved 12 new sales leads",               hoursAgo: 4,  color: "#3B5BDB" },
+        { id: "op3", user: "System",       action: "Inventory alert: Warehouse A low on stock", hoursAgo: 6,  color: "#F59F00", isSystem: true },
+        { id: "op4", user: "Maria Garcia", action: "scheduled team-building for HR",            hoursAgo: 24, color: "#845EF7" },
       ],
     };
   },
 
   async fetchTasks(signal) {
-    // TODO: replace with → fetch(`/api/dashboard/tasks`, { signal })
     await new Promise(r => setTimeout(r, 400));
     return {
       data: [
-        { id: "t1", title: "Approve Q3 Budget Report",         priority: "High",   dueLabel: "Today",     checked: false },
-        { id: "t2", title: "Annual Performance Reviews",        priority: "Medium", dueLabel: "In 2 days", checked: false },
-        { id: "t3", title: "Inventory Reorder Strategy",        priority: "High",   dueLabel: "Tomorrow",  checked: false },
-        { id: "t4", title: "New Customer Success Lead Intro",   priority: "Low",    dueLabel: "Friday",    checked: false },
+        { id: "t1", title: "Approve Q3 Budget Report",       priority: "High",   dueLabel: "Today",     checked: false },
+        { id: "t2", title: "Annual Performance Reviews",      priority: "Medium", dueLabel: "In 2 days", checked: false },
+        { id: "t3", title: "Inventory Reorder Strategy",      priority: "High",   dueLabel: "Tomorrow",  checked: false },
+        { id: "t4", title: "New Customer Success Lead Intro", priority: "Low",    dueLabel: "Friday",    checked: false },
       ],
     };
   },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── DESIGN TOKENS (shared with rest of project)
+// DESIGN TOKENS
 // ─────────────────────────────────────────────────────────────────────────────
 const T = {
   primary:      "#3B5BDB",
@@ -104,11 +86,8 @@ const T = {
   success:      "#2F9E44",
   successLight: "#EBFBEE",
   warning:      "#F59F00",
-  warningLight: "#FFF9DB",
   danger:       "#C92A2A",
   dangerLight:  "#FFF5F5",
-  purple:       "#845EF7",
-  purpleLight:  "#F3F0FF",
   text:         "#1A1A2E",
   textSec:      "#495057",
   textMuted:    "#868E96",
@@ -125,13 +104,13 @@ const PRIORITY_META = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── FORMATTERS
+// FORMATTERS
 // ─────────────────────────────────────────────────────────────────────────────
 const fmtCurrency = (n) =>
   n >= 1_000_000
     ? `$${(n / 1_000_000).toFixed(2)}M`.replace(".00M", "M")
     : n >= 1_000
-    ? `$${(n / 1_000).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}` 
+    ? `$${(n / 1_000).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`
     : `$${n}`;
 
 const fmtNumber = (n) =>
@@ -143,7 +122,7 @@ const fmtValue = (stat) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── ANIMATION HOOK
+// ANIMATION HOOK
 // ─────────────────────────────────────────────────────────────────────────────
 function useAnimateIn(delay = 0) {
   const [visible, setVisible] = useState(false);
@@ -152,15 +131,18 @@ function useAnimateIn(delay = 0) {
     const timer = setTimeout(() => setVisible(true), delay);
     return () => clearTimeout(timer);
   }, [delay]);
-  return { ref, style: {
-    opacity:   visible ? 1 : 0,
-    transform: visible ? "translateY(0)" : "translateY(14px)",
-    transition: `opacity 0.45s ease ${delay}ms, transform 0.45s ease ${delay}ms`,
-  }};
+  return {
+    ref,
+    style: {
+      opacity:    visible ? 1 : 0,
+      transform:  visible ? "translateY(0)" : "translateY(14px)",
+      transition: `opacity 0.45s ease ${delay}ms, transform 0.45s ease ${delay}ms`,
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── ANIMATED COUNTER
+// ANIMATED COUNTER
 // ─────────────────────────────────────────────────────────────────────────────
 function AnimatedCounter({ target, format }) {
   const [display, setDisplay] = useState("0");
@@ -170,9 +152,8 @@ function AnimatedCounter({ target, format }) {
     if (!target && target !== 0) return;
     const duration = 900;
     const start    = performance.now();
-
     const tick = (now) => {
-      const elapsed = now - start;
+      const elapsed  = now - start;
       const progress = Math.min(elapsed / duration, 1);
       const ease     = 1 - Math.pow(1 - progress, 3);
       const current  = Math.round(target * ease);
@@ -187,7 +168,7 @@ function AnimatedCounter({ target, format }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── SKELETON
+// SKELETON
 // ─────────────────────────────────────────────────────────────────────────────
 const Skeleton = ({ w = "100%", h = 14, style = {} }) => (
   <div style={{
@@ -200,8 +181,18 @@ const Skeleton = ({ w = "100%", h = 14, style = {} }) => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── STAT CARD
+// STAT CARD
 // ─────────────────────────────────────────────────────────────────────────────
+const cardStyle = {
+  background:    T.surface,
+  border:        `1px solid ${T.border}`,
+  borderRadius:  14,
+  padding:       "18px 20px",
+  boxShadow:     "0 1px 4px rgba(0,0,0,.04)",
+  display:       "flex",
+  flexDirection: "column",
+};
+
 const StatCard = memo(({ stat, loading, delay = 0 }) => {
   const anim = useAnimateIn(delay);
 
@@ -209,8 +200,6 @@ const StatCard = memo(({ stat, loading, delay = 0 }) => {
                       stat?.changeType === "down"  ? T.danger  : T.textMuted;
   const changeBg    = stat?.changeType === "up"   ? T.successLight :
                       stat?.changeType === "down"  ? T.dangerLight  : T.borderSoft;
-  const changeArrow = stat?.changeType === "up"   ? "↗" :
-                      stat?.changeType === "down"  ? "↙" : "→";
 
   if (loading) return (
     <div style={{ ...cardStyle, ...anim.style }}>
@@ -223,14 +212,6 @@ const StatCard = memo(({ stat, loading, delay = 0 }) => {
 
   return (
     <article ref={anim.ref} style={{ ...cardStyle, ...anim.style }} aria-label={stat.label}>
-      <div style={{
-        width: 40, height: 40, borderRadius: 10,
-        background: T.primaryLight,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 18, marginBottom: 10, flexShrink: 0,
-      }}>
-        {stat.icon}
-      </div>
       <p style={{ fontSize: 12, color: T.textMuted, margin: "0 0 4px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.4px" }}>
         {stat.label}
       </p>
@@ -243,24 +224,15 @@ const StatCard = memo(({ stat, loading, delay = 0 }) => {
         fontSize: 11.5, fontWeight: 700,
         background: changeBg, color: changeColor,
       }}>
-        {changeArrow} {stat.change}
+        {stat.change}
       </span>
     </article>
   );
 });
 StatCard.displayName = "StatCard";
 
-const cardStyle = {
-  background: T.surface,
-  border: `1px solid ${T.border}`,
-  borderRadius: 14,
-  padding: "18px 20px",
-  boxShadow: "0 1px 4px rgba(0,0,0,.04)",
-  display: "flex", flexDirection: "column",
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
-// ── REVENUE CHART (Recharts)
+// REVENUE CHART
 // ─────────────────────────────────────────────────────────────────────────────
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
@@ -280,7 +252,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 };
 
 const RevenueChart = memo(({ data, loading, range, onRangeChange }) => {
-  const anim = useAnimateIn(200);
+  const anim   = useAnimateIn(200);
   const RANGES = ["weekly", "monthly", "yearly"];
 
   return (
@@ -294,26 +266,20 @@ const RevenueChart = memo(({ data, loading, range, onRangeChange }) => {
         </div>
         <div style={{ display: "flex", background: T.borderSoft, borderRadius: 8, padding: 3, gap: 2 }}>
           {RANGES.map(r => (
-            <button
-              key={r}
-              onClick={() => onRangeChange(r)}
-              style={{
-                padding: "5px 12px", border: "none", borderRadius: 6,
-                fontSize: 12, fontWeight: 600, cursor: "pointer",
-                background: range === r ? T.surface : "transparent",
-                color: range === r ? T.primary : T.textMuted,
-                boxShadow: range === r ? "0 1px 3px rgba(0,0,0,.1)" : "none",
-                transition: "all 0.15s",
-                textTransform: "capitalize",
-              }}
-            >
+            <button key={r} onClick={() => onRangeChange(r)} style={{
+              padding: "5px 12px", border: "none", borderRadius: 6,
+              fontSize: 12, fontWeight: 600, cursor: "pointer",
+              background: range === r ? T.surface : "transparent",
+              color:      range === r ? T.primary : T.textMuted,
+              boxShadow:  range === r ? "0 1px 3px rgba(0,0,0,.1)" : "none",
+              transition: "all 0.15s", textTransform: "capitalize",
+            }}>
               {r}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Legend */}
       <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
         {[{ label: "Revenue", color: "#3B5BDB" }, { label: "Target", color: "#CED4DA" }].map(l => (
           <div key={l.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: T.textMuted }}>
@@ -361,7 +327,7 @@ const RevenueChart = memo(({ data, loading, range, onRangeChange }) => {
 RevenueChart.displayName = "RevenueChart";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── AI BUSINESS INSIGHTS PANEL
+// AI BUSINESS INSIGHTS PANEL
 // ─────────────────────────────────────────────────────────────────────────────
 const AI_INSIGHTS = [
   "Operating expenses rose 4% due to cloud scaling costs.",
@@ -370,7 +336,7 @@ const AI_INSIGHTS = [
 ];
 
 const AIInsightsPanel = memo(() => {
-  const anim = useAnimateIn(300);
+  const anim  = useAnimateIn(300);
   const [pulse, setPulse] = useState(true);
 
   useEffect(() => {
@@ -379,19 +345,9 @@ const AIInsightsPanel = memo(() => {
   }, []);
 
   return (
-    <div ref={anim.ref} style={{
-      ...cardStyle, width: 240, flexShrink: 0, ...anim.style,
-    }}>
-      {/* Header */}
+    <div ref={anim.ref} style={{ ...cardStyle, width: 240, flexShrink: 0, ...anim.style }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <div style={{
-          width: 32, height: 32, borderRadius: 8,
-          background: T.primaryLight,
-          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
-        }}>✦</div>
-        <div style={{ flex: 1 }}>
-          <p style={{ fontSize: 13, fontWeight: 700, color: T.text, margin: 0 }}>AI Business Insights</p>
-        </div>
+        <p style={{ fontSize: 13, fontWeight: 700, color: T.text, margin: 0, flex: 1 }}>AI Business Insights</p>
         <span style={{
           display: "flex", alignItems: "center", gap: 4,
           fontSize: 10, fontWeight: 700, color: T.success,
@@ -405,17 +361,13 @@ const AIInsightsPanel = memo(() => {
         </span>
       </div>
 
-      {/* Revenue Outlook Box */}
-      <div style={{
-        background: T.borderSoft, borderRadius: 10, padding: "12px 14px", marginBottom: 14,
-      }}>
+      <div style={{ background: T.borderSoft, borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
         <p style={{ fontSize: 12.5, fontWeight: 700, color: T.text, margin: "0 0 6px" }}>Revenue Outlook</p>
         <p style={{ fontSize: 12, color: T.textSec, margin: 0, lineHeight: 1.6 }}>
           Current trajectory suggests a 12% beat on Q3 targets if Sales velocity maintains through August.
         </p>
       </div>
 
-      {/* Critical Observations */}
       <p style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.6px", margin: "0 0 8px" }}>
         Critical Observations
       </p>
@@ -425,20 +377,18 @@ const AIInsightsPanel = memo(() => {
         ))}
       </ul>
 
-      {/* CTA */}
       <button
         style={{
           marginTop: 16, width: "100%", padding: "11px 0",
           background: T.primary, color: "#fff",
           border: "none", borderRadius: 10,
           fontSize: 13, fontWeight: 700, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
           transition: "opacity 0.15s",
         }}
         onMouseEnter={e => e.currentTarget.style.opacity = "0.88"}
         onMouseLeave={e => e.currentTarget.style.opacity = "1"}
       >
-        ✦ Deep Dive Strategy
+        Deep Dive Strategy
       </button>
     </div>
   );
@@ -446,7 +396,7 @@ const AIInsightsPanel = memo(() => {
 AIInsightsPanel.displayName = "AIInsightsPanel";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── EFFICIENCY BY DEPARTMENT (horizontal bar chart)
+// EFFICIENCY BY DEPARTMENT
 // ─────────────────────────────────────────────────────────────────────────────
 const EfficiencyChart = memo(({ data, loading }) => {
   const anim  = useAnimateIn(400);
@@ -466,7 +416,7 @@ const EfficiencyChart = memo(({ data, loading }) => {
 
       {loading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {[92, 74, 81, 68, 77].map((_, i) => (
+          {[1,2,3,4,5].map((_, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Skeleton w={60} h={12} />
               <Skeleton w="100%" h={10} style={{ flex: 1 }} />
@@ -482,8 +432,7 @@ const EfficiencyChart = memo(({ data, loading }) => {
               </span>
               <div style={{ flex: 1, height: 12, background: T.borderSoft, borderRadius: 99, overflow: "hidden" }}>
                 <div style={{
-                  height: "100%", borderRadius: 99,
-                  background: T.primary,
+                  height: "100%", borderRadius: 99, background: T.primary,
                   width: drawn ? `${item.pct}%` : "0%",
                   transition: "width 0.9s cubic-bezier(0.22,1,0.36,1)",
                 }} />
@@ -498,7 +447,7 @@ const EfficiencyChart = memo(({ data, loading }) => {
 EfficiencyChart.displayName = "EfficiencyChart";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── RECENT OPERATIONS
+// RECENT OPERATIONS
 // ─────────────────────────────────────────────────────────────────────────────
 const RecentOperations = memo(({ ops, loading }) => {
   const anim = useAnimateIn(450);
@@ -513,9 +462,7 @@ const RecentOperations = memo(({ ops, loading }) => {
         <button style={{
           background: "none", border: "none", fontSize: 12, fontWeight: 600,
           color: T.primary, cursor: "pointer", padding: "4px 8px",
-        }}>
-          View Log
-        </button>
+        }}>View Log</button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -534,19 +481,15 @@ const RecentOperations = memo(({ ops, loading }) => {
             <div style={{
               width: 32, height: 32, borderRadius: 8, flexShrink: 0,
               background: `${op.color}18`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 13, color: op.color,
-            }}>
-              {op.icon}
-            </div>
+            }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <p style={{ fontSize: 12.5, color: T.text, margin: 0, lineHeight: 1.5 }}>
                 {!op.isSystem && <strong>{op.user} </strong>}
-                {op.isSystem && <strong style={{ color: T.warning }}>System </strong>}
+                {op.isSystem  && <strong style={{ color: T.warning }}>System </strong>}
                 {op.action}
               </p>
               <p style={{ fontSize: 11, color: T.textMuted, margin: "2px 0 0" }}>
-                ⏱ {op.hoursAgo < 24 ? `${op.hoursAgo} hours ago` : "1 day ago"}
+                {op.hoursAgo < 24 ? `${op.hoursAgo} hours ago` : "1 day ago"}
               </p>
             </div>
           </div>
@@ -558,7 +501,7 @@ const RecentOperations = memo(({ ops, loading }) => {
 RecentOperations.displayName = "RecentOperations";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── EXECUTIVE TASKS
+// EXECUTIVE TASKS
 // ─────────────────────────────────────────────────────────────────────────────
 const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
   const anim  = useAnimateIn(500);
@@ -566,7 +509,8 @@ const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
 
   useEffect(() => { setTasks(initialTasks || []); }, [initialTasks]);
 
-  const toggle = (id) => setTasks(prev => prev.map(t => t.id === id ? { ...t, checked: !t.checked } : t));
+  const toggle = (id) =>
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, checked: !t.checked } : t));
 
   return (
     <div ref={anim.ref} style={{ ...cardStyle, ...anim.style }}>
@@ -611,7 +555,7 @@ const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
                   {task.title}
                 </p>
                 <p style={{ fontSize: 11, color: T.textMuted, margin: "2px 0 0" }}>
-                  📅 {task.dueLabel}
+                  {task.dueLabel}
                 </p>
               </div>
               <span style={{
@@ -625,13 +569,14 @@ const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
         })}
       </div>
 
-      <button style={{
-        marginTop: 14, width: "100%", padding: "10px 0",
-        background: T.borderSoft, color: T.textSec,
-        border: `1px solid ${T.border}`, borderRadius: 10,
-        fontSize: 13, fontWeight: 600, cursor: "pointer",
-        transition: "background 0.15s",
-      }}
+      <button
+        style={{
+          marginTop: 14, width: "100%", padding: "10px 0",
+          background: T.borderSoft, color: T.textSec,
+          border: `1px solid ${T.border}`, borderRadius: 10,
+          fontSize: 13, fontWeight: 600, cursor: "pointer",
+          transition: "background 0.15s",
+        }}
         onMouseEnter={e => e.currentTarget.style.background = T.border}
         onMouseLeave={e => e.currentTarget.style.background = T.borderSoft}
       >
@@ -643,15 +588,15 @@ const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
 ExecutiveTasks.displayName = "ExecutiveTasks";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── ENTERPRISE SHORTCUTS
+// ENTERPRISE SHORTCUTS
 // ─────────────────────────────────────────────────────────────────────────────
 const SHORTCUTS = [
-  { id: "invoice",   icon: "🧾", label: "Create Invoice",    path: "/invoices/new" },
-  { id: "employee",  icon: "👥", label: "Employee Portal",   path: "/hr"           },
-  { id: "leads",     icon: "↗",  label: "Leads Kanban",      path: "/sales"        },
-  { id: "inventory", icon: "📦", label: "Inventory Audit",   path: "/inventory"    },
-  { id: "support",   icon: "🎧", label: "Support Tickets",   path: "/support"      },
-  { id: "settings",  icon: "⚙",  label: "System Settings",   path: "/settings"     },
+  { id: "invoice",   label: "Create Invoice",  path: "/invoices/new" },
+  { id: "employee",  label: "Employee Portal", path: "/hr"           },
+  { id: "leads",     label: "Leads Kanban",    path: "/sales"        },
+  { id: "inventory", label: "Inventory Audit", path: "/inventory"    },
+  { id: "support",   label: "Support Tickets", path: "/support"      },
+  { id: "settings",  label: "System Settings", path: "/settings"     },
 ];
 
 const EnterpriseShortcuts = memo(({ navigate }) => {
@@ -664,11 +609,7 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
       }}>
         Enterprise Shortcuts
       </p>
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(6, 1fr)",
-        gap: 12,
-      }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
         {SHORTCUTS.map(sc => (
           <button
             key={sc.id}
@@ -681,26 +622,21 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
             }}
             onMouseEnter={e => {
               e.currentTarget.style.borderColor = T.primary;
-              e.currentTarget.style.background = T.primaryLight;
-              e.currentTarget.style.color = T.primary;
-              e.currentTarget.style.transform = "translateY(-2px)";
+              e.currentTarget.style.background  = T.primaryLight;
+              e.currentTarget.style.color       = T.primary;
+              e.currentTarget.style.transform   = "translateY(-2px)";
             }}
             onMouseLeave={e => {
               e.currentTarget.style.borderColor = T.border;
-              e.currentTarget.style.background = T.surface;
-              e.currentTarget.style.color = T.textSec;
-              e.currentTarget.style.transform = "translateY(0)";
+              e.currentTarget.style.background  = T.surface;
+              e.currentTarget.style.color       = T.textSec;
+              e.currentTarget.style.transform   = "translateY(0)";
             }}
             aria-label={sc.label}
           >
             <div style={{
-              width: 40, height: 40, borderRadius: 10,
-              background: T.borderSoft,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 18,
-            }}>
-              {sc.icon}
-            </div>
+              width: 40, height: 40, borderRadius: 10, background: T.borderSoft,
+            }} />
             <span style={{ textAlign: "center", lineHeight: 1.3 }}>{sc.label}</span>
           </button>
         ))}
@@ -711,7 +647,7 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
 EnterpriseShortcuts.displayName = "EnterpriseShortcuts";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── FOOTER
+// FOOTER
 // ─────────────────────────────────────────────────────────────────────────────
 const Footer = () => (
   <footer style={{
@@ -720,7 +656,7 @@ const Footer = () => (
     display: "flex", justifyContent: "space-between", alignItems: "center",
     fontSize: 11.5, color: T.textMuted,
   }}>
-    <span>© 2024 Synergy ERP Systems. All rights reserved.</span>
+    <span>2024 Synergy ERP Systems. All rights reserved.</span>
     <div style={{ display: "flex", gap: 16 }}>
       {["Privacy Policy", "Terms of Service"].map(l => (
         <a key={l} href="#" style={{ color: T.textMuted, textDecoration: "none" }}
@@ -738,7 +674,7 @@ const Footer = () => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── GLOBAL STYLES (shimmer keyframe)
+// GLOBAL STYLES
 // ─────────────────────────────────────────────────────────────────────────────
 const GlobalStyles = () => (
   <style>{`
@@ -752,54 +688,44 @@ const GlobalStyles = () => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── MAIN PAGE
+// MAIN PAGE
 // ─────────────────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
-  const [activeNav,   setActiveNav]   = useState("dashboard");
-  const [range,       setRange]       = useState("monthly");
-  const [stats,       setStats]       = useState([]);
-  const [chartData,   setChartData]   = useState([]);
-  const [efficiency,  setEfficiency]  = useState([]);
-  const [operations,  setOperations]  = useState([]);
-  const [tasks,       setTasks]       = useState([]);
-  const [loadingStats,    setLoadingStats]    = useState(true);
-  const [loadingChart,    setLoadingChart]    = useState(true);
-  const [loadingEffic,    setLoadingEffic]    = useState(true);
-  const [loadingOps,      setLoadingOps]      = useState(true);
-  const [loadingTasks,    setLoadingTasks]    = useState(true);
+  const [activeNav,  setActiveNav]  = useState("dashboard");
+  const [range,      setRange]      = useState("monthly");
+  const [stats,      setStats]      = useState([]);
+  const [chartData,  setChartData]  = useState([]);
+  const [efficiency, setEfficiency] = useState([]);
+  const [operations, setOperations] = useState([]);
+  const [tasks,      setTasks]      = useState([]);
+
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [loadingChart, setLoadingChart] = useState(true);
+  const [loadingEffic, setLoadingEffic] = useState(true);
+  const [loadingOps,   setLoadingOps]   = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(true);
 
   const navigate = useNavigate();
 
-  // ── Fetch all data ──────────────────────────────────────────────────────────
   const loadPage = useCallback((r = range) => {
     const controller = new AbortController();
-
     setLoadingStats(true);
     setLoadingChart(true);
 
     dashboardService.fetchStats(r, controller.signal).then(res => {
-      setStats(res.data);
-      setLoadingStats(false);
+      setStats(res.data); setLoadingStats(false);
     });
-
     dashboardService.fetchRevenueChart(r, controller.signal).then(res => {
-      setChartData(res.data);
-      setLoadingChart(false);
+      setChartData(res.data); setLoadingChart(false);
     });
-
     dashboardService.fetchEfficiency(controller.signal).then(res => {
-      setEfficiency(res.data);
-      setLoadingEffic(false);
+      setEfficiency(res.data); setLoadingEffic(false);
     });
-
     dashboardService.fetchRecentOperations(controller.signal).then(res => {
-      setOperations(res.data);
-      setLoadingOps(false);
+      setOperations(res.data); setLoadingOps(false);
     });
-
     dashboardService.fetchTasks(controller.signal).then(res => {
-      setTasks(res.data);
-      setLoadingTasks(false);
+      setTasks(res.data); setLoadingTasks(false);
     });
 
     return () => controller.abort();
@@ -818,7 +744,6 @@ export default function DashboardPage() {
     dashboardService.fetchRevenueChart(r).then(res => { setChartData(res.data); setLoadingChart(false); });
   };
 
-  // ── Animate stat cards title ─────────────────────────────────────────────────
   const titleAnim = useAnimateIn(0);
 
   return (
@@ -826,19 +751,14 @@ export default function DashboardPage() {
       <GlobalStyles />
       <div style={{ display: "flex", minHeight: "100vh", background: T.bg }}>
 
-        {/* ── Sidebar ── */}
         <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-        {/* ── Main ── */}
         <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
 
-          {/* ── Header ── */}
           <Header breadcrumbs={["Synergy ERP", "Analytics", "Executive Dashboard"]} />
 
-          {/* ── Page Content ── */}
           <main style={{ flex: 1, padding: "28px 32px", fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
 
-            {/* ── Page Title + Range Toggle ── */}
             <div ref={titleAnim.ref} style={{
               display: "flex", justifyContent: "space-between", alignItems: "flex-start",
               marginBottom: 24, ...titleAnim.style,
@@ -852,49 +772,39 @@ export default function DashboardPage() {
                 </p>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                {/* Range pills */}
                 <div style={{ display: "flex", background: T.borderSoft, borderRadius: 8, padding: 3, gap: 2 }}>
                   {["weekly","monthly","yearly"].map(r => (
                     <button key={r} onClick={() => handleRangeChange(r)} style={{
                       padding: "5px 14px", border: "none", borderRadius: 6,
                       fontSize: 12, fontWeight: 600, cursor: "pointer",
                       background: range === r ? T.primary : "transparent",
-                      color: range === r ? "#fff" : T.textMuted,
-                      transition: "all 0.15s",
-                      textTransform: "capitalize",
+                      color:      range === r ? "#fff"    : T.textMuted,
+                      transition: "all 0.15s", textTransform: "capitalize",
                     }}>
                       {r}
                     </button>
                   ))}
                 </div>
                 <button style={{
-                  width: 34, height: 34, border: `1px solid ${T.border}`,
+                  padding: "0 12px", height: 34, border: `1px solid ${T.border}`,
                   borderRadius: 8, background: T.surface, cursor: "pointer",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 14, color: T.textMuted,
-                }}>⚙</button>
+                  fontSize: 12, fontWeight: 600, color: T.textMuted,
+                }}>Settings</button>
                 <button style={{
-                  width: 34, height: 34, border: `1px solid ${T.border}`,
+                  padding: "0 12px", height: 34, border: `1px solid ${T.border}`,
                   borderRadius: 8, background: T.surface, cursor: "pointer",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 14, color: T.textMuted,
-                }}>⬇</button>
+                  fontSize: 12, fontWeight: 600, color: T.textMuted,
+                }}>Export</button>
               </div>
             </div>
 
-            {/* ── Stat Cards Row ── */}
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(5, 1fr)",
-              gap: 14, marginBottom: 24,
-            }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14, marginBottom: 24 }}>
               {loadingStats
                 ? Array.from({ length: 5 }).map((_, i) => <StatCard key={i} loading delay={i * 60} />)
                 : stats.map((stat, i) => <StatCard key={stat.id} stat={stat} delay={i * 60} />)
               }
             </div>
 
-            {/* ── Revenue Chart + AI Insights ── */}
             <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
               <RevenueChart
                 data={chartData}
@@ -905,32 +815,22 @@ export default function DashboardPage() {
               <AIInsightsPanel />
             </div>
 
-            {/* ── Bottom Section: 3 columns ── */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
-
-              {/* Efficiency by Department */}
               <div style={{ ...cardStyle }}>
                 <EfficiencyChart data={efficiency} loading={loadingEffic} />
               </div>
-
-              {/* Recent Operations */}
               <div style={{ ...cardStyle }}>
                 <RecentOperations ops={operations} loading={loadingOps} />
               </div>
-
-              {/* Executive Tasks */}
               <ExecutiveTasks tasks={tasks} loading={loadingTasks} />
-
             </div>
 
-            {/* ── Enterprise Shortcuts ── */}
             <div style={{ ...cardStyle, marginBottom: 0 }}>
               <EnterpriseShortcuts navigate={navigate} />
             </div>
 
           </main>
 
-          {/* ── Footer ── */}
           <Footer />
         </div>
       </div>

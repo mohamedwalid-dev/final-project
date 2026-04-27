@@ -6,25 +6,25 @@ import StatCard, { SkeletonStatCard } from "../components/Finance/StatCard";
 import CashFlowChart from "../components/Finance/CashFlowChart";
 import ExpenseBreakdown from "../components/Finance/ExpenseBreakdown";
 import InvoicesTable from "../components/Finance/InvoicesTable";
-import ExportReportsModal from "../components/Finance/ExportReportsModal";  // ✅ NEW
+import ExportReportsModal from "../components/Finance/ExportReportsModal";
 import s from "../components/Finance/Finance.module.css";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 
 const ErrorCard = ({ message, onRetry }) => (
   <div className={s.errorCard} role="alert">
-    <p className={s.errorTitle}>⚠ Failed to load data</p>
+    <p className={s.errorTitle}>Failed to load data</p>
     <p className={s.errorMsg}>{message}</p>
-    <button className={s.btnRetry} onClick={onRetry}>↺ Retry</button>
+    <button className={s.btnRetry} onClick={onRetry}>Retry</button>
   </div>
 );
 
 export default function Finance() {
-  const [pageData,       setPageData]       = useState(null);
-  const [loading,        setLoading]        = useState(true);
-  const [error,          setError]          = useState(null);
-  const [activeNav,      setActiveNav]      = useState("finance");
-  const [showExport,     setShowExport]     = useState(false);   // ✅ NEW
+  const [pageData,   setPageData]   = useState(null);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState(null);
+  const [activeNav,  setActiveNav]  = useState("finance");
+  const [showExport, setShowExport] = useState(false);
 
   const navigate = useNavigate();
 
@@ -79,26 +79,23 @@ export default function Finance() {
             </div>
             <div className={s.headerActions}>
 
-              {/* ✅ Export Reports → يفتح الـ Modal */}
               <button
                 className={`${s.btn} ${s.btnOutline}`}
                 aria-label="Export reports"
                 onClick={() => setShowExport(true)}
                 disabled={loading || !!error}
               >
-                ⬇ Export Reports
+                Export Reports
               </button>
 
-              {/* ✅ → /invoices */}
               <button
                 className={`${s.btn} ${s.btnOutline}`}
                 onClick={() => navigate("/invoices")}
                 aria-label="View all invoices"
               >
-                🧾 All Invoices
+                All Invoices
               </button>
 
-              {/* ✅ → /invoices/new */}
               <button
                 className={`${s.btn} ${s.btnPrimary}`}
                 onClick={() => navigate("/invoices/new")}
@@ -143,7 +140,7 @@ export default function Finance() {
                   }}
                   aria-label="View all invoices"
                 >
-                  View All Invoices →
+                  View All Invoices
                 </button>
               </div>
               <InvoicesTable invoices={pageData.invoices} />
@@ -153,7 +150,6 @@ export default function Finance() {
         </main>
       </div>
 
-      {/* ✅ Export Reports Modal */}
       <ExportReportsModal
         isOpen={showExport}
         onClose={() => setShowExport(false)}
