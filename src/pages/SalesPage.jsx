@@ -835,10 +835,10 @@ export default function SalesPage() {
   const navigate = useNavigate();
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA" }}>
+    <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA", overflowX: "hidden" }}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-      <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh", minWidth: 0, overflowX: "hidden", background: "#F8F9FA" }}>
         <Header breadcrumbs={["Synergy ERP", "Sales", activeTab === "pipeline" ? "Pipeline" : TABS.find(t => t.id === activeTab)?.label]} />
 
         <main className={s.page}>

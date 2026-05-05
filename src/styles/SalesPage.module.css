@@ -2,10 +2,16 @@
 
 /* ── Page Layout ─────────────────────────────────────────────────────────────*/
 .page {
-  padding: 28px 32px 0;
+  padding: 32px 36px;
   flex: 1;
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  box-sizing: border-box;
+  background: #F8F9FA;
 }
 
 .pageHeader {
@@ -35,6 +41,7 @@
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 /* ── Tab Bar ─────────────────────────────────────────────────────────────────*/
@@ -44,6 +51,10 @@
   border-bottom: 1px solid #E9ECEF;
   margin-bottom: 24px;
   gap: 2px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .tabBtn {
@@ -76,6 +87,7 @@
 .tabBarRight {
   margin-left: auto;
   padding-bottom: 4px;
+  flex-shrink: 0;
 }
 
 .filterBtn {
@@ -98,6 +110,9 @@
 
 .tabContent {
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
   animation: fadeUp 0.25s ease both;
 }
 
@@ -178,9 +193,11 @@
 /* ── Sales Stat Cards ────────────────────────────────────────────────────────*/
 .pipelineStats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 24px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .salesStatCard {
@@ -193,6 +210,7 @@
   gap: 12px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
   transition: box-shadow 0.2s;
+  min-width: 0;
 }
 
 .salesStatCard:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
@@ -232,6 +250,7 @@
   text-transform: uppercase;
   letter-spacing: 0.4px;
   margin: 0 0 4px;
+  overflow-wrap: anywhere;
 }
 
 .salesStatValue {
@@ -241,6 +260,7 @@
   margin: 0 0 4px;
   letter-spacing: -0.4px;
   line-height: 1;
+  overflow-wrap: anywhere;
 }
 
 .salesStatChange {
@@ -288,9 +308,10 @@
 
 .addLeadGrid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 14px;
+  min-width: 0;
 }
 
 .addLeadField {
@@ -306,6 +327,7 @@
 }
 
 .addLeadInput {
+  width: 100%;
   padding: 8px 12px;
   border: 1.5px solid #E9ECEF;
   border-radius: 8px;
@@ -315,6 +337,7 @@
   outline: none;
   font-family: inherit;
   transition: border-color 0.15s;
+  box-sizing: border-box;
 }
 
 .addLeadInput:focus { border-color: #3B5BDB; }
@@ -330,10 +353,16 @@
   display: flex;
   gap: 14px;
   overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  width: 100%;
+  min-width: 0;
   padding-bottom: 24px;
+  padding-right: 2px;
   scrollbar-width: thin;
   scrollbar-color: #E9ECEF transparent;
   min-height: 500px;
+  box-sizing: border-box;
 }
 
 .kanbanBoard::-webkit-scrollbar { height: 6px; }
@@ -342,6 +371,7 @@
 
 .kanbanCol {
   flex: 0 0 240px;
+  width: 240px;
   min-width: 240px;
   background: #F8F9FC;
   border-radius: 12px;
@@ -350,6 +380,7 @@
   display: flex;
   flex-direction: column;
   transition: border-color 0.2s, background 0.2s;
+  box-sizing: border-box;
 }
 
 .kanbanCol:hover { border-color: #D0D7DE; }
@@ -588,9 +619,11 @@
 /* ── Analytics ───────────────────────────────────────────────────────────────*/
 .analyticsKpiGrid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 24px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .analyticsRow {
@@ -598,6 +631,8 @@
   gap: 16px;
   margin-bottom: 20px;
   flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .analyticsCard {
@@ -607,6 +642,8 @@
   padding: 20px 22px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .analyticsCardTitle {
@@ -762,6 +799,8 @@
   gap: 12px;
   margin-bottom: 20px;
   flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .searchWrap {
@@ -804,6 +843,8 @@
   background: #F1F3F5;
   border-radius: 8px;
   padding: 4px;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .catTab {
@@ -830,13 +871,15 @@
 
 .productGrid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 24px;
+  max-width: 100%;
+  min-width: 0;
 }
 
-@media (max-width: 1400px) { .productGrid { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 1100px) { .productGrid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1400px) { .productGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .productGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .productCard {
   background: #fff;
@@ -847,6 +890,7 @@
   flex-direction: column;
   gap: 8px;
   transition: box-shadow 0.15s, border-color 0.15s, transform 0.1s;
+  min-width: 0;
 }
 
 .productCard:hover {
@@ -892,6 +936,7 @@
   font-weight: 700;
   color: #1A1A2E;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .productDesc {
@@ -900,12 +945,15 @@
   margin: 0;
   line-height: 1.4;
   flex: 1;
+  overflow-wrap: anywhere;
 }
 
 .productMeta {
   display: flex;
   gap: 8px;
   align-items: center;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .productCat {
@@ -969,13 +1017,16 @@
   background: #fff;
   border: 1px solid #E9ECEF;
   border-radius: 14px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
   margin-bottom: 24px;
+  max-width: 100%;
 }
 
 .custTable {
   width: 100%;
+  min-width: 760px;
   border-collapse: collapse;
   font-size: 13.5px;
 }
@@ -1102,12 +1153,16 @@
   color: #ADB5BD;
   flex-wrap: wrap;
   gap: 8px;
+  background: #F8F9FA;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .footerRight {
   display: flex;
   gap: 16px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .footerLink {
@@ -1120,4 +1175,60 @@
 
 .statusDot {
   color: #2F9E44;
+}
+
+@media (max-width: 1200px) {
+  .pipelineStats,
+  .analyticsKpiGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .addLeadGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .page {
+    padding: 24px 20px;
+  }
+
+  .pageHeader {
+    align-items: stretch;
+  }
+
+  .headerActions {
+    width: 100%;
+  }
+
+  .btnPrimary,
+  .btnOutline {
+    justify-content: center;
+  }
+
+  .productGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .pipelineStats,
+  .analyticsKpiGrid,
+  .productGrid,
+  .addLeadGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .tabBar {
+    align-items: stretch;
+  }
+
+  .tabBarRight {
+    margin-left: 0;
+  }
+
+  .searchWrap {
+    max-width: none;
+    width: 100%;
+  }
 }
