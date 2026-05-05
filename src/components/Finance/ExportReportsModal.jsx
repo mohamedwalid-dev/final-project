@@ -1,9 +1,9 @@
-// ─── components/Finance/ExportReportsModal.jsx ───────────────────────────────
-// ✅ Pure JS — no TypeScript
-// ✅ Export: CSV + JSON for each dataset
-// ✅ Animated modal with backdrop close + Escape key
-// ✅ Per-item progress feedback (downloading → done)
-// ✅ Zero dependencies beyond React
+// components/Finance/ExportReportsModal.jsx
+// Pure JS - no TypeScript
+// Export: CSV + JSON for each dataset
+// Animated modal with backdrop close + Escape key
+// Per-item progress feedback
+// Zero dependencies beyond React
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { formatCurrency, formatDate } from "../../utils/formatters";

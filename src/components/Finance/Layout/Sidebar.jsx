@@ -1,21 +1,28 @@
-// ─── components/Finance/Layout/Sidebar.jsx ───────────────────────────────────
-// ✅ useNavigate — كل nav item بيعمل navigate للصفحة الصح
-// ✅ activeNav بيتحدد تلقائياً من الـ URL الحالي
-// ✅ collapse يشتغل زي ما كان
+// components/Finance/Layout/Sidebar.jsx
 
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import "./Sidebar.css";
-import { Users } from "lucide-react";
+import {
+  Boxes,
+  Handshake,
+  Headphones,
+  LayoutDashboard,
+  Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Users,
+  WalletCards,
+} from "lucide-react";
 
 const NAV_ITEMS = [
-  { id: "dashboard", label: "Dashboard",     icon: "⊞", path: "/dashboard"  },
-  { id: "finance",   label: "Finance",       icon: "◈", path: "/finance"    },
-  { id: "hr",        label: "HR & People",   icon: Users, path: "/hr"       },
-  { id: "sales",     label: "Sales & CRM",   icon: "◎", path: "/sales"      },
-  { id: "inventory", label: "Inventory",     icon: "▤", path: "/inventory"  },
-  { id: "support",   label: "Support",       icon: "◌", path: "/support"    },
-  { id: "design",    label: "Design System", icon: "✦", path: "/design"     },
+  { id: "dashboard", label: "Dashboard",     icon: LayoutDashboard, path: "/dashboard"  },
+  { id: "finance",   label: "Finance",       icon: WalletCards,     path: "/finance"    },
+  { id: "hr",        label: "HR & People",   icon: Users,           path: "/hr"         },
+  { id: "sales",     label: "Sales & CRM",   icon: Handshake,       path: "/sales"      },
+  { id: "inventory", label: "Inventory",     icon: Boxes,           path: "/inventory"  },
+  { id: "support",   label: "Support",       icon: Headphones,      path: "/support"    },
+  { id: "design",    label: "Design System", icon: Palette,         path: "/design"     },
 ];
 
 export default function Sidebar({ activeNav, onNavChange }) {
@@ -23,8 +30,6 @@ export default function Sidebar({ activeNav, onNavChange }) {
   const navigate  = useNavigate();
   const location  = useLocation();
 
-  // ── تحديد الـ active item من الـ URL تلقائياً ──────────────────────────────
-  // مثلاً /invoices أو /invoices/new → يظهر Finance active
   const currentPath = location.pathname;
   const resolvedActive = NAV_ITEMS.find((item) =>
     currentPath === item.path || currentPath.startsWith(item.path + "/")
@@ -71,10 +76,7 @@ export default function Sidebar({ activeNav, onNavChange }) {
             aria-current={resolvedActive === item.id ? "page" : undefined}
           >
             <span className="nav-icon" aria-hidden="true">
-              {typeof item.icon === "string"
-                ? item.icon
-                : <item.icon />
-              }
+              <item.icon />
             </span>
             {!collapsed && <span>{item.label}</span>}
           </button>
@@ -88,7 +90,9 @@ export default function Sidebar({ activeNav, onNavChange }) {
           onClick={() => setCollapsed((c) => !c)}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
-          <span className="nav-icon">{collapsed ? "▶" : "◀"}</span>
+          <span className="nav-icon" aria-hidden="true">
+            {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+          </span>
           {!collapsed && <span>Collapse Menu</span>}
         </button>
 

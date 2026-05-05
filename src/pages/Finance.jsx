@@ -1,6 +1,13 @@
 // ─── Pages/Finance.jsx ───────────────────────────────────────────────────────
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  AlertTriangle,
+  Download,
+  Plus,
+  ReceiptText,
+  RefreshCcw,
+} from "lucide-react";
 import financeService from "../utils/financeService";
 import StatCard, { SkeletonStatCard } from "../components/Finance/StatCard";
 import CashFlowChart from "../components/Finance/CashFlowChart";
@@ -13,9 +20,15 @@ import Header  from "../components/Finance/Layout/Header";
 
 const ErrorCard = ({ message, onRetry }) => (
   <div className={s.errorCard} role="alert">
+    <div className={s.errorIconBadge} aria-hidden="true">
+      <AlertTriangle className={s.errorIconSvg} />
+    </div>
     <p className={s.errorTitle}>Failed to load data</p>
     <p className={s.errorMsg}>{message}</p>
-    <button className={s.btnRetry} onClick={onRetry}>Retry</button>
+    <button className={s.btnRetry} onClick={onRetry}>
+      <RefreshCcw className={s.btnIcon} aria-hidden="true" />
+      Retry
+    </button>
   </div>
 );
 
@@ -85,6 +98,7 @@ export default function Finance() {
                 onClick={() => setShowExport(true)}
                 disabled={loading || !!error}
               >
+                <Download className={s.btnIcon} aria-hidden="true" />
                 Export Reports
               </button>
 
@@ -93,6 +107,7 @@ export default function Finance() {
                 onClick={() => navigate("/invoices")}
                 aria-label="View all invoices"
               >
+                <ReceiptText className={s.btnIcon} aria-hidden="true" />
                 All Invoices
               </button>
 
@@ -101,7 +116,8 @@ export default function Finance() {
                 onClick={() => navigate("/invoices/new")}
                 aria-label="Create new invoice"
               >
-                + New Invoice
+                <Plus className={s.btnIcon} aria-hidden="true" />
+                New Invoice
               </button>
             </div>
           </header>
@@ -140,6 +156,7 @@ export default function Finance() {
                   }}
                   aria-label="View all invoices"
                 >
+                  <ReceiptText size={15} aria-hidden="true" />
                   View All Invoices
                 </button>
               </div>

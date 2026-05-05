@@ -110,6 +110,12 @@
   box-shadow: var(--fi-shadow-hover);
 }
 
+.btnIcon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
 /* ── Stat Cards ─────────────────────────────────────────────────────────────── */
 .statGrid {
   display: flex;
@@ -138,10 +144,46 @@
   transform: translateY(-2px);
 }
 
+.statCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.statIconBadge {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.statIconBadgeNeutral {
+  background: #F8F9FA;
+  border: 1px solid var(--fi-border);
+  color: var(--fi-primary);
+}
+
+.statIconBadgeActive {
+  background: var(--fi-primary);
+  border: 1px solid var(--fi-primary);
+  color: #fff;
+}
+
+.statIconSkeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border: none;
+}
+
 .statIconSvg {
-  width: 22px;
-  height: 22px;
+  width: 19px;
+  height: 19px;
   display: block;
+  flex-shrink: 0;
 }
 
 .statLabel {
@@ -163,8 +205,20 @@
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   margin: 0;
+}
+
+.statMetrics {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.changeIcon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
 }
 
 .changeUp      { color: var(--fi-success); }
@@ -334,12 +388,6 @@
   flex-shrink: 0;
 }
 
-.btnIcon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
 .searchInput {
   border: none;
   outline: none;
@@ -504,6 +552,23 @@
 .errorTitle { font-size: 16px; font-weight: 700; margin: 0; }
 .errorMsg   { font-size: 13px; margin: 0; opacity: .8; }
 
+.errorIconBadge {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border: 1px solid #ffb3b3;
+  color: var(--fi-danger);
+}
+
+.errorIconSvg {
+  width: 20px;
+  height: 20px;
+}
+
 .btnRetry {
   margin-top: 8px;
   padding: 9px 20px;
@@ -516,6 +581,9 @@
   cursor: pointer;
   transition: background .15s;
   font-family: var(--fi-font);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .btnRetry:hover { background: var(--fi-danger-light); }

@@ -1,8 +1,8 @@
 // ─── components/Finance/InvoicesTable.jsx ────────────────────────────────────
 import { memo } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
-// ✅ صح
-import useInvoicesFilter, { INVOICE_STATUSES, PAGE_SIZE } from "../../hooks/useInvoicesFilter";import { formatCurrency } from "../../utils/formatters";
+import useInvoicesFilter, { INVOICE_STATUSES, PAGE_SIZE } from "../../hooks/useInvoicesFilter";
+import { formatCurrency } from "../../utils/formatters";
 import s from "./Finance.module.css";
 
 // ── Status Badge ──────────────────────────────────────────────────────────────

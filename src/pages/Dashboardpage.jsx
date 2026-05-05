@@ -6,6 +6,29 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from "recharts";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowRight,
+  ArrowUpRight,
+  Banknote,
+  Boxes,
+  CalendarDays,
+  CheckCircle2,
+  CircleDollarSign,
+  ClipboardList,
+  Download,
+  Handshake,
+  Headphones,
+  Plus,
+  ReceiptText,
+  Settings,
+  ShoppingCart,
+  Sparkles,
+  TrendingUp,
+  Users,
+} from "lucide-react";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 
@@ -101,6 +124,27 @@ const PRIORITY_META = {
   High:   { bg: "#FFEBE8", color: "#C92A2A", label: "High"   },
   Medium: { bg: "#FFF9DB", color: "#F59F00", label: "Medium" },
   Low:    { bg: "#EBFBEE", color: "#2F9E44", label: "Low"    },
+};
+
+const STAT_ICONS = {
+  revenue: CircleDollarSign,
+  expenses: Banknote,
+  profit: TrendingUp,
+  orders: ShoppingCart,
+  employees: Users,
+};
+
+const CHANGE_ICONS = {
+  up: ArrowUpRight,
+  down: ArrowDownRight,
+  neutral: ArrowRight,
+};
+
+const OPERATION_ICONS = {
+  op1: CheckCircle2,
+  op2: Handshake,
+  op3: AlertTriangle,
+  op4: CalendarDays,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,10 +244,13 @@ const StatCard = memo(({ stat, loading, delay = 0 }) => {
                       stat?.changeType === "down"  ? T.danger  : T.textMuted;
   const changeBg    = stat?.changeType === "up"   ? T.successLight :
                       stat?.changeType === "down"  ? T.dangerLight  : T.borderSoft;
+  const Icon = stat ? (STAT_ICONS[stat.id] || Activity) : Activity;
+  const ChangeIcon = stat ? (CHANGE_ICONS[stat.changeType] || CHANGE_ICONS.neutral) : CHANGE_ICONS.neutral;
+  const isFeatured = stat?.id === "revenue";
 
   if (loading) return (
     <div style={{ ...cardStyle, ...anim.style }}>
-      <Skeleton w={36} h={36} style={{ borderRadius: 8, marginBottom: 10 }} />
+      <Skeleton w={42} h={42} style={{ borderRadius: "50%", marginBottom: 10 }} />
       <Skeleton w="60%" h={12} style={{ marginBottom: 6 }} />
       <Skeleton w="80%" h={22} style={{ marginBottom: 6 }} />
       <Skeleton w="40%" h={12} />
@@ -212,18 +259,39 @@ const StatCard = memo(({ stat, loading, delay = 0 }) => {
 
   return (
     <article ref={anim.ref} style={{ ...cardStyle, ...anim.style }} aria-label={stat.label}>
-      <p style={{ fontSize: 12, color: T.textMuted, margin: "0 0 4px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.4px" }}>
-        {stat.label}
-      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+        <div
+          style={{
+            width: 42,
+            height: 42,
+            borderRadius: "50%",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+            background: isFeatured ? T.primary : "#F8F9FA",
+            border: `1px solid ${isFeatured ? T.primary : T.border}`,
+            color: isFeatured ? "#fff" : T.primary,
+          }}
+          aria-hidden="true"
+        >
+          <Icon size={19} strokeWidth={2.2} />
+        </div>
+        <p style={{ fontSize: 12, color: T.textMuted, margin: 0, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.4px" }}>
+          {stat.label}
+        </p>
+      </div>
       <p style={{ fontSize: 22, fontWeight: 800, color: T.text, margin: "0 0 6px", letterSpacing: "-0.5px", lineHeight: 1 }}>
         <AnimatedCounter target={stat.raw} format={(n) => fmtValue({ ...stat, value: n })} />
       </p>
       <span style={{
-        display: "inline-flex", alignItems: "center", gap: 3,
+        display: "inline-flex", alignItems: "center", gap: 4,
         padding: "2px 8px", borderRadius: 20,
         fontSize: 11.5, fontWeight: 700,
         background: changeBg, color: changeColor,
+        width: "fit-content",
       }}>
+        <ChangeIcon size={13} aria-hidden="true" />
         {stat.change}
       </span>
     </article>
@@ -347,6 +415,14 @@ const AIInsightsPanel = memo(() => {
   return (
     <div ref={anim.ref} style={{ ...cardStyle, width: 240, flexShrink: 0, ...anim.style }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <div style={{
+          width: 34, height: 34, borderRadius: "50%",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          background: "#F8F9FA", border: `1px solid ${T.border}`, color: T.primary,
+          flexShrink: 0,
+        }} aria-hidden="true">
+          <Sparkles size={16} strokeWidth={2.2} />
+        </div>
         <p style={{ fontSize: 13, fontWeight: 700, color: T.text, margin: 0, flex: 1 }}>AI Business Insights</p>
         <span style={{
           display: "flex", alignItems: "center", gap: 4,
@@ -462,7 +538,11 @@ const RecentOperations = memo(({ ops, loading }) => {
         <button style={{
           background: "none", border: "none", fontSize: 12, fontWeight: 600,
           color: T.primary, cursor: "pointer", padding: "4px 8px",
-        }}>View Log</button>
+          display: "inline-flex", alignItems: "center", gap: 5,
+        }}>
+          <ClipboardList size={14} aria-hidden="true" />
+          View Log
+        </button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -476,12 +556,21 @@ const RecentOperations = memo(({ ops, loading }) => {
               </div>
             </div>
           ))
-        ) : ops.map(op => (
+        ) : ops.map(op => {
+          const OperationIcon = OPERATION_ICONS[op.id] || Activity;
+          return (
           <div key={op.id} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
             <div style={{
-              width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+              width: 32, height: 32, borderRadius: "50%", flexShrink: 0,
               background: `${op.color}18`,
-            }} />
+              color: op.color,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: `1px solid ${op.color}22`,
+            }} aria-hidden="true">
+              <OperationIcon size={15} strokeWidth={2.2} />
+            </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <p style={{ fontSize: 12.5, color: T.text, margin: 0, lineHeight: 1.5 }}>
                 {!op.isSystem && <strong>{op.user} </strong>}
@@ -493,7 +582,7 @@ const RecentOperations = memo(({ ops, loading }) => {
               </p>
             </div>
           </div>
-        ))}
+        )})}
       </div>
     </div>
   );
@@ -519,9 +608,11 @@ const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
         <button style={{
           width: 28, height: 28, borderRadius: 7,
           border: `1px solid ${T.border}`, background: T.surface,
-          fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
           color: T.textMuted,
-        }}>+</button>
+        }} aria-label="Add executive task">
+          <Plus size={15} aria-hidden="true" />
+        </button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -591,12 +682,12 @@ ExecutiveTasks.displayName = "ExecutiveTasks";
 // ENTERPRISE SHORTCUTS
 // ─────────────────────────────────────────────────────────────────────────────
 const SHORTCUTS = [
-  { id: "invoice",   label: "Create Invoice",  path: "/invoices/new" },
-  { id: "employee",  label: "Employee Portal", path: "/hr"           },
-  { id: "leads",     label: "Leads Kanban",    path: "/sales"        },
-  { id: "inventory", label: "Inventory Audit", path: "/inventory"    },
-  { id: "support",   label: "Support Tickets", path: "/support"      },
-  { id: "settings",  label: "System Settings", path: "/settings"     },
+  { id: "invoice",   label: "Create Invoice",  path: "/invoices/new", icon: ReceiptText },
+  { id: "employee",  label: "Employee Portal", path: "/hr",           icon: Users },
+  { id: "leads",     label: "Leads Kanban",    path: "/sales",        icon: Handshake },
+  { id: "inventory", label: "Inventory Audit", path: "/inventory",    icon: Boxes },
+  { id: "support",   label: "Support Tickets", path: "/support",      icon: Headphones },
+  { id: "settings",  label: "System Settings", path: "/settings",     icon: Settings },
 ];
 
 const EnterpriseShortcuts = memo(({ navigate }) => {
@@ -610,7 +701,9 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
         Enterprise Shortcuts
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
-        {SHORTCUTS.map(sc => (
+        {SHORTCUTS.map(sc => {
+          const ShortcutIcon = sc.icon;
+          return (
           <button
             key={sc.id}
             onClick={() => navigate(sc.path)}
@@ -635,11 +728,15 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
             aria-label={sc.label}
           >
             <div style={{
-              width: 40, height: 40, borderRadius: 10, background: T.borderSoft,
-            }} />
+              width: 40, height: 40, borderRadius: "50%", background: "#F8F9FA",
+              border: `1px solid ${T.border}`, color: T.primary,
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+            }} aria-hidden="true">
+              <ShortcutIcon size={18} strokeWidth={2.2} />
+            </div>
             <span style={{ textAlign: "center", lineHeight: 1.3 }}>{sc.label}</span>
           </button>
-        ))}
+        )})}
       </div>
     </div>
   );
@@ -789,12 +886,20 @@ export default function DashboardPage() {
                   padding: "0 12px", height: 34, border: `1px solid ${T.border}`,
                   borderRadius: 8, background: T.surface, cursor: "pointer",
                   fontSize: 12, fontWeight: 600, color: T.textMuted,
-                }}>Settings</button>
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                }}>
+                  <Settings size={15} aria-hidden="true" />
+                  Settings
+                </button>
                 <button style={{
                   padding: "0 12px", height: 34, border: `1px solid ${T.border}`,
                   borderRadius: 8, background: T.surface, cursor: "pointer",
                   fontSize: 12, fontWeight: 600, color: T.textMuted,
-                }}>Export</button>
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                }}>
+                  <Download size={15} aria-hidden="true" />
+                  Export
+                </button>
               </div>
             </div>
 

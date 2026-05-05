@@ -1,6 +1,9 @@
 // ─── components/Finance/StatCard.jsx ─────────────────────────────────────────
 import { memo } from "react";
 import {
+  ArrowDownRight,
+  ArrowRight,
+  ArrowUpRight,
   WalletCards,
   TrendingUp,
   ReceiptText,
@@ -13,9 +16,9 @@ import {
 import s from "./Finance.module.css";
 
 const CHANGE_META = {
-  up: { cls: s.changeUp, icon: "↗" },
-  down: { cls: s.changeDown, icon: "↙" },
-  neutral: { cls: s.changeNeutral, icon: "↘" },
+  up: { cls: s.changeUp, Icon: ArrowUpRight },
+  down: { cls: s.changeDown, Icon: ArrowDownRight },
+  neutral: { cls: s.changeNeutral, Icon: ArrowRight },
 };
 
 const ICONS = {
@@ -36,7 +39,7 @@ const getIconComponent = (id) => {
 };
 
 const isFeaturedCard = (id) => {
-  return id === "profit" || id === "netProfit";
+  return id === "revenue" || id === "totalRevenue";
 };
 
 export const SkeletonStatCard = () => (
@@ -54,7 +57,7 @@ export const SkeletonStatCard = () => (
 );
 
 const StatCard = memo(({ id, label, value, change, changeType = "neutral" }) => {
-  const { cls, icon: arrow } = CHANGE_META[changeType] ?? CHANGE_META.neutral;
+  const { cls, Icon: ChangeIcon } = CHANGE_META[changeType] ?? CHANGE_META.neutral;
   const featured = isFeaturedCard(id);
   const Icon = getIconComponent(id);
 
@@ -77,7 +80,7 @@ const StatCard = memo(({ id, label, value, change, changeType = "neutral" }) => 
         <p className={s.statValue}>{value}</p>
 
         <p className={`${s.statChange} ${cls}`}>
-          <span aria-hidden="true">{arrow}</span> {change}
+          <ChangeIcon className={s.changeIcon} aria-hidden="true" /> {change}
         </p>
       </div>
     </article>
