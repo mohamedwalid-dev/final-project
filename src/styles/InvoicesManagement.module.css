@@ -66,6 +66,12 @@
   white-space: nowrap;
 }
 
+.btnIcon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
 .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -146,7 +152,12 @@
   flex-shrink: 0;
 }
 
-.statIcon { font-size: 20px; }
+.statIcon {
+  width: 20px;
+  height: 20px;
+  color: #3B5BDB;
+  flex-shrink: 0;
+}
 
 .statInfo { flex: 1; min-width: 0; }
 
@@ -232,7 +243,9 @@
   left: 11px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 13px;
+  width: 14px;
+  height: 14px;
+  color: #ADB5BD;
   pointer-events: none;
 }
 
@@ -304,7 +317,12 @@
   padding: 5px 12px;
 }
 
-.dateIcon { font-size: 13px; }
+.dateIcon {
+  width: 14px;
+  height: 14px;
+  color: #ADB5BD;
+  flex-shrink: 0;
+}
 
 .dateInput {
   border: none;
@@ -497,7 +515,11 @@
   white-space: nowrap;
 }
 
-.badgeIcon { font-size: 11px; }
+.badgeIcon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
 
 .badgePaid    { background: #EBFBEE; color: #2F9E44; }
 .badgePending { background: #FFF3BF; color: #E67700; }
@@ -519,12 +541,16 @@
   border: none;
   background: transparent;
   color: #6C757D;
-  font-size: 14px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background 0.12s, color 0.12s;
+}
+
+.iconBtn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .iconBtn:hover {
@@ -567,6 +593,12 @@
   cursor: pointer;
   text-align: left;
   transition: background 0.12s;
+}
+
+.dropdownItem svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 .dropdownItem:hover {
@@ -650,7 +682,12 @@
   padding: 56px 20px;
 }
 
-.emptyIcon { font-size: 40px; margin-bottom: 12px; }
+.emptyIcon {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 12px;
+  color: #3B5BDB;
+}
 
 .emptyTitle {
   font-size: 16px;
@@ -677,7 +714,12 @@
   margin-bottom: 24px;
 }
 
-.errorIcon { font-size: 20px; color: #FA5252; }
+.errorIcon {
+  width: 20px;
+  height: 20px;
+  color: #FA5252;
+  flex-shrink: 0;
+}
 
 .errorTitle {
   font-weight: 700;
@@ -738,6 +780,15 @@
   font-weight: 700;
   color: #1A1D23;
   margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modalTitleIcon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
 .modalClose {
@@ -753,6 +804,12 @@
   align-items: center;
   justify-content: center;
   transition: background 0.12s;
+}
+
+.modalCloseIcon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .modalClose:hover { background: #E9ECEF; }
@@ -789,7 +846,11 @@
   box-shadow: 0 2px 8px rgba(59,91,219,0.12);
 }
 
-.simulateIcon { font-size: 22px; }
+.simulateIcon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
 
 .simulateLabel {
   font-weight: 700;

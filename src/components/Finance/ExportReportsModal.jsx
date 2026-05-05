@@ -10,10 +10,10 @@ import { formatCurrency, formatDate } from "../../utils/formatters";
 import s from "./ExportReportsModal.module.css";
 import {
   BarChart3,
+  ChartPie,
   CheckCircle2,
   Download,
   FolderOpen,
-  PieChart,
   ReceiptText,
   TrendingUp,
   X,
@@ -94,7 +94,7 @@ function buildExportItems(pageData) {
     },
     {
       id:       "expense_breakdown",
-      icon:     PieChart,
+      icon:     ChartPie,
       label:    "Expense Breakdown",
       desc:     "Expense split by category this month",
       filename: `synergy-expenses-${today()}`,

@@ -15,7 +15,6 @@ import s from "../components/Finance/CreateInvoice.module.css";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header from "../components/Finance/Layout/Header";
 import {
-  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   BarChart3,
@@ -24,14 +23,12 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardCheck,
-  Download,
   FileText,
   Keyboard,
   Rocket,
   Save,
   Sparkles,
   Trash2,
-  X,
 } from "lucide-react";
 
 export const INVOICE_STATUS_OPTIONS = ["Paid", "Pending", "Overdue"];
