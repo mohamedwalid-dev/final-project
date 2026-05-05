@@ -88,6 +88,21 @@
   box-shadow: 0 4px 14px rgba(59, 91, 219, 0.38);
 }
 
+.btnIcon,
+.inlineIcon {
+  flex-shrink: 0;
+}
+
+.btnIcon {
+  width: 16px;
+  height: 16px;
+}
+
+.inlineIcon {
+  width: 14px;
+  height: 14px;
+}
+
 /* ── Stat Grid ── */
 .statGrid {
   display: grid;
@@ -106,20 +121,33 @@
   flex-direction: column;
 }
 
-.statIconWrap {
+.statIconBadge {
   width: 42px;
   height: 42px;
-  border-radius: 10px;
-  background: #EEF2FF;
-  display: flex;
+  border-radius: 50%;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 10px;
-  font-size: 18px;
+  flex-shrink: 0;
 }
 
-.statIconText {
-  font-size: 18px;
+.statIconBadgeNeutral {
+  background: #F8F9FA;
+  border: 1px solid #E9ECEF;
+  color: #3B5BDB;
+}
+
+.statIconBadgeActive {
+  background: #3B5BDB;
+  border: 1px solid #3B5BDB;
+  color: #fff;
+}
+
+.statIconSvg {
+  width: 19px;
+  height: 19px;
+  flex-shrink: 0;
 }
 
 .statLabel {
@@ -194,7 +222,8 @@
   left: 11px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 13px;
+  width: 14px;
+  height: 14px;
   color: #ADB5BD;
   pointer-events: none;
 }
@@ -322,17 +351,20 @@
 .productIconWrap {
   width: 36px;
   height: 36px;
-  border-radius: 9px;
-  background: #EEF2FF;
+  border-radius: 50%;
+  background: #F8F9FA;
+  border: 1px solid #E9ECEF;
+  color: #3B5BDB;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
   flex-shrink: 0;
 }
 
-.productIcon {
-  font-size: 16px;
+.productIconSvg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 .productName {
@@ -422,7 +454,6 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
   color: #495057;
   transition: all 0.15s;
 }
@@ -433,6 +464,11 @@
   color: #3B5BDB;
 }
 
+.actionBtn svg {
+  width: 15px;
+  height: 15px;
+}
+
 /* ── Empty State ── */
 .emptyState {
   text-align: center;
@@ -440,8 +476,10 @@
 }
 
 .emptyIcon {
-  font-size: 36px;
+  width: 38px;
+  height: 38px;
   margin: 0 0 12px;
+  color: #ADB5BD;
 }
 
 .emptyTitle {
@@ -548,6 +586,13 @@
   margin: 0;
 }
 
+.sideIconSvg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  color: #3B5BDB;
+}
+
 .sideCardSub {
   font-size: 12px;
   color: #ADB5BD;
@@ -579,7 +624,6 @@
 
 /* ── Critical Alerts ── */
 .alertIcon {
-  font-size: 16px;
   color: #FA5252;
 }
 
@@ -625,8 +669,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
   flex-shrink: 0;
+}
+
+.alertDotIcon {
+  width: 14px;
+  height: 14px;
 }
 
 .alertInfo {
@@ -708,12 +756,16 @@
 .warehouseIconSmall {
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
   flex-shrink: 0;
+}
+
+.warehouseIconSvg {
+  width: 15px;
+  height: 15px;
 }
 
 .warehouseName {
@@ -833,13 +885,16 @@
 .feedDot {
   width: 28px;
   height: 28px;
-  border-radius: 7px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
-  font-weight: 700;
   flex-shrink: 0;
+}
+
+.feedIconSvg {
+  width: 15px;
+  height: 15px;
 }
 
 .feedInfo {
@@ -921,13 +976,18 @@
 .modalTitleIcon {
   width: 40px;
   height: 40px;
-  border-radius: 10px;
-  background: #EEF2FF;
+  border-radius: 50%;
+  background: #3B5BDB;
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
   flex-shrink: 0;
+}
+
+.modalTitleIconSvg {
+  width: 18px;
+  height: 18px;
 }
 
 .modalTitle {
@@ -950,13 +1010,17 @@
   border: 1px solid #E9ECEF;
   background: #fff;
   cursor: pointer;
-  font-size: 13px;
   color: #868E96;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   transition: all 0.15s;
+}
+
+.modalClose svg {
+  width: 15px;
+  height: 15px;
 }
 
 .modalClose:hover {
@@ -989,6 +1053,9 @@
 }
 
 .formatBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 5px 14px;
   border: none;
   border-radius: 6px;
@@ -1045,8 +1112,21 @@
 }
 
 .exportCardIcon {
-  font-size: 20px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #F8F9FA;
+  border: 1px solid #E9ECEF;
+  color: #3B5BDB;
   flex-shrink: 0;
+}
+
+.exportCardIconSvg {
+  width: 18px;
+  height: 18px;
 }
 
 .exportCardLabel {
@@ -1204,6 +1284,9 @@
 }
 
 .modalFooterNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: #ADB5BD;
   margin: 0;

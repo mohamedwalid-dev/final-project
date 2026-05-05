@@ -11,11 +11,12 @@ import AISalaryModal     from "./AISalaryModal";
 import AIIncentivesModal from "./AIIncentivesModal";
 import AIAbsenceModal    from "./AIAbsenceModal";
 import p from "./SmartHRPanel.module.css";
+import { Banknote, CalendarX, Globe2, Trophy } from "lucide-react";
 
 const CARDS = [
   {
     key:    "leave",
-    emoji:  "🌿",
+    icon:   CalendarX,
     title:  "HR - Smart Leaves",
     desc:   "Optimize time-off approvals with predictive scheduling.",
     btn:    "Request AI Leave Review",
@@ -26,7 +27,7 @@ const CARDS = [
   },
   {
     key:    "salary",
-    emoji:  "💰",
+    icon:   Banknote,
     title:  "HR - Salary Reviews",
     desc:   "Market-indexed, performance-based compensation analysis.",
     btn:    "Request AI Salary Analysis",
@@ -37,7 +38,7 @@ const CARDS = [
   },
   {
     key:    "incentive",
-    emoji:  "🏆",
+    icon:   Trophy,
     title:  "HR - Incentive Designer",
     desc:   "Create data-driven, motivating reward programs.",
     btn:    "Design Incentive Plan",
@@ -48,7 +49,7 @@ const CARDS = [
   },
   {
     key:    "absence",
-    emoji:  "🌍",
+    icon:   Globe2,
     title:  "HR - Absence Intelligence",
     desc:   "Identify and proactively manage chronic absenteeism.",
     btn:    "Analyze Absence Trends",
@@ -73,32 +74,35 @@ export default function SmartHRPanel({ employees = [] }) {
 
         {/* Cards */}
         <div className={p.cards}>
-          {CARDS.map((card) => (
-            <div key={card.key} className={p.card}
-              style={{ background: card.grad }}>
-              {/* Pattern overlay */}
-              <div className={p.cardPattern} style={{ background: card.pattern }} />
+          {CARDS.map((card) => {
+            const Icon = card.icon;
+            return (
+              <div key={card.key} className={p.card}
+                style={{ background: card.grad }}>
+                {/* Pattern overlay */}
+                <div className={p.cardPattern} style={{ background: card.pattern }} />
 
-              <div className={p.cardContent}>
-                <div className={p.cardTop}>
-                  <div className={p.cardIcon} style={{ background: `${card.accent}22`, border: `1px solid ${card.accent}44` }}>
-                    <span>{card.emoji}</span>
+                <div className={p.cardContent}>
+                  <div className={p.cardTop}>
+                    <div className={p.cardIcon} style={{ background: `${card.accent}22`, border: `1px solid ${card.accent}44` }}>
+                      <Icon className={p.cardIconSvg} aria-hidden="true" />
+                    </div>
+                    <div className={p.cardText}>
+                      <p className={p.cardTitle}>{card.title}</p>
+                      <p className={p.cardDesc}>{card.desc}</p>
+                    </div>
                   </div>
-                  <div className={p.cardText}>
-                    <p className={p.cardTitle}>{card.title}</p>
-                    <p className={p.cardDesc}>{card.desc}</p>
-                  </div>
+                  <button
+                    className={p.cardBtn}
+                    style={{ "--accent": card.accent }}
+                    onClick={() => setOpenModal(card.key)}
+                  >
+                    {card.btn}
+                  </button>
                 </div>
-                <button
-                  className={p.cardBtn}
-                  style={{ "--accent": card.accent }}
-                  onClick={() => setOpenModal(card.key)}
-                >
-                  {card.btn}
-                </button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

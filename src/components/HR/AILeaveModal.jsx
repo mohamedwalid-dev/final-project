@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import s from "./AIModals.module.css";
 import smartHRService from "../../utils/smartHRService";
+import { AlertTriangle, Bot, CalendarX, CheckCircle2, Search, X } from "lucide-react";
 
 const LEAVE_TYPES = ["annual", "sick", "emergency", "unpaid"];
 const WORKLOAD_OPTIONS = ["low", "medium", "high"];
@@ -117,7 +118,9 @@ export default function AILeaveModal({ isOpen, onClose, employees = [] }) {
         {/* Header */}
         <div className={s.modalHeader}>
           <div className={s.modalHeaderLeft}>
-            <div className={s.modalHeaderIcon}>🌿</div>
+            <div className={s.modalHeaderIcon}>
+              <CalendarX className={s.modalIconSvg} aria-hidden="true" />
+            </div>
             <div>
               <h2 className={s.modalTitle}>Request New AI Leave</h2>
               <p className={s.modalSub}>Smart Leaves — Predictive Scheduling</p>
@@ -128,7 +131,9 @@ export default function AILeaveModal({ isOpen, onClose, employees = [] }) {
               <div className={s.userAvatar}>AS</div>
               <span className={s.userName}>Alex Sterling</span>
             </div>
-            <button className={s.closeBtn} onClick={onClose}>✕</button>
+            <button className={s.closeBtn} onClick={onClose} aria-label="Close">
+              <X className={s.inlineIcon} aria-hidden="true" />
+            </button>
           </div>
         </div>
 
@@ -232,13 +237,13 @@ export default function AILeaveModal({ isOpen, onClose, employees = [] }) {
           </div>
 
           {/* Error */}
-          {error && <div className={s.errorBox}>⚠ {error}</div>}
+          {error && <div className={s.errorBox}><AlertTriangle className={s.inlineIcon} aria-hidden="true" /> {error}</div>}
 
           {/* AI Result */}
           {aiResult && (
             <div className={s.aiResultPanel}>
               <p className={s.aiResultTitle}>
-                <span>🤖</span>
+                <Bot className={s.inlineIcon} aria-hidden="true" />
                 AI {submitted ? "Leave Policy Decision" : "Absence Policy Recommendation (Draft)"}
               </p>
               <div className={s.aiResultGrid}>
@@ -263,7 +268,9 @@ export default function AILeaveModal({ isOpen, onClose, employees = [] }) {
                 <div className={s.aiResultItem}>
                   <p className={s.aiResultItemLabel}>reason</p>
                   <p className={s.aiResultItemValue} style={{ fontSize: 12 }}>
-                    {aiResult.message?.replace("✅ Decision ready: ", "") || "AI analysis complete"}
+                    {aiResult.message
+                      ?.replace(/^\p{Emoji_Presentation}\s*/u, "")
+                      .replace(/^Decision ready:\s*/, "") || "AI analysis complete"}
                   </p>
                 </div>
                 <div className={s.aiResultItem}>
@@ -285,11 +292,11 @@ export default function AILeaveModal({ isOpen, onClose, employees = [] }) {
         <div className={s.modalFooter}>
           <button className={s.btnGhost} onClick={onClose}>Cancel</button>
           <button className={s.btnSecondary} onClick={handlePreview} disabled={loading || submitting}>
-            {loading ? <><span className={`${s.spinner} ${s.spinnerDark}`} /> Analyzing...</> : "🔍 Preview AI Decision"}
+            {loading ? <><span className={`${s.spinner} ${s.spinnerDark}`} /> Analyzing...</> : <><Search className={s.inlineIcon} aria-hidden="true" /> Preview AI Decision</>}
           </button>
           <button className={s.btnPrimary} onClick={handleSubmit} disabled={submitting || submitted}>
             {submitting ? <><span className={s.spinner} /> Submitting...</>
-              : submitted ? "✓ Submitted" : "Submit Request"}
+              : submitted ? <><CheckCircle2 className={s.inlineIcon} aria-hidden="true" /> Submitted</> : "Submit Request"}
           </button>
         </div>
       </div>

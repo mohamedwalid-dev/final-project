@@ -1,11 +1,11 @@
-// ─── Pages/SalesPage.jsx ─────────────────────────────────────────────────────
-// ✅ Pure JS — no TypeScript
-// ✅ 4 tabs: Lead Pipeline (Kanban) · Sales Analytics · Product Catalog · Customers & Orders
-// ✅ Drag-to-reorder columns, inline card edit, priority badges
-// ✅ Full Sales Analytics with Recharts
-// ✅ Product Catalog with search/filter/add
-// ✅ Customers & Orders table
-// ✅ Same Sidebar + Header structure as all other pages
+// Pages/SalesPage.jsx
+// Pure JS - no TypeScript
+// 4 tabs: Lead Pipeline (Kanban), Sales Analytics, Product Catalog, Customers & Orders
+// Drag-to-reorder columns, inline card edit, priority badges
+// Full Sales Analytics with Recharts
+// Product Catalog with search/filter/add
+// Customers & Orders table
+// Same Sidebar + Header structure as all other pages
 
 import { useState, useRef, useCallback, useMemo, useEffect, memo } from "react";
 import { useNavigate } from "react-router-dom";
@@ -16,6 +16,33 @@ import {
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header from "../components/Finance/Layout/Header";
 import s from "../styles/SalesPage.module.css";
+import {
+  ChartNoAxesCombined,
+  CheckCircle2,
+  CircleDollarSign,
+  ClipboardList,
+  Clock3,
+  Cloud,
+  Crown,
+  Download,
+  Eye,
+  HardDrive,
+  Laptop,
+  Mail,
+  MoreHorizontal,
+  Package,
+  Pencil,
+  Plus,
+  RefreshCcw,
+  Search,
+  ShoppingCart,
+  SlidersHorizontal,
+  Target,
+  Trash2,
+  UserRoundPlus,
+  Users,
+  Wrench,
+} from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── MOCK DATA
@@ -117,11 +144,13 @@ const fmtFull = (n) =>
 // ─────────────────────────────────────────────────────────────────────────────
 // ── SHARED: Stat Card
 // ─────────────────────────────────────────────────────────────────────────────
-function SalesStatCard({ icon, label, value, change, changeType }) {
+function SalesStatCard({ icon: Icon, label, value, change, changeType, featured = false }) {
   const changeClass = changeType === "up" ? s.chUp : changeType === "down" ? s.chDown : s.chNeutral;
   return (
     <div className={s.salesStatCard}>
-      <div className={s.salesStatIcon}>{icon}</div>
+      <div className={`${s.salesStatIconBadge} ${featured ? s.salesStatIconBadgeActive : s.salesStatIconBadgeNeutral}`} aria-hidden="true">
+        <Icon className={s.salesStatIcon} strokeWidth={2.2} />
+      </div>
       <div>
         <p className={s.salesStatLabel}>{label}</p>
         <p className={s.salesStatValue}>{value}</p>
@@ -173,7 +202,7 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
             onClick={() => setShowMenu((o) => !o)}
             aria-label="More options"
           >
-            ···
+            <MoreHorizontal aria-hidden="true" />
           </button>
           {showMenu && (
             <div className={s.leadDropdown}>
@@ -187,7 +216,10 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
                 </button>
               ))}
               <hr className={s.leadDropDivider} />
-              <button className={`${s.leadDropItem} ${s.leadDropDanger}`}>Delete Lead</button>
+              <button className={`${s.leadDropItem} ${s.leadDropDanger}`}>
+                <Trash2 aria-hidden="true" />
+                Delete Lead
+              </button>
             </div>
           )}
         </div>
@@ -204,7 +236,10 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
 
       {/* Footer */}
       <div className={s.leadFooter}>
-        <span className={s.leadDays}>⏱ {lead.days} day{lead.days !== 1 ? "s" : ""}</span>
+        <span className={s.leadDays}>
+          <Clock3 className={s.inlineIcon} aria-hidden="true" />
+          {lead.days} day{lead.days !== 1 ? "s" : ""}
+        </span>
         <div
           className={s.leadAssignee}
           style={{ background: lead.assigneeColor }}
@@ -267,10 +302,10 @@ function PipelineTab() {
     <div>
       {/* Top Stats */}
       <div className={s.pipelineStats}>
-        <SalesStatCard icon="💰" label="Pipeline Value"  value={fmtFull(totalPipeline)} change="+14.2%" changeType="up" />
-        <SalesStatCard icon="✅" label="Closed Won"      value={fmtFull(totalWon)}      change="+8.6%"  changeType="up" />
-        <SalesStatCard icon="📋" label="Active Leads"    value={leads.length}            change="+3"     changeType="up" />
-        <SalesStatCard icon="🎯" label="Win Rate"        value="68%"                     change="+2.1%"  changeType="up" />
+        <SalesStatCard icon={CircleDollarSign} label="Pipeline Value"  value={fmtFull(totalPipeline)} change="+14.2%" changeType="up" featured />
+        <SalesStatCard icon={CheckCircle2} label="Closed Won"      value={fmtFull(totalWon)}      change="+8.6%"  changeType="up" />
+        <SalesStatCard icon={ClipboardList} label="Active Leads"    value={leads.length}            change="+3"     changeType="up" />
+        <SalesStatCard icon={Target} label="Win Rate"        value="68%"                     change="+2.1%"  changeType="up" />
       </div>
 
       {/* Header */}
@@ -413,12 +448,12 @@ function SalesAnalyticsTab() {
     <div>
       {/* KPI Row */}
       <div className={s.analyticsKpiGrid}>
-        <SalesStatCard icon="💵" label="Total Revenue (YTD)"  value="$928,000"  change="+18.4%" changeType="up"   />
-        <SalesStatCard icon="📊" label="Avg Deal Size"        value="$32,400"   change="+6.2%"  changeType="up"   />
-        <SalesStatCard icon="⏱" label="Sales Cycle (days)"   value="24d"       change="-3d"    changeType="up"   />
-        <SalesStatCard icon="🎯" label="Quota Attainment"     value="87%"       change="+5%"    changeType="up"   />
-        <SalesStatCard icon="🔄" label="Churn Rate"           value="4.2%"      change="+0.3%"  changeType="down" />
-        <SalesStatCard icon="➕" label="New MQLs"             value="142"       change="+21"    changeType="up"   />
+        <SalesStatCard icon={CircleDollarSign} label="Total Revenue (YTD)"  value="$928,000"  change="+18.4%" changeType="up" featured />
+        <SalesStatCard icon={ChartNoAxesCombined} label="Avg Deal Size"        value="$32,400"   change="+6.2%"  changeType="up"   />
+        <SalesStatCard icon={Clock3} label="Sales Cycle (days)"   value="24d"       change="-3d"    changeType="up"   />
+        <SalesStatCard icon={Target} label="Quota Attainment"     value="87%"       change="+5%"    changeType="up"   />
+        <SalesStatCard icon={RefreshCcw} label="Churn Rate"           value="4.2%"      change="+0.3%"  changeType="down" />
+        <SalesStatCard icon={UserRoundPlus} label="New MQLs"             value="142"       change="+21"    changeType="up"   />
       </div>
 
       {/* Charts Row 1 */}
@@ -562,7 +597,7 @@ function ProductCatalogTab() {
       {/* Toolbar */}
       <div className={s.catalogToolbar}>
         <div className={s.searchWrap}>
-          <span className={s.searchIcon}>🔍</span>
+          <Search className={s.searchIcon} aria-hidden="true" />
           <input
             className={s.searchInput}
             value={search}
@@ -622,11 +657,13 @@ function ProductCatalogTab() {
             Draft:      { cls: s.prodStatusDraft,  color: "#6C757D", bg: "#F1F3F5" },
             "Low Stock":{ cls: s.prodStatusLow,    color: "#E67700", bg: "#FFF3BF" },
           }[prod.status] || { color: "#6C757D", bg: "#F1F3F5" };
-          const catIcon = { Software: "💻", Hardware: "🖥", Cloud: "☁️", Services: "🔧" }[prod.category] || "📦";
+          const CategoryIcon = { Software: Laptop, Hardware: HardDrive, Cloud, Services: Wrench }[prod.category] || Package;
           return (
             <div key={prod.id} className={s.productCard}>
               <div className={s.productCardTop}>
-                <div className={s.productIcon}>{catIcon}</div>
+                <div className={s.productIcon} aria-hidden="true">
+                  <CategoryIcon className={s.productIconSvg} />
+                </div>
                 <span className={s.productStatus} style={{ background: statusMeta.bg, color: statusMeta.color }}>
                   {prod.status}
                 </span>
@@ -640,8 +677,8 @@ function ProductCatalogTab() {
               <div className={s.productFooter}>
                 <span className={s.productPrice}>{fmtFull(prod.price)}</span>
                 <div className={s.productActions}>
-                  <button className={s.prodActionBtn} aria-label="Edit">✏️</button>
-                  <button className={s.prodActionBtn} aria-label="More">···</button>
+                  <button className={s.prodActionBtn} aria-label="Edit"><Pencil aria-hidden="true" /></button>
+                  <button className={s.prodActionBtn} aria-label="More"><MoreHorizontal aria-hidden="true" /></button>
                 </div>
               </div>
             </div>
@@ -651,7 +688,7 @@ function ProductCatalogTab() {
 
       {filtered.length === 0 && (
         <div className={s.emptyState}>
-          <p className={s.emptyIcon}>📦</p>
+          <Package className={s.emptyIcon} aria-hidden="true" />
           <p className={s.emptyTitle}>No products found</p>
           <p className={s.emptySub}>Try adjusting your filters.</p>
         </div>
@@ -688,16 +725,16 @@ function CustomersTab() {
     <div>
       {/* Stats */}
       <div className={s.pipelineStats}>
-        <SalesStatCard icon="👥" label="Total Customers" value={CUSTOMERS.length}           change="+3 this month"  changeType="up" />
-        <SalesStatCard icon="⭐" label="VIP Accounts"    value={CUSTOMERS.filter(c=>c.status==="VIP").length} change="High value" changeType="up" />
-        <SalesStatCard icon="💰" label="Total Revenue"   value={fmtFull(CUSTOMERS.reduce((a,c)=>a+c.totalSpend,0))} change="+12.4%" changeType="up" />
-        <SalesStatCard icon="🛒" label="Total Orders"    value={CUSTOMERS.reduce((a,c)=>a+c.totalOrders,0)}  change="+18 this month" changeType="up" />
+        <SalesStatCard icon={Users} label="Total Customers" value={CUSTOMERS.length}           change="+3 this month"  changeType="up" featured />
+        <SalesStatCard icon={Crown} label="VIP Accounts"    value={CUSTOMERS.filter(c=>c.status==="VIP").length} change="High value" changeType="up" />
+        <SalesStatCard icon={CircleDollarSign} label="Total Revenue"   value={fmtFull(CUSTOMERS.reduce((a,c)=>a+c.totalSpend,0))} change="+12.4%" changeType="up" />
+        <SalesStatCard icon={ShoppingCart} label="Total Orders"    value={CUSTOMERS.reduce((a,c)=>a+c.totalOrders,0)}  change="+18 this month" changeType="up" />
       </div>
 
       {/* Toolbar */}
       <div className={s.catalogToolbar}>
         <div className={s.searchWrap}>
-          <span className={s.searchIcon}>🔍</span>
+          <Search className={s.searchIcon} aria-hidden="true" />
           <input
             className={s.searchInput}
             value={search}
@@ -716,7 +753,10 @@ function CustomersTab() {
             </button>
           ))}
         </div>
-        <button className={s.btnOutline}>⬇ Export</button>
+        <button className={s.btnOutline}>
+          <Download className={s.btnIcon} aria-hidden="true" />
+          Export
+        </button>
       </div>
 
       {/* Table */}
@@ -758,9 +798,9 @@ function CustomersTab() {
                   </td>
                   <td className={s.custTd} style={{ textAlign: "right" }}>
                     <div className={s.custActions}>
-                      <button className={s.custActionBtn} aria-label="View">👁</button>
-                      <button className={s.custActionBtn} aria-label="Message">✉</button>
-                      <button className={s.custActionBtn} aria-label="More">···</button>
+                      <button className={s.custActionBtn} aria-label="View"><Eye aria-hidden="true" /></button>
+                      <button className={s.custActionBtn} aria-label="Message"><Mail aria-hidden="true" /></button>
+                      <button className={s.custActionBtn} aria-label="More"><MoreHorizontal aria-hidden="true" /></button>
                     </div>
                   </td>
                 </tr>
@@ -770,7 +810,7 @@ function CustomersTab() {
         </table>
         {filtered.length === 0 && (
           <div className={s.emptyState}>
-            <p className={s.emptyIcon}>👥</p>
+            <Users className={s.emptyIcon} aria-hidden="true" />
             <p className={s.emptyTitle}>No customers found</p>
           </div>
         )}
@@ -809,8 +849,14 @@ export default function SalesPage() {
               <p className={s.pageSub}>Manage your leads, pipeline, catalog, and customer relationships.</p>
             </div>
             <div className={s.headerActions}>
-              <button className={s.btnOutline} onClick={() => setActiveTab("catalog")}>🛒 Product Catalog</button>
-              <button className={s.btnPrimary} onClick={() => setActiveTab("pipeline")}>+ New Lead</button>
+              <button className={s.btnOutline} onClick={() => setActiveTab("catalog")}>
+                <ShoppingCart className={s.btnIcon} aria-hidden="true" />
+                Product Catalog
+              </button>
+              <button className={s.btnPrimary} onClick={() => setActiveTab("pipeline")}>
+                <Plus className={s.btnIcon} aria-hidden="true" />
+                New Lead
+              </button>
             </div>
           </header>
 
@@ -828,7 +874,10 @@ export default function SalesPage() {
               </button>
             ))}
             <div className={s.tabBarRight}>
-              <button className={s.filterBtn}>⚙ Filter</button>
+              <button className={s.filterBtn}>
+                <SlidersHorizontal className={s.btnIcon} aria-hidden="true" />
+                Filter
+              </button>
             </div>
           </div>
 

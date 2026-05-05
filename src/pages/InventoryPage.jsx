@@ -1,13 +1,38 @@
-// ─── Pages/InventoryPage.jsx ──────────────────────────────────────────────────
-// ✅ Pure JS — no TypeScript
-// ✅ Export Report modal — CSV/JSON download (Products, KPIs, Alerts, Warehouses)
-// ✅ Add New Product modal — full form validation + optimistic add to table
-// ✅ Stat cards, Product table with animated stock bars
-// ✅ Critical Alerts, Warehouse Map, Live Feed sidebars
-// ✅ Shimmer skeleton loading, filter tabs, pagination
-// ✅ Same Sidebar + Header structure as all other pages
+// Pages/InventoryPage.jsx
+// Pure JS - no TypeScript
+// Export Report modal - CSV/JSON download (Products, KPIs, Alerts, Warehouses)
+// Add New Product modal - full form validation + optimistic add to table
+// Stat cards, Product table with animated stock bars
+// Critical Alerts, Warehouse Map, Live Feed sidebars
+// Shimmer skeleton loading, filter tabs, pagination
+// Same Sidebar + Header structure as all other pages
 
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowLeftRight,
+  ArrowRight,
+  ArrowUp,
+  Boxes,
+  ChartNoAxesCombined,
+  CheckCircle2,
+  CircleDollarSign,
+  Download,
+  Eye,
+  FileText,
+  FolderOpen,
+  MoreHorizontal,
+  Package,
+  PackagePlus,
+  Pencil,
+  Plus,
+  RadioTower,
+  Search,
+  SlidersHorizontal,
+  Warehouse,
+  X,
+} from "lucide-react";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 import s from "../styles/InventoryPage.module.css";
@@ -16,11 +41,18 @@ import s from "../styles/InventoryPage.module.css";
 // ── MOCK DATA
 // ─────────────────────────────────────────────────────────────────────────────
 const INITIAL_STATS = [
-  { id:"assets",   icon:"📦", label:"Total Assets",   value:"$2,845,000", change:"+12.8%", changeType:"up",   sub:"Current market value of all stocked items across all warehouses." },
-  { id:"turnover", icon:"↻",  label:"Stock Turnover", value:"4.2x",       change:"+0.8%",  changeType:"up",   sub:"Inventory turnover ratio for the current fiscal quarter." },
-  { id:"util",     icon:"▤",  label:"Utilization",    value:"78.4%",      change:"-2.1%",  changeType:"down", sub:"Average warehouse capacity utilized nationwide." },
-  { id:"lowstock", icon:"⚠",  label:"Low Stock",      value:"14 Items",   change:"+3",     changeType:"down", sub:"Products that have fallen below the critical threshold." },
+  { id:"assets",   label:"Total Assets",   value:"$2,845,000", change:"+12.8%", changeType:"up",   sub:"Current market value of all stocked items across all warehouses." },
+  { id:"turnover", label:"Stock Turnover", value:"4.2x",       change:"+0.8%",  changeType:"up",   sub:"Inventory turnover ratio for the current fiscal quarter." },
+  { id:"util",     label:"Utilization",    value:"78.4%",      change:"-2.1%",  changeType:"down", sub:"Average warehouse capacity utilized nationwide." },
+  { id:"lowstock", label:"Low Stock",      value:"14 Items",   change:"+3",     changeType:"down", sub:"Products that have fallen below the critical threshold." },
 ];
+
+const STAT_ICONS = {
+  assets: CircleDollarSign,
+  turnover: ArrowLeftRight,
+  util: Boxes,
+  lowstock: AlertTriangle,
+};
 
 const INITIAL_PRODUCTS = [
   { id:"p1", name:"Quantum Processor X1",  category:"Electronics", sku:"SYN-Q100", location:"Warehouse A-12", stockPct:85, status:"Healthy",  units:850, threshold:100 },
@@ -45,11 +77,17 @@ const WAREHOUSES = [
 ];
 
 const LIVE_FEED = [
-  { id:"f1", product:"Quantum Processor X1",  action:"Received",    qty:"+ 500 units",   location:"WH-A-12",     ago:"12m ago", icon:"↓", iconColor:"#2F9E44" },
-  { id:"f2", product:"Titanium Chassis V2",   action:"Dispatched",  qty:"- 120 units",   location:"HUB-CENTRAL", ago:"45m ago", icon:"↑", iconColor:"#FA5252" },
-  { id:"f3", product:"Optic Fiber Bundle",    action:"Transferred", qty:"→ 2000m",        location:"A-10 → B-04", ago:"2h ago",  icon:"→", iconColor:"#3B5BDB" },
-  { id:"f4", product:"Neural Interface Chip", action:"Received",    qty:"+ 10,000 units", location:"SECURE-91",   ago:"4h ago",  icon:"↓", iconColor:"#2F9E44" },
+  { id:"f1", product:"Quantum Processor X1",  action:"Received",    qty:"+ 500 units",   location:"WH-A-12",     ago:"12m ago", direction:"in",       iconColor:"#2F9E44" },
+  { id:"f2", product:"Titanium Chassis V2",   action:"Dispatched",  qty:"- 120 units",   location:"HUB-CENTRAL", ago:"45m ago", direction:"out",      iconColor:"#FA5252" },
+  { id:"f3", product:"Optic Fiber Bundle",    action:"Transferred", qty:"→ 2000m",        location:"A-10 → B-04", ago:"2h ago",  direction:"transfer", iconColor:"#3B5BDB" },
+  { id:"f4", product:"Neural Interface Chip", action:"Received",    qty:"+ 10,000 units", location:"SECURE-91",   ago:"4h ago",  direction:"in",       iconColor:"#2F9E44" },
 ];
+
+const FEED_ICONS = {
+  in: ArrowDown,
+  out: ArrowUp,
+  transfer: ArrowRight,
+};
 
 const CATEGORIES     = ["Electronics","Consumables","Hardware","Software","Components"];
 const LOCATIONS      = ["Warehouse A-12","Warehouse A-10","Warehouse B-04","Central Hub","Secure Vault"];
@@ -112,25 +150,25 @@ function ExportReportModal({ isOpen, onClose, products }) {
 
   const exportItems = useMemo(() => [
     {
-      id:"products", icon:"📦", label:"Products List",
+      id:"products", icon:Package, label:"Products List",
       desc:"All inventory items with SKU, location, stock & status",
       filename:`synergy-inventory-products-${today()}`,
       rows:() => products.map(p => ({ "Product Name":p.name, Category:p.category, SKU:p.sku, Location:p.location, "Stock %":p.stockPct+"%", Units:p.units, Threshold:p.threshold, Status:p.status })),
     },
     {
-      id:"kpis", icon:"📊", label:"Inventory KPIs",
+      id:"kpis", icon:ChartNoAxesCombined, label:"Inventory KPIs",
       desc:"Total assets, turnover ratio, utilization & low stock count",
       filename:`synergy-inventory-kpis-${today()}`,
       rows:() => INITIAL_STATS.map(s => ({ Metric:s.label, Value:s.value, Change:s.change, Trend:s.changeType })),
     },
     {
-      id:"alerts", icon:"⚠", label:"Critical Alerts",
+      id:"alerts", icon:AlertTriangle, label:"Critical Alerts",
       desc:"Products below minimum threshold requiring replenishment",
       filename:`synergy-inventory-alerts-${today()}`,
       rows:() => CRITICAL_ALERTS.map(a => ({ "Product Name":a.name, SKU:a.sku, "Units Left":a.unitsLeft, Threshold:a.threshold, Status:a.unitsLeft===0?"Out of Stock":"Critical" })),
     },
     {
-      id:"warehouses", icon:"🏭", label:"Warehouse Report",
+      id:"warehouses", icon:Warehouse, label:"Warehouse Report",
       desc:"Capacity, item count and status per warehouse",
       filename:`synergy-inventory-warehouses-${today()}`,
       rows:() => WAREHOUSES.map(w => ({ Warehouse:w.name, Tag:w.tag, "Capacity %":w.capacity+"%", "Total Items":w.items, Delta:w.delta })),
@@ -169,13 +207,17 @@ function ExportReportModal({ isOpen, onClose, products }) {
         {/* Header */}
         <div className={s.modalHeader}>
           <div className={s.modalTitleRow}>
-            <div className={s.modalTitleIcon}>⬇</div>
+            <div className={s.modalTitleIcon} aria-hidden="true">
+              <Download className={s.modalTitleIconSvg} />
+            </div>
             <div>
               <h2 className={s.modalTitle}>Export Inventory Report</h2>
               <p className={s.modalSub}>Download inventory data for external use or archiving.</p>
             </div>
           </div>
-          <button className={s.modalClose} onClick={onClose}>✕</button>
+          <button className={s.modalClose} onClick={onClose} aria-label="Close export report modal" title="Close">
+            <X aria-hidden="true" />
+          </button>
         </div>
 
         {/* Format Toggle */}
@@ -184,7 +226,7 @@ function ExportReportModal({ isOpen, onClose, products }) {
           <div className={s.formatToggle}>
             {["csv","json"].map(f => (
               <button key={f} className={`${s.formatBtn} ${format===f?s.formatBtnActive:""}`} onClick={()=>{ setFormat(f); setStatuses({}); }}>
-                {f==="csv" ? "📄 CSV" : "{ } JSON"}
+                {f==="csv" ? <><FileText className={s.inlineIcon} aria-hidden="true" />CSV</> : "{ } JSON"}
               </button>
             ))}
           </div>
@@ -194,17 +236,20 @@ function ExportReportModal({ isOpen, onClose, products }) {
         <div className={s.exportList}>
           {exportItems.map(item => {
             const st = statuses[item.id];
+            const Icon = item.icon;
             return (
               <div key={item.id} className={`${s.exportCard} ${st==="done"?s.exportCardDone:""}`}>
                 <div className={s.exportCardLeft}>
-                  <span className={s.exportCardIcon}>{item.icon}</span>
+                  <span className={s.exportCardIcon} aria-hidden="true">
+                    <Icon className={s.exportCardIconSvg} />
+                  </span>
                   <div>
                     <p className={s.exportCardLabel}>{item.label}</p>
                     <p className={s.exportCardDesc}>{item.desc}</p>
                   </div>
                 </div>
                 <button className={`${s.exportBtn} ${st==="done"?s.exportBtnDone:""}`} onClick={()=>handleExport(item)} disabled={st==="loading"}>
-                  {st==="loading" ? <span className={s.exportSpinner}/> : st==="done" ? "✓ Downloaded" : `⬇ ${format.toUpperCase()}`}
+                  {st==="loading" ? <span className={s.exportSpinner}/> : st==="done" ? <><CheckCircle2 className={s.inlineIcon} aria-hidden="true" />Downloaded</> : <><Download className={s.inlineIcon} aria-hidden="true" />{format.toUpperCase()}</>}
                 </button>
               </div>
             );
@@ -213,11 +258,14 @@ function ExportReportModal({ isOpen, onClose, products }) {
 
         {/* Footer */}
         <div className={s.modalFooter}>
-          <p className={s.modalFooterNote}>📁 Files saved to your default Downloads folder.</p>
+          <p className={s.modalFooterNote}>
+            <FolderOpen className={s.inlineIcon} aria-hidden="true" />
+            Files saved to your default Downloads folder.
+          </p>
           <div className={s.modalFooterActions}>
             <button className={s.btnGhost} onClick={onClose}>Cancel</button>
             <button className={`${s.btn} ${s.btnPrimary} ${allDone?s.btnSuccess:""}`} onClick={handleExportAll} disabled={allDone}>
-              {allDone ? "✓ All Downloaded" : `⬇ Export All as ${format.toUpperCase()}`}
+              {allDone ? <><CheckCircle2 className={s.btnIcon} aria-hidden="true" />All Downloaded</> : <><Download className={s.btnIcon} aria-hidden="true" />Export All as {format.toUpperCase()}</>}
             </button>
           </div>
         </div>
@@ -289,13 +337,17 @@ function AddProductModal({ isOpen, onClose, onAdd }) {
         {/* Header */}
         <div className={s.modalHeader}>
           <div className={s.modalTitleRow}>
-            <div className={s.modalTitleIcon}>📦</div>
+            <div className={s.modalTitleIcon} aria-hidden="true">
+              <PackagePlus className={s.modalTitleIconSvg} />
+            </div>
             <div>
               <h2 className={s.modalTitle}>Add New Product</h2>
               <p className={s.modalSub}>Fill in the details to add a product to inventory.</p>
             </div>
           </div>
-          <button className={s.modalClose} onClick={onClose}>✕</button>
+          <button className={s.modalClose} onClick={onClose} aria-label="Close add product modal" title="Close">
+            <X aria-hidden="true" />
+          </button>
         </div>
 
         {/* Body */}
@@ -355,11 +407,14 @@ function AddProductModal({ isOpen, onClose, onAdd }) {
 
         {/* Footer */}
         <div className={s.modalFooter}>
-          <p className={s.modalFooterNote}>📋 Product will appear in the inventory table immediately.</p>
+          <p className={s.modalFooterNote}>
+            <FileText className={s.inlineIcon} aria-hidden="true" />
+            Product will appear in the inventory table immediately.
+          </p>
           <div className={s.modalFooterActions}>
             <button className={s.btnGhost} onClick={onClose}>Cancel</button>
             <button className={`${s.btn} ${s.btnPrimary}`} onClick={handleSubmit} disabled={loading}>
-              {loading ? <><span className={s.exportSpinner}/> Adding...</> : "✓ Add Product"}
+              {loading ? <><span className={s.exportSpinner}/> Adding...</> : <><CheckCircle2 className={s.btnIcon} aria-hidden="true" />Add Product</>}
             </button>
           </div>
         </div>
@@ -375,6 +430,7 @@ const StatCard = memo(({ stat, loading, delay=0 }) => {
   const anim = useAnimateIn(delay);
   const changeColor = stat?.changeType==="up" ? "#2F9E44" : "#C92A2A";
   const changeBg    = stat?.changeType==="up" ? "#EBFBEE" : "#FFF5F5";
+  const Icon = stat ? (STAT_ICONS[stat.id] || Package) : Package;
   if (loading) return (
     <div className={s.statCard} style={anim.style}>
       <Skeleton w={40} h={40} style={{ borderRadius:10, marginBottom:10 }} />
@@ -385,7 +441,9 @@ const StatCard = memo(({ stat, loading, delay=0 }) => {
   );
   return (
     <div ref={anim.ref} className={s.statCard} style={anim.style}>
-      <div className={s.statIconWrap}><span>{stat.icon}</span></div>
+      <div className={`${s.statIconBadge} ${stat.id==="assets"?s.statIconBadgeActive:s.statIconBadgeNeutral}`} aria-hidden="true">
+        <Icon className={s.statIconSvg} strokeWidth={2.2} />
+      </div>
       <p className={s.statLabel}>{stat.label}</p>
       <p className={s.statValue}>{stat.value}</p>
       <span className={s.changeBadge} style={{ background:changeBg, color:changeColor }}>
@@ -409,7 +467,9 @@ function ProductRow({ product, delay=0 }) {
     <tr ref={anim.ref} className={s.tableRow} style={anim.style}>
       <td className={s.td}>
         <div className={s.productCell}>
-          <div className={s.productIconWrap}>📦</div>
+          <div className={s.productIconWrap} aria-hidden="true">
+            <Package className={s.productIconSvg} />
+          </div>
           <div><p className={s.productName}>{product.name}</p><p className={s.productCategory}>{product.category}</p></div>
         </div>
       </td>
@@ -426,9 +486,15 @@ function ProductRow({ product, delay=0 }) {
       </td>
       <td className={s.td}>
         <div className={s.rowActions}>
-          <button className={s.actionBtn}>👁</button>
-          <button className={s.actionBtn}>✏️</button>
-          <button className={s.actionBtn}>···</button>
+          <button className={s.actionBtn} aria-label={`View ${product.name}`} title="View">
+            <Eye aria-hidden="true" />
+          </button>
+          <button className={s.actionBtn} aria-label={`Edit ${product.name}`} title="Edit">
+            <Pencil aria-hidden="true" />
+          </button>
+          <button className={s.actionBtn} aria-label={`More actions for ${product.name}`} title="More actions">
+            <MoreHorizontal aria-hidden="true" />
+          </button>
         </div>
       </td>
     </tr>
@@ -445,14 +511,19 @@ const CriticalAlertsPanel = memo(({ loading }) => {
   return (
     <div ref={anim.ref} className={s.sideCard} style={anim.style}>
       <div className={s.sideCardHeader}>
-        <div className={s.sideCardTitleRow}><span className={s.alertIcon}>⚠</span><h3 className={s.sideCardTitle}>Critical Alerts</h3></div>
+        <div className={s.sideCardTitleRow}>
+          <AlertTriangle className={`${s.sideIconSvg} ${s.alertIcon}`} aria-hidden="true" />
+          <h3 className={s.sideCardTitle}>Critical Alerts</h3>
+        </div>
         <span className={s.liveBadge}><span style={{ width:6,height:6,borderRadius:"50%",background:"#FA5252",opacity:pulse?1:0.3,transition:"opacity 0.4s",display:"inline-block",marginRight:5 }}/>LIVE</span>
       </div>
       <p className={s.sideCardSub}>Immediate action required for 14 items.</p>
       {loading ? <div style={{ display:"flex",flexDirection:"column",gap:10,marginTop:12 }}>{[1,2,3].map(i=><div key={i} style={{ display:"flex",gap:10 }}><Skeleton w={32} h={32} style={{ borderRadius:8,flexShrink:0 }}/><div style={{ flex:1 }}><Skeleton w="70%" h={12} style={{ marginBottom:5 }}/><Skeleton w="45%" h={10}/></div></div>)}</div>
       : <div className={s.alertList}>{CRITICAL_ALERTS.map(a=>(
           <div key={a.id} className={s.alertItem}>
-            <div className={s.alertDot} style={{ background:a.color+"22",color:a.color }}>⚠</div>
+            <div className={s.alertDot} style={{ background:a.color+"22",color:a.color }} aria-hidden="true">
+              <AlertTriangle className={s.alertDotIcon} />
+            </div>
             <div className={s.alertInfo}><p className={s.alertName}>{a.name}</p><p className={s.alertSku}>{a.sku}</p></div>
             <div className={s.alertRight}>
               <span className={s.alertUnits} style={{ color:a.unitsLeft===0?"#C92A2A":"#E67700" }}>{a.unitsLeft} units left</span>
@@ -471,7 +542,10 @@ const WarehouseMapPanel = memo(({ loading }) => {
   const [expanded, setExpanded] = useState({ w1:true, w2:false });
   return (
     <div ref={anim.ref} className={s.sideCard} style={anim.style}>
-      <div className={s.sideCardTitleRow} style={{ marginBottom:14 }}><span>🏭</span><h3 className={s.sideCardTitle}>Warehouse Map</h3></div>
+      <div className={s.sideCardTitleRow} style={{ marginBottom:14 }}>
+        <Warehouse className={s.sideIconSvg} aria-hidden="true" />
+        <h3 className={s.sideCardTitle}>Warehouse Map</h3>
+      </div>
       {loading ? <><Skeleton h={80} style={{ borderRadius:10,marginBottom:12 }}/><Skeleton h={50} style={{ borderRadius:10 }}/></> :
         WAREHOUSES.map(wh => {
           const isOpen = expanded[wh.id];
@@ -479,7 +553,9 @@ const WarehouseMapPanel = memo(({ loading }) => {
             <div key={wh.id} className={s.warehouseCard}>
               <div className={s.warehouseHeader} onClick={()=>setExpanded(p=>({...p,[wh.id]:!p[wh.id]}))} role="button" tabIndex={0} onKeyDown={e=>e.key==="Enter"&&setExpanded(p=>({...p,[wh.id]:!p[wh.id]}))}>
                 <div className={s.warehouseLeft}>
-                  <div className={s.warehouseIconSmall} style={{ background:wh.color+"18",color:wh.color }}>🏗</div>
+                  <div className={s.warehouseIconSmall} style={{ background:wh.color+"18",color:wh.color }} aria-hidden="true">
+                    <Warehouse className={s.warehouseIconSvg} />
+                  </div>
                   <div>
                     <p className={s.warehouseName}>{wh.name}</p>
                     <span className={s.warehouseTag} style={{ background:wh.color==="#3B5BDB"?"#EEF2FF":"#FFF3BF",color:wh.color }}>{wh.tag}</span>
@@ -509,16 +585,23 @@ const LiveFeedPanel = memo(({ loading }) => {
   const anim = useAnimateIn(500);
   return (
     <div ref={anim.ref} className={s.sideCard} style={anim.style}>
-      <div className={s.sideCardTitleRow} style={{ marginBottom:4 }}><span>📡</span><h3 className={s.sideCardTitle}>Live Feed</h3></div>
+      <div className={s.sideCardTitleRow} style={{ marginBottom:4 }}>
+        <RadioTower className={s.sideIconSvg} aria-hidden="true" />
+        <h3 className={s.sideCardTitle}>Live Feed</h3>
+      </div>
       <p className={s.sideCardSub} style={{ marginBottom:14 }}>Real-time asset movement tracking.</p>
       {loading ? <div style={{ display:"flex",flexDirection:"column",gap:14 }}>{[1,2,3,4].map(i=><div key={i} style={{ display:"flex",gap:10 }}><Skeleton w={28} h={28} style={{ borderRadius:7,flexShrink:0 }}/><div style={{ flex:1 }}><Skeleton w="75%" h={12} style={{ marginBottom:5 }}/><Skeleton w="50%" h={10}/></div><Skeleton w={50} h={10}/></div>)}</div>
-      : <div className={s.feedList}>{LIVE_FEED.map(item=>(
+      : <div className={s.feedList}>{LIVE_FEED.map(item=>{
+          const FeedIcon = FEED_ICONS[item.direction] || ArrowLeftRight;
+          return (
           <div key={item.id} className={s.feedItem}>
-            <div className={s.feedDot} style={{ background:item.iconColor+"18",color:item.iconColor }}>{item.icon}</div>
+            <div className={s.feedDot} style={{ background:item.iconColor+"18",color:item.iconColor }} aria-hidden="true">
+              <FeedIcon className={s.feedIconSvg} />
+            </div>
             <div className={s.feedInfo}><p className={s.feedProduct}>{item.product}</p><p className={s.feedAction}>{item.action} · <span style={{ fontWeight:700,color:item.iconColor }}>{item.qty}</span></p><p className={s.feedLocation}>{item.location}</p></div>
             <span className={s.feedTime}>{item.ago}</span>
           </div>
-        ))}</div>}
+        )})}</div>}
       <button className={s.sideCardLink}>Open Audit Trail ↗</button>
     </div>
   );
@@ -535,8 +618,8 @@ export default function InventoryPage() {
   const [currentPage,    setCurrentPage]    = useState(1);
   const [loading,        setLoading]        = useState(true);
   const [products,       setProducts]       = useState(INITIAL_PRODUCTS);
-  const [showExport,     setShowExport]     = useState(false);   // ✅ Export modal
-  const [showAddProduct, setShowAddProduct] = useState(false);   // ✅ Add modal
+  const [showExport,     setShowExport]     = useState(false);   // Export modal
+  const [showAddProduct, setShowAddProduct] = useState(false);   // Add modal
 
   useEffect(() => { const t=setTimeout(()=>setLoading(false),800); return ()=>clearTimeout(t); }, []);
 
@@ -570,22 +653,22 @@ export default function InventoryPage() {
                 <p className={s.pageSub}>Monitor real-time inventory health and warehouse operations.</p>
               </div>
               <div className={s.headerActions}>
-                {/* ✅ EXPORT REPORT BUTTON */}
                 <button
                   className={`${s.btn} ${s.btnOutline}`}
                   onClick={() => setShowExport(true)}
                   disabled={loading}
                   aria-label="Export inventory report"
                 >
-                  ⬇ Export Report
+                  <Download className={s.btnIcon} aria-hidden="true" />
+                  Export Report
                 </button>
-                {/* ✅ ADD NEW PRODUCT BUTTON */}
                 <button
                   className={`${s.btn} ${s.btnPrimary}`}
                   onClick={() => setShowAddProduct(true)}
                   aria-label="Add new product"
                 >
-                  + Add New Product
+                  <Plus className={s.btnIcon} aria-hidden="true" />
+                  Add New Product
                 </button>
               </div>
             </header>
@@ -605,10 +688,13 @@ export default function InventoryPage() {
               <div className={s.tableSection}>
                 <div className={s.toolbar}>
                   <div className={s.searchWrap}>
-                    <span className={s.searchIcon}>🔍</span>
+                    <Search className={s.searchIcon} aria-hidden="true" />
                     <input className={s.searchInput} value={searchQuery} onChange={e=>{ setSearchQuery(e.target.value); setCurrentPage(1); }} placeholder="Search products, SKUs, or locations..." aria-label="Search"/>
                   </div>
-                  <button className={s.filterIconBtn}>▼ Filter</button>
+                  <button className={s.filterIconBtn} aria-label="Filter inventory">
+                    <SlidersHorizontal className={s.btnIcon} aria-hidden="true" />
+                    Filter
+                  </button>
                 </div>
 
                 <div className={s.filterTabs}>
@@ -632,7 +718,7 @@ export default function InventoryPage() {
                       {loading
                         ? Array.from({length:5}).map((_,i)=><tr key={i} className={s.tableRow}>{[160,80,110,140,90].map((w,j)=><td key={j} className={s.td}><Skeleton w={w+"px"} h={12}/></td>)}</tr>)
                         : paginatedProducts.length===0
-                          ? <tr><td colSpan={5}><div className={s.emptyState}><p className={s.emptyIcon}>📦</p><p className={s.emptyTitle}>No products found</p><p className={s.emptySub}>Try adjusting your filters or search.</p></div></td></tr>
+                          ? <tr><td colSpan={5}><div className={s.emptyState}><FolderOpen className={s.emptyIcon} aria-hidden="true" /><p className={s.emptyTitle}>No products found</p><p className={s.emptySub}>Try adjusting your filters or search.</p></div></td></tr>
                           : paginatedProducts.map((p,i)=><ProductRow key={p.id} product={p} delay={i*50}/>)
                       }
                     </tbody>
@@ -676,14 +762,12 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      {/* ✅ EXPORT REPORT MODAL */}
       <ExportReportModal
         isOpen={showExport}
         onClose={() => setShowExport(false)}
         products={products}
       />
 
-      {/* ✅ ADD NEW PRODUCT MODAL */}
       <AddProductModal
         isOpen={showAddProduct}
         onClose={() => setShowAddProduct(false)}

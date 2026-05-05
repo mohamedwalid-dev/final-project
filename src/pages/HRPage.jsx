@@ -7,8 +7,43 @@ import useHRPage from "../hooks/useHRPage";
 import ComplianceModal from "../components/HR/ComplianceModal";
 import SmartHRPanel    from "../components/HR/SmartHRPanel";
 import s from "../styles/HRPage.module.css";
+import {
+  AlertTriangle,
+  Banknote,
+  Building2,
+  CalendarCheck,
+  CalendarX,
+  CheckCircle2,
+  Clock3,
+  FileText,
+  FolderOpen,
+  Search,
+  TrendingUp,
+  UserPlus,
+  Users,
+  X,
+} from "lucide-react";
 
-function StatCard({ icon, label, value, change, changeType, loading }) {
+const STAT_ICONS = {
+  workforce: Users,
+  active: CheckCircle2,
+  activeEmployees: CheckCircle2,
+  departments: Building2,
+  teams: Building2,
+  attendance: CalendarCheck,
+  payroll: Banknote,
+  salary: Banknote,
+  recruiting: UserPlus,
+  hiring: UserPlus,
+  performance: TrendingUp,
+  leave: CalendarX,
+  timeOff: Clock3,
+  documents: FileText,
+  warnings: AlertTriangle,
+  retention: TrendingUp,
+};
+
+function StatCard({ id, label, value, change, changeType, loading }) {
   if (loading) {
     return (
       <div className={s.statCard}>
@@ -21,13 +56,20 @@ function StatCard({ icon, label, value, change, changeType, loading }) {
   }
 
   const changeClass = changeType === "up" ? s.changeUp : changeType === "down" ? s.changeDown : s.changeNeutral;
+  const Icon = STAT_ICONS[id] ?? Users;
+  const isFeatured = id === "workforce";
 
   return (
     <div className={s.statCard}>
-      <div className={s.statIconWrap}>
-        <span className={s.statIcon}>{icon}</span>
+      <div className={s.statCardHeader}>
+        <div
+          className={`${s.statIconBadge} ${isFeatured ? s.statIconBadgeActive : s.statIconBadgeNeutral}`}
+          aria-hidden="true"
+        >
+          <Icon className={s.statIconSvg} strokeWidth={2.2} />
+        </div>
+        <p className={s.statLabel}>{label}</p>
       </div>
-      <p className={s.statLabel}>{label}</p>
       <p className={s.statValue}>{value}</p>
       <span className={`${s.statBadge} ${changeClass}`}>{change}</span>
     </div>
@@ -147,7 +189,8 @@ function LeaveCard({ request, onAction, responding }) {
           disabled={isBusy}
           aria-label={`Approve leave for ${request.name}`}
         >
-          {isApproving ? <span className={s.miniSpinner} /> : "+"} Approve
+          {isApproving ? <span className={s.miniSpinner} /> : <CheckCircle2 className={s.btnIcon} aria-hidden="true" />}
+          Approve
         </button>
         <button
           className={s.declineBtn}
@@ -155,7 +198,8 @@ function LeaveCard({ request, onAction, responding }) {
           disabled={isBusy}
           aria-label={`Decline leave for ${request.name}`}
         >
-          {isDeclining ? <span className={s.miniSpinner} /> : "x"} Decline
+          {isDeclining ? <span className={s.miniSpinner} /> : <X className={s.btnIcon} aria-hidden="true" />}
+          Decline
         </button>
       </div>
     </div>
@@ -234,7 +278,9 @@ function AddEmployeeModal({ onClose, onSubmit }) {
       <div className={s.modal}>
         <div className={s.modalHeader}>
           <h2 className={s.modalTitle}>Add New Employee</h2>
-          <button className={s.modalClose} onClick={onClose} aria-label="Close">x</button>
+          <button className={s.modalClose} onClick={onClose} aria-label="Close">
+            <X className={s.btnIcon} aria-hidden="true" />
+          </button>
         </div>
 
         <div className={s.modalBody}>
@@ -370,7 +416,7 @@ function AbsenceCalendar({ leaveRequests = [] }) {
       </div>
 
       <div className={s.calMonthNav}>
-        <button className={s.calNavBtn} onClick={prevMonth} aria-label="Previous month">&#8249;</button>
+            <button className={s.calNavBtn} onClick={prevMonth} aria-label="Previous month">&#8249;</button>
         <h3 className={s.calMonthTitle}>{CAL_MONTHS[month]} {year}</h3>
         <button className={s.calNavBtn} onClick={nextMonth} aria-label="Next month">&#8250;</button>
       </div>
@@ -410,7 +456,9 @@ function AbsenceCalendar({ leaveRequests = [] }) {
         <div className={s.calSelectedPanel}>
           <div className={s.calSelectedHeader}>
             <h4 className={s.calSelectedTitle}>{CAL_MONTHS[month]} {selected.day}, {year}</h4>
-            <button className={s.calSelectedClose} onClick={() => setSelected(null)} aria-label="Close">x</button>
+            <button className={s.calSelectedClose} onClick={() => setSelected(null)} aria-label="Close">
+              <X className={s.btnIcon} aria-hidden="true" />
+            </button>
           </div>
           {selected.requests.length === 0 ? (
             <p className={s.calSelectedEmpty}>No absences on this day</p>
@@ -475,6 +523,7 @@ export default function HRPage() {
 
           {error && (
             <div className={s.errorCard} role="alert">
+              <AlertTriangle className={s.btnIcon} aria-hidden="true" />
               <span>{error}</span>
               <button className={s.btnOutline} onClick={reload}>Retry</button>
             </div>
@@ -519,13 +568,15 @@ export default function HRPage() {
                     onClick={() => setShowAddEmployee(true)}
                     aria-label="Add new employee"
                   >
-                    + Add Employee
+                    <UserPlus className={s.btnIcon} aria-hidden="true" />
+                    Add Employee
                   </button>
                 </div>
               </div>
 
               <div className={s.filterBar}>
                 <div className={s.searchWrap}>
+                  <Search className={s.searchIcon} aria-hidden="true" />
                   <input
                     className={s.searchInput}
                     value={searchQuery}
@@ -577,6 +628,7 @@ export default function HRPage() {
                     : employees.length === 0
                       ? (
                         <div className={s.emptyState}>
+                          <FolderOpen className={s.emptyIcon} aria-hidden="true" />
                           <p className={s.emptyTitle}>No employees found</p>
                           <p className={s.emptySub}>Try adjusting your filters or search query.</p>
                         </div>

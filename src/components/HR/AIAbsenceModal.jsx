@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import s from "./AIModals.module.css";
 import smartHRService from "../../utils/smartHRService";
+import { AlertTriangle, CheckCircle2, Globe2, Search, X } from "lucide-react";
 
 const ABSENCE_TYPES  = ["unexcused", "sick", "emergency", "annual", "unpaid"];
 const WARN_LEVELS    = ["none", "verbal", "written", "formal"];
@@ -190,7 +191,9 @@ export default function AIAbsenceModal({ isOpen, onClose, employees = [] }) {
         {/* Header */}
         <div className={s.modalHeader}>
           <div className={s.modalHeaderLeft}>
-            <div className={s.modalHeaderIcon}>🌍</div>
+            <div className={s.modalHeaderIcon}>
+              <Globe2 className={s.modalIconSvg} aria-hidden="true" />
+            </div>
             <div>
               <h2 className={s.modalTitle}>HR - Absence Management & Policy Compliance</h2>
               <p className={s.modalSub}>Identify and proactively manage chronic absenteeism</p>
@@ -201,7 +204,9 @@ export default function AIAbsenceModal({ isOpen, onClose, employees = [] }) {
               <div className={s.userAvatar}>AS</div>
               <span className={s.userName}>Alex Sterling</span>
             </div>
-            <button className={s.closeBtn} onClick={onClose}>✕</button>
+            <button className={s.closeBtn} onClick={onClose} aria-label="Close">
+              <X className={s.inlineIcon} aria-hidden="true" />
+            </button>
           </div>
         </div>
 
@@ -418,7 +423,7 @@ export default function AIAbsenceModal({ isOpen, onClose, employees = [] }) {
                 </>
               )}
 
-              {error && <div className={s.errorBox} style={{ marginTop: 10 }}>⚠ {error}</div>}
+              {error && <div className={s.errorBox} style={{ marginTop: 10 }}><AlertTriangle className={s.inlineIcon} aria-hidden="true" /> {error}</div>}
             </div>
           </div>
         </div>
@@ -427,11 +432,11 @@ export default function AIAbsenceModal({ isOpen, onClose, employees = [] }) {
         <div className={s.modalFooter}>
           <button className={s.btnGhost} onClick={onClose}>Cancel</button>
           <button className={s.btnSecondary} onClick={handlePreview} disabled={loading || submitting}>
-            {loading ? <><span className={`${s.spinner} ${s.spinnerDark}`} /> Analyzing...</> : "🔍 Preview AI Decision"}
+            {loading ? <><span className={`${s.spinner} ${s.spinnerDark}`} /> Analyzing...</> : <><Search className={s.inlineIcon} aria-hidden="true" /> Preview AI Decision</>}
           </button>
           <button className={s.btnPrimary} onClick={handleSubmit} disabled={submitting || submitted}>
             {submitting ? <><span className={s.spinner} /> Submitting...</>
-              : submitted ? "✓ Submitted" : "Submit Request"}
+              : submitted ? <><CheckCircle2 className={s.inlineIcon} aria-hidden="true" /> Submitted</> : "Submit Request"}
           </button>
         </div>
       </div>

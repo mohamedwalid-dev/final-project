@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import s from "./AIModals.module.css";
 import smartHRService from "../../utils/smartHRService";
+import { AlertTriangle, Banknote, CheckCircle2, Lightbulb, Search, X } from "lucide-react";
 
 function DecisionBadge({ decision }) {
   const map = {
@@ -108,7 +109,9 @@ export default function AISalaryModal({ isOpen, onClose, employees = [] }) {
         {/* Header */}
         <div className={s.modalHeader}>
           <div className={s.modalHeaderLeft}>
-            <div className={s.modalHeaderIcon}>💰</div>
+            <div className={s.modalHeaderIcon}>
+              <Banknote className={s.modalIconSvg} aria-hidden="true" />
+            </div>
             <div>
               <h2 className={s.modalTitle}>HR - Salary Review Proposal</h2>
               <p className={s.modalSub}>Market-indexed, performance-based compensation analysis</p>
@@ -119,7 +122,9 @@ export default function AISalaryModal({ isOpen, onClose, employees = [] }) {
               <div className={s.userAvatar}>AS</div>
               <span className={s.userName}>Alex Sterling</span>
             </div>
-            <button className={s.closeBtn} onClick={onClose}>✕</button>
+            <button className={s.closeBtn} onClick={onClose} aria-label="Close">
+              <X className={s.inlineIcon} aria-hidden="true" />
+            </button>
           </div>
         </div>
 
@@ -248,12 +253,12 @@ export default function AISalaryModal({ isOpen, onClose, employees = [] }) {
           </div>
 
           {/* Error */}
-          {error && <div className={s.errorBox}>⚠ {error}</div>}
+          {error && <div className={s.errorBox}><AlertTriangle className={s.inlineIcon} aria-hidden="true" /> {error}</div>}
 
           {/* AI Result */}
           {aiResult && (
             <div className={s.aiResultPanel}>
-              <p className={s.aiResultTitle}><span>💡</span> AI Salary Decision</p>
+              <p className={s.aiResultTitle}><Lightbulb className={s.inlineIcon} aria-hidden="true" /> AI Salary Decision</p>
               <div className={s.aiResultGrid}>
                 <div className={s.aiResultItem}>
                   <p className={s.aiResultItemLabel}>Decision</p>
@@ -276,7 +281,7 @@ export default function AISalaryModal({ isOpen, onClose, employees = [] }) {
               </div>
               {(aiResult.reason || aiResult.review?.decision_reason) && (
                 <p className={s.aiResultReason}>
-                  📝 {aiResult.reason || aiResult.review?.decision_reason}
+                  {aiResult.reason || aiResult.review?.decision_reason}
                 </p>
               )}
             </div>
@@ -287,11 +292,11 @@ export default function AISalaryModal({ isOpen, onClose, employees = [] }) {
         <div className={s.modalFooter}>
           <button className={s.btnGhost} onClick={onClose}>Cancel</button>
           <button className={s.btnSecondary} onClick={handlePreview} disabled={loading || submitting}>
-            {loading ? <><span className={`${s.spinner} ${s.spinnerDark}`} /> Analyzing...</> : "🔍 Preview AI Analysis"}
+            {loading ? <><span className={`${s.spinner} ${s.spinnerDark}`} /> Analyzing...</> : <><Search className={s.inlineIcon} aria-hidden="true" /> Preview AI Analysis</>}
           </button>
           <button className={s.btnPrimary} onClick={handleSubmit} disabled={submitting || submitted}>
             {submitting ? <><span className={s.spinner} /> Submitting...</>
-              : submitted ? "✓ Submitted" : "Submit Proposal"}
+              : submitted ? <><CheckCircle2 className={s.inlineIcon} aria-hidden="true" /> Submitted</> : "Submit Proposal"}
           </button>
         </div>
       </div>
