@@ -136,8 +136,9 @@ function SalesStatCard({ icon, label, value, change, changeType }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── TAB 1: LEAD PIPELINE (KANBAN)
+// ── TAB 1: LEAD PIPELINE (KANBAN) - WITH FILTERING
 // ─────────────────────────────────────────────────────────────────────────────
+
 function LeadCard({ lead, onDragStart, onStageChange }) {
   const pm = PRIORITY_META[lead.priority];
   const [showMenu, setShowMenu] = useState(false);
@@ -159,7 +160,6 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
       onDragStart={(e) => onDragStart(e, lead.id)}
       aria-label={`Lead: ${lead.company}`}
     >
-      {/* Priority badge */}
       <div className={s.leadTopRow}>
         <span
           className={s.priorityBadge}
@@ -171,7 +171,6 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
           <button
             className={s.leadMenuBtn}
             onClick={() => setShowMenu((o) => !o)}
-            aria-label="More options"
           >
             ···
           </button>
@@ -193,16 +192,13 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
         </div>
       </div>
 
-      {/* Company */}
       <p className={s.leadCompany}>{lead.company}</p>
 
-      {/* Amount */}
       <p className={s.leadAmount}>
         <span className={s.dollarIcon}>$</span>
         {lead.amount.toLocaleString()}
       </p>
 
-      {/* Footer */}
       <div className={s.leadFooter}>
         <span className={s.leadDays}>⏱ {lead.days} day{lead.days !== 1 ? "s" : ""}</span>
         <div
@@ -217,11 +213,36 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
   );
 }
 
-function PipelineTab() {
+function PipelineTab({ filterValues }) {
   const [leads, setLeads] = useState(INITIAL_LEADS);
   const [draggingId, setDraggingId] = useState(null);
   const [showAddLead, setShowAddLead] = useState(false);
   const [newLead, setNewLead] = useState({ company: "", amount: "", priority: "MEDIUM", stage: "prospecting" });
+
+  // Apply filters
+  const filteredLeads = useMemo(() => {
+    let result = [...leads];
+    
+    if (filterValues?.minAmount && filterValues.minAmount !== "") {
+      const minAmountNum = parseFloat(filterValues.minAmount);
+      if (!isNaN(minAmountNum)) {
+        result = result.filter(lead => lead.amount >= minAmountNum);
+      }
+    }
+    
+    if (filterValues?.priority && filterValues.priority !== "ALL") {
+      result = result.filter(lead => lead.priority === filterValues.priority);
+    }
+    
+    if (filterValues?.status && filterValues.status !== "ALL") {
+      result = result.filter(lead => lead.stage === filterValues.status);
+    }
+    
+    return result;
+  }, [leads, filterValues]);
+
+  const hasActiveFilter = filterValues?.minAmount !== "" || filterValues?.priority !== "ALL" || filterValues?.status !== "ALL";
+  const noResults = hasActiveFilter && filteredLeads.length === 0;
 
   const handleDragStart = useCallback((e, id) => {
     setDraggingId(id);
@@ -257,20 +278,37 @@ function PipelineTab() {
     setNewLead({ company: "", amount: "", priority: "MEDIUM", stage: "prospecting" });
     setShowAddLead(false);
   };
-
-  // Stats
-  const totalPipeline = leads.reduce((a, l) => a + l.amount, 0);
-  const wonLeads      = leads.filter((l) => l.stage === "closed_won");
+  
+  const totalPipeline = filteredLeads.reduce((a, l) => a + l.amount, 0);
+  const wonLeads      = filteredLeads.filter((l) => l.stage === "closed_won");
   const totalWon      = wonLeads.reduce((a, l) => a + l.amount, 0);
 
   return (
-    <div>
+    <div style={{ 
+      backgroundColor: "#f8f9fa", 
+      minHeight: "100vh", 
+      width: "100%",
+      position: "relative",
+      padding: "24px",
+      boxSizing: "border-box"
+    }}>
+      
+      <div style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: "#f8f9fa",
+        zIndex: -1
+      }} />
+
       {/* Top Stats */}
       <div className={s.pipelineStats}>
-        <SalesStatCard icon="💰" label="Pipeline Value"  value={fmtFull(totalPipeline)} change="+14.2%" changeType="up" />
-        <SalesStatCard icon="✅" label="Closed Won"      value={fmtFull(totalWon)}      change="+8.6%"  changeType="up" />
-        <SalesStatCard icon="📋" label="Active Leads"    value={leads.length}            change="+3"     changeType="up" />
-        <SalesStatCard icon="🎯" label="Win Rate"        value="68%"                     change="+2.1%"  changeType="up" />
+        <SalesStatCard label="Pipeline Value"  value={fmtFull(totalPipeline)} change="+14.2%" changeType="up" />
+        <SalesStatCard label="Closed Won"      value={fmtFull(totalWon)}      change="+8.6%"  changeType="up" />
+        <SalesStatCard label="Active Leads"    value={filteredLeads.length}    change="+3"     changeType="up" />
+        <SalesStatCard label="Win Rate"        value="68%"                     change="+2.1%"  changeType="up" />
       </div>
 
       {/* Header */}
@@ -278,6 +316,13 @@ function PipelineTab() {
         <div>
           <h2 className={s.pipelineTitle}>Lead Pipeline</h2>
           <p className={s.pipelineSub}>Drag cards between stages to update status.</p>
+          {hasActiveFilter && (
+            <p style={{ fontSize: "12px", color: "#3B5BDB", marginTop: "8px" }}>
+              🔍 Filter active: {filterValues?.minAmount && `Min $${filterValues.minAmount} • `}
+              {filterValues?.priority !== "ALL" && `Priority: ${filterValues.priority} • `}
+              {filterValues?.status !== "ALL" && `Stage: ${filterValues.status}`}
+            </p>
+          )}
         </div>
         <button className={s.btnPrimary} onClick={() => setShowAddLead(true)}>+ New Lead</button>
       </div>
@@ -292,7 +337,6 @@ function PipelineTab() {
                 className={s.addLeadInput}
                 value={newLead.company}
                 onChange={(e) => setNewLead((p) => ({ ...p, company: e.target.value }))}
-                placeholder="e.g. Acme Corp"
               />
             </div>
             <div className={s.addLeadField}>
@@ -302,7 +346,6 @@ function PipelineTab() {
                 className={s.addLeadInput}
                 value={newLead.amount}
                 onChange={(e) => setNewLead((p) => ({ ...p, amount: e.target.value }))}
-                placeholder="e.g. 25000"
               />
             </div>
             <div className={s.addLeadField}>
@@ -338,55 +381,57 @@ function PipelineTab() {
       )}
 
       {/* Kanban Board */}
-      <div className={s.kanbanBoard}>
-        {PIPELINE_COLS.map((col) => {
-          const colLeads = leads.filter((l) => l.stage === col.id);
-          const colValue = colLeads.reduce((a, l) => a + l.amount, 0);
-          return (
-            <div
-              key={col.id}
-              className={s.kanbanCol}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => handleDrop(e, col.id)}
-            >
-              {/* Column Header */}
-              <div className={s.colHeader}>
-                <div className={s.colHeaderLeft}>
-                  <span className={s.colDot} style={{ background: col.color }} />
-                  <span className={s.colLabel}>{col.label}</span>
-                  <span className={s.colCount}>{colLeads.length}</span>
+      {noResults ? (
+        <div className={s.emptyState}>
+          <p className={s.emptyIcon}>🔍</p>
+          <p className={s.emptyTitle}>No leads match your filters</p>
+          <p className={s.emptySub}>Try adjusting the filter criteria.</p>
+        </div>
+      ) : (
+        <div className={s.kanbanBoard}>
+          {PIPELINE_COLS.map((col) => {
+            const colLeads = filteredLeads.filter((l) => l.stage === col.id);
+            const colValue = colLeads.reduce((a, l) => a + l.amount, 0);
+            return (
+              <div
+                key={col.id}
+                className={s.kanbanCol}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => handleDrop(e, col.id)}
+              >
+                <div className={s.colHeader}>
+                  <div className={s.colHeaderLeft}>
+                    <span className={s.colDot} style={{ background: col.color }} />
+                    <span className={s.colLabel}>{col.label}</span>
+                    <span className={s.colCount}>{colLeads.length}</span>
+                  </div>
+                  <button
+                    className={s.colAddBtn}
+                    onClick={() => { setNewLead((p) => ({ ...p, stage: col.id })); setShowAddLead(true); }}
+                  >
+                    +
+                  </button>
                 </div>
-                <button
-                  className={s.colAddBtn}
-                  onClick={() => { setNewLead((p) => ({ ...p, stage: col.id })); setShowAddLead(true); }}
-                  aria-label={`Add lead to ${col.label}`}
-                >
-                  +
-                </button>
+                <p className={s.colValue}>{fmt(colValue)}</p>
+                <div className={s.colCards}>
+                  {colLeads.length === 0 ? (
+                    <div className={s.colEmpty}>Drop leads here</div>
+                  ) : (
+                    colLeads.map((lead) => (
+                      <LeadCard
+                        key={lead.id}
+                        lead={lead}
+                        onDragStart={handleDragStart}
+                        onStageChange={handleStageChange}
+                      />
+                    ))
+                  )}
+                </div>
               </div>
-
-              {/* Column Value */}
-              <p className={s.colValue}>{fmt(colValue)}</p>
-
-              {/* Cards */}
-              <div className={s.colCards}>
-                {colLeads.length === 0 ? (
-                  <div className={s.colEmpty}>Drop leads here</div>
-                ) : (
-                  colLeads.map((lead) => (
-                    <LeadCard
-                      key={lead.id}
-                      lead={lead}
-                      onDragStart={handleDragStart}
-                      onStageChange={handleStageChange}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -411,19 +456,16 @@ const ChartTooltip = ({ active, payload, label }) => {
 function SalesAnalyticsTab() {
   return (
     <div>
-      {/* KPI Row */}
       <div className={s.analyticsKpiGrid}>
-        <SalesStatCard icon="💵" label="Total Revenue (YTD)"  value="$928,000"  change="+18.4%" changeType="up"   />
-        <SalesStatCard icon="📊" label="Avg Deal Size"        value="$32,400"   change="+6.2%"  changeType="up"   />
-        <SalesStatCard icon="⏱" label="Sales Cycle (days)"   value="24d"       change="-3d"    changeType="up"   />
-        <SalesStatCard icon="🎯" label="Quota Attainment"     value="87%"       change="+5%"    changeType="up"   />
-        <SalesStatCard icon="🔄" label="Churn Rate"           value="4.2%"      change="+0.3%"  changeType="down" />
-        <SalesStatCard icon="➕" label="New MQLs"             value="142"       change="+21"    changeType="up"   />
+        <SalesStatCard label="Total Revenue (YTD)"  value="$928,000"  change="+18.4%" changeType="up"   />
+        <SalesStatCard label="Avg Deal Size"        value="$32,400"   change="+6.2%"  changeType="up"   />
+        <SalesStatCard label="Sales Cycle (days)"   value="24d"       change="-3d"    changeType="up"   />
+        <SalesStatCard label="Quota Attainment"     value="87%"       change="+5%"    changeType="up"   />
+        <SalesStatCard label="Churn Rate"           value="4.2%"      change="+0.3%"  changeType="down" />
+        <SalesStatCard label="New MQLs"             value="142"       change="+21"    changeType="up"   />
       </div>
 
-      {/* Charts Row 1 */}
       <div className={s.analyticsRow}>
-        {/* Revenue vs Target */}
         <div className={s.analyticsCard} style={{ flex: 2 }}>
           <h3 className={s.analyticsCardTitle}>Monthly Revenue vs Target</h3>
           <p className={s.analyticsCardSub}>6-month performance comparison</p>
@@ -445,7 +487,6 @@ function SalesAnalyticsTab() {
           </ResponsiveContainer>
         </div>
 
-        {/* Win/Loss Donut */}
         <div className={s.analyticsCard} style={{ flex: 1, minWidth: 220 }}>
           <h3 className={s.analyticsCardTitle}>Win/Loss Ratio</h3>
           <p className={s.analyticsCardSub}>Last 12 months</p>
@@ -468,9 +509,7 @@ function SalesAnalyticsTab() {
         </div>
       </div>
 
-      {/* Charts Row 2 */}
       <div className={s.analyticsRow}>
-        {/* Pipeline by Stage */}
         <div className={s.analyticsCard} style={{ flex: 1 }}>
           <h3 className={s.analyticsCardTitle}>Pipeline Value by Stage</h3>
           <p className={s.analyticsCardSub}>Current deals in each stage</p>
@@ -487,7 +526,6 @@ function SalesAnalyticsTab() {
           </ResponsiveContainer>
         </div>
 
-        {/* Top Reps */}
         <div className={s.analyticsCard} style={{ flex: 1 }}>
           <h3 className={s.analyticsCardTitle}>Top Sales Reps</h3>
           <p className={s.analyticsCardSub}>By quota attainment this quarter</p>
@@ -517,14 +555,21 @@ function SalesAnalyticsTab() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── TAB 3: PRODUCT CATALOG
+// ── TAB 3: PRODUCT CATALOG (FINAL VERSION: ADD + EDIT + DELETE)
 // ─────────────────────────────────────────────────────────────────────────────
 function ProductCatalogTab() {
   const [products, setProducts] = useState(INITIAL_PRODUCTS);
   const [search, setSearch]     = useState("");
   const [category, setCategory] = useState("All");
   const [showAdd, setShowAdd]   = useState(false);
-  const [newProduct, setNewProduct] = useState({ name: "", category: "Software", price: "", sku: "", description: "" });
+  
+  const [editingProduct, setEditingProduct] = useState(null);
+  
+  const [newProduct, setNewProduct] = useState({ 
+    name: "", category: "Software", price: "", sku: "", description: "" 
+  });
+  
+  const [activeMenuId, setActiveMenuId] = useState(null);
 
   const filtered = useMemo(() =>
     products.filter((p) => {
@@ -535,98 +580,118 @@ function ProductCatalogTab() {
     [products, category, search]
   );
 
-  const handleAddProduct = () => {
+  const handleSaveProduct = () => {
     if (!newProduct.name.trim() || !newProduct.price) return;
-    setProducts((prev) => [...prev, {
-      id: `p${Date.now()}`,
-      name: newProduct.name.trim(),
-      category: newProduct.category,
-      price: parseFloat(newProduct.price) || 0,
-      sku: newProduct.sku.trim() || `SKU-${Date.now()}`,
-      stock: "∞",
-      status: "Active",
-      description: newProduct.description,
-    }]);
+
+    if (editingProduct) {
+      setProducts((prev) =>
+        prev.map((p) => (p.id === editingProduct.id ? { ...p, ...newProduct, price: parseFloat(newProduct.price) } : p))
+      );
+    } else {
+      setProducts((prev) => [...prev, {
+        id: `p${Date.now()}`,
+        name: newProduct.name.trim(),
+        category: newProduct.category,
+        price: parseFloat(newProduct.price) || 0,
+        sku: newProduct.sku.trim() || `SKU-${Date.now()}`,
+        stock: "∞",
+        status: "Active",
+        description: newProduct.description,
+      }]);
+    }
+
     setNewProduct({ name: "", category: "Software", price: "", sku: "", description: "" });
+    setEditingProduct(null);
     setShowAdd(false);
   };
 
-  const statusClass = (s) => ({
-    Active: styles => styles.prodStatusActive,
-    Draft: styles => styles.prodStatusDraft,
-    "Low Stock": styles => styles.prodStatusLow,
-  }[s] || (() => ""));
+  const handleDelete = (id) => {
+    if (window.confirm("Are you sure you want to delete this product?")) {
+      setProducts(prev => prev.filter(p => p.id !== id));
+      setActiveMenuId(null);
+    }
+  };
+
+  const handleEdit = (prod) => {
+    setEditingProduct(prod);
+    setNewProduct({ 
+      name: prod.name, 
+      category: prod.category, 
+      price: prod.price, 
+      sku: prod.sku, 
+      description: prod.description 
+    });
+    setShowAdd(true);
+    setActiveMenuId(null);
+  };
+
+  const handleCancel = () => {
+    setNewProduct({ name: "", category: "Software", price: "", sku: "", description: "" });
+    setEditingProduct(null);
+    setShowAdd(false);
+  };
 
   return (
-    <div>
-      {/* Toolbar */}
+    <div onClick={() => setActiveMenuId(null)}>
       <div className={s.catalogToolbar}>
         <div className={s.searchWrap}>
           <span className={s.searchIcon}>🔍</span>
-          <input
-            className={s.searchInput}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search products or SKUs..."
-          />
+          <input className={s.searchInput} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products..." />
         </div>
         <div className={s.catTabs}>
           {PRODUCT_CATEGORIES.map((c) => (
-            <button
-              key={c}
-              className={`${s.catTab} ${category === c ? s.catTabActive : ""}`}
-              onClick={() => setCategory(c)}
-            >
-              {c}
-            </button>
+            <button key={c} className={`${s.catTab} ${category === c ? s.catTabActive : ""}`} onClick={() => setCategory(c)}>{c}</button>
           ))}
         </div>
-        <button className={s.btnPrimary} onClick={() => setShowAdd(true)}>+ Add Product</button>
+        <button className={s.btnPrimary} onClick={() => { setEditingProduct(null); setShowAdd(true); }}>+ Add Product</button>
       </div>
 
-      {/* Add Product Form */}
       {showAdd && (
         <div className={s.addLeadForm}>
-          <div className={s.addLeadGrid} style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr" }}>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Product Name *</label>
-              <input className={s.addLeadInput} value={newProduct.name} onChange={(e) => setNewProduct((p) => ({ ...p, name: e.target.value }))} placeholder="Product name" />
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Category</label>
-              <select className={s.addLeadInput} value={newProduct.category} onChange={(e) => setNewProduct((p) => ({ ...p, category: e.target.value }))}>
-                {PRODUCT_CATEGORIES.filter((c) => c !== "All").map((c) => <option key={c}>{c}</option>)}
-              </select>
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Price ($) *</label>
-              <input type="number" className={s.addLeadInput} value={newProduct.price} onChange={(e) => setNewProduct((p) => ({ ...p, price: e.target.value }))} placeholder="0.00" />
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>SKU</label>
-              <input className={s.addLeadInput} value={newProduct.sku} onChange={(e) => setNewProduct((p) => ({ ...p, sku: e.target.value }))} placeholder="e.g. SW-001" />
-            </div>
-          </div>
-          <div className={s.addLeadActions}>
-            <button className={s.btnGhost} onClick={() => setShowAdd(false)}>Cancel</button>
-            <button className={s.btnPrimary} onClick={handleAddProduct}>Add Product</button>
-          </div>
+           <h3 style={{ marginBottom: '15px', color: '#1A1B1E' }}>
+             {editingProduct ? `Edit Product: ${editingProduct.name}` : "Add New Product"}
+           </h3>
+           <div className={s.addLeadGrid} style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr" }}>
+             <div className={s.addLeadField}>
+               <label className={s.addLeadLabel}>Product Name *</label>
+               <input className={s.addLeadInput} value={newProduct.name} onChange={(e) => setNewProduct((p) => ({ ...p, name: e.target.value }))} placeholder="Product name" />
+             </div>
+             <div className={s.addLeadField}>
+               <label className={s.addLeadLabel}>Category</label>
+               <select className={s.addLeadInput} value={newProduct.category} onChange={(e) => setNewProduct((p) => ({ ...p, category: e.target.value }))}>
+                 {PRODUCT_CATEGORIES.filter((c) => c !== "All").map((c) => <option key={c}>{c}</option>)}
+               </select>
+             </div>
+             <div className={s.addLeadField}>
+               <label className={s.addLeadLabel}>Price ($) *</label>
+               <input type="number" className={s.addLeadInput} value={newProduct.price} onChange={(e) => setNewProduct((p) => ({ ...p, price: e.target.value }))} placeholder="0.00" />
+             </div>
+             <div className={s.addLeadField}>
+               <label className={s.addLeadLabel}>SKU</label>
+               <input className={s.addLeadInput} value={newProduct.sku} onChange={(e) => setNewProduct((p) => ({ ...p, sku: e.target.value }))} placeholder="SKU-001" />
+             </div>
+           </div>
+           <div className={s.addLeadActions}>
+             <button className={s.btnGhost} onClick={handleCancel}>Cancel</button>
+             <button className={s.btnPrimary} onClick={handleSaveProduct}>
+               {editingProduct ? "Save Changes" : "Add Product"}
+             </button>
+           </div>
         </div>
       )}
 
-      {/* Product Grid */}
       <div className={s.productGrid}>
         {filtered.map((prod) => {
           const statusMeta = {
-            Active:     { cls: s.prodStatusActive, color: "#2F9E44", bg: "#EBFBEE" },
-            Draft:      { cls: s.prodStatusDraft,  color: "#6C757D", bg: "#F1F3F5" },
-            "Low Stock":{ cls: s.prodStatusLow,    color: "#E67700", bg: "#FFF3BF" },
+            Active:     { color: "#2F9E44", bg: "#EBFBEE" },
+            Draft:      { color: "#6C757D", bg: "#F1F3F5" },
+            "Low Stock":{ color: "#E67700", bg: "#FFF3BF" },
           }[prod.status] || { color: "#6C757D", bg: "#F1F3F5" };
-          const catIcon = { Software: "💻", Hardware: "🖥", Cloud: "☁️", Services: "🔧" }[prod.category] || "📦";
+
           return (
             <div key={prod.id} className={s.productCard}>
               <div className={s.productCardTop}>
-                <div className={s.productIcon}>{catIcon}</div>
+                <div className={s.productIcon}></div>
                 <span className={s.productStatus} style={{ background: statusMeta.bg, color: statusMeta.color }}>
                   {prod.status}
                 </span>
@@ -637,35 +702,52 @@ function ProductCatalogTab() {
                 <span className={s.productCat}>{prod.category}</span>
                 <span className={s.productSku}>{prod.sku}</span>
               </div>
+              
               <div className={s.productFooter}>
-                <span className={s.productPrice}>{fmtFull(prod.price)}</span>
-                <div className={s.productActions}>
-                  <button className={s.prodActionBtn} aria-label="Edit">✏️</button>
-                  <button className={s.prodActionBtn} aria-label="More">···</button>
+                <span className={s.productPrice}>${prod.price.toLocaleString()}</span>
+                
+                <div className={s.productActions} style={{ position: 'relative' }}>
+                  <button 
+                    className={s.prodActionBtn} 
+                    onClick={(e) => { e.stopPropagation(); handleEdit(prod); }}
+                    title="Edit Product"
+                  >
+                    ✏️
+                  </button>
+                  
+                  <button 
+                    className={s.prodActionBtn} 
+                    onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === prod.id ? null : prod.id); }}
+                  >
+                    ···
+                  </button>
+
+                  {activeMenuId === prod.id && (
+                    <div className={s.leadDropdown} style={{ top: '35px', right: '0', display: 'block', zIndex: 10 }}>
+                      <button className={s.leadDropItem} onClick={() => handleEdit(prod)}>Edit Details</button>
+                      <button className={s.leadDropItem} onClick={() => alert('Duplicated!')}>Duplicate</button>
+                      <hr className={s.leadDropDivider} />
+                      <button className={`${s.leadDropItem} ${s.leadDropDanger}`} onClick={() => handleDelete(prod.id)}>Delete Product</button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           );
         })}
       </div>
-
-      {filtered.length === 0 && (
-        <div className={s.emptyState}>
-          <p className={s.emptyIcon}>📦</p>
-          <p className={s.emptyTitle}>No products found</p>
-          <p className={s.emptySub}>Try adjusting your filters.</p>
-        </div>
-      )}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── TAB 4: CUSTOMERS & ORDERS
+// ── TAB 4: CUSTOMERS & ORDERS (UPDATED)
 // ─────────────────────────────────────────────────────────────────────────────
 function CustomersTab() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+  
+  const [activeMenuId, setActiveMenuId] = useState(null);
 
   const statusFilters = ["All", "VIP", "Active", "Inactive"];
 
@@ -678,6 +760,21 @@ function CustomersTab() {
     [search, statusFilter]
   );
 
+  const handleView = (cust) => {
+    alert(`Customer Details:\nCompany: ${cust.company}\nContact: ${cust.contact}\nTotal Spend: ${fmtFull(cust.totalSpend)}`);
+  };
+
+  const handleMessage = (email) => {
+    window.location.href = `mailto:${email}?subject=Synergy ERP - Business Inquiry`;
+  };
+
+  const handleDelete = (id) => {
+    if (window.confirm("Are you sure you want to delete this customer record?")) {
+      alert("Customer record deleted (UI Only)");
+      setActiveMenuId(null);
+    }
+  };
+
   const statusMeta = {
     VIP:      { bg: "#FFF3BF", color: "#E67700" },
     Active:   { bg: "#EBFBEE", color: "#2F9E44" },
@@ -685,16 +782,14 @@ function CustomersTab() {
   };
 
   return (
-    <div>
-      {/* Stats */}
+    <div onClick={() => setActiveMenuId(null)}>
       <div className={s.pipelineStats}>
-        <SalesStatCard icon="👥" label="Total Customers" value={CUSTOMERS.length}           change="+3 this month"  changeType="up" />
-        <SalesStatCard icon="⭐" label="VIP Accounts"    value={CUSTOMERS.filter(c=>c.status==="VIP").length} change="High value" changeType="up" />
-        <SalesStatCard icon="💰" label="Total Revenue"   value={fmtFull(CUSTOMERS.reduce((a,c)=>a+c.totalSpend,0))} change="+12.4%" changeType="up" />
-        <SalesStatCard icon="🛒" label="Total Orders"    value={CUSTOMERS.reduce((a,c)=>a+c.totalOrders,0)}  change="+18 this month" changeType="up" />
+        <SalesStatCard label="Total Customers" value={CUSTOMERS.length}           change="+3 this month"  changeType="up" />
+        <SalesStatCard label="VIP Accounts"    value={CUSTOMERS.filter(c=>c.status==="VIP").length} change="High value" changeType="up" />
+        <SalesStatCard label="Total Revenue"   value={fmtFull(CUSTOMERS.reduce((a,c)=>a+c.totalSpend,0))} change="+12.4%" changeType="up" />
+        <SalesStatCard label="Total Orders"    value={CUSTOMERS.reduce((a,c)=>a+c.totalOrders,0)}  change="+18 this month" changeType="up" />
       </div>
 
-      {/* Toolbar */}
       <div className={s.catalogToolbar}>
         <div className={s.searchWrap}>
           <span className={s.searchIcon}>🔍</span>
@@ -716,10 +811,8 @@ function CustomersTab() {
             </button>
           ))}
         </div>
-        <button className={s.btnOutline}>⬇ Export</button>
       </div>
 
-      {/* Table */}
       <div className={s.customersTable}>
         <table className={s.custTable}>
           <thead className={s.custThead}>
@@ -757,10 +850,30 @@ function CustomersTab() {
                     </span>
                   </td>
                   <td className={s.custTd} style={{ textAlign: "right" }}>
-                    <div className={s.custActions}>
-                      <button className={s.custActionBtn} aria-label="View">👁</button>
-                      <button className={s.custActionBtn} aria-label="Message">✉</button>
-                      <button className={s.custActionBtn} aria-label="More">···</button>
+                    <div className={s.custActions} style={{ position: 'relative' }}>
+                      <button 
+                        className={s.custActionBtn} 
+                        onClick={(e) => { e.stopPropagation(); handleView(cust); }}
+                      >👁</button>
+                      
+                      <button 
+                        className={s.custActionBtn} 
+                        onClick={(e) => { e.stopPropagation(); handleMessage(cust.email); }}
+                      >✉</button>
+                      
+                      <button 
+                        className={s.custActionBtn} 
+                        onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === cust.id ? null : cust.id); }}
+                      >···</button>
+
+                      {activeMenuId === cust.id && (
+                        <div className={s.leadDropdown} style={{ top: '30px', right: '0', display: 'block', zIndex: 10 }}>
+                          <button className={s.leadDropItem} onClick={() => handleView(cust)}>View Profile</button>
+                          <button className={s.leadDropItem} onClick={() => alert('Editing...')}>Edit Customer</button>
+                          <hr className={s.leadDropDivider} />
+                          <button className={`${s.leadDropItem} ${s.leadDropDanger}`} onClick={() => handleDelete(cust.id)}>Delete Customer</button>
+                        </div>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -780,7 +893,7 @@ function CustomersTab() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── MAIN PAGE
+// ── MAIN PAGE (SalesPage.jsx) - WITH FILTER
 // ─────────────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: "pipeline",  label: "Lead Pipeline"     },
@@ -792,29 +905,36 @@ const TABS = [
 export default function SalesPage() {
   const [activeNav, setActiveNav] = useState("sales");
   const [activeTab, setActiveTab] = useState("pipeline");
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [filterValues, setFilterValues] = useState({
+    minAmount: "",
+    priority: "ALL",
+    status: "ALL",
+  });
   const navigate = useNavigate();
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA" }}>
+    <div style={{ display: "flex", minHeight: "100vh", background: "#f8f9fa" }}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-      <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div style={{ 
+        marginLeft: 220, 
+        flex: 1, 
+        display: "flex", 
+        flexDirection: "column", 
+        minHeight: "100vh",
+        backgroundColor: "#f8f9fa"
+      }}>
         <Header breadcrumbs={["Synergy ERP", "Sales", activeTab === "pipeline" ? "Pipeline" : TABS.find(t => t.id === activeTab)?.label]} />
 
-        <main className={s.page}>
-          {/* Page Header */}
+        <main className={s.page} style={{ flex: 1, backgroundColor: "#f8f9fa" }}>
           <header className={s.pageHeader}>
             <div>
               <h1 className={s.pageTitle}>Sales & CRM</h1>
               <p className={s.pageSub}>Manage your leads, pipeline, catalog, and customer relationships.</p>
             </div>
-            <div className={s.headerActions}>
-              <button className={s.btnOutline} onClick={() => setActiveTab("catalog")}>🛒 Product Catalog</button>
-              <button className={s.btnPrimary} onClick={() => setActiveTab("pipeline")}>+ New Lead</button>
-            </div>
           </header>
 
-          {/* Tab Bar */}
           <div className={s.tabBar} role="tablist">
             {TABS.map((tab) => (
               <button
@@ -828,26 +948,79 @@ export default function SalesPage() {
               </button>
             ))}
             <div className={s.tabBarRight}>
-              <button className={s.filterBtn}>⚙ Filter</button>
+              <button className={s.filterBtn} onClick={() => setIsFilterOpen(true)}>⚙ Filter</button>
             </div>
           </div>
 
-          {/* Tab Content */}
-          <div key={activeTab} className={s.tabContent}>
-            {activeTab === "pipeline"  && <PipelineTab />}
+          <div key={activeTab} className={s.tabContent} style={{ backgroundColor: "#f8f9fa" }}>
+            {activeTab === "pipeline"  && <PipelineTab filterValues={filterValues} />}
             {activeTab === "analytics" && <SalesAnalyticsTab />}
             {activeTab === "catalog"   && <ProductCatalogTab />}
             {activeTab === "customers" && <CustomersTab />}
           </div>
+
+          {/* Filter Modal */}
+          {isFilterOpen && (
+            <div className={s.filterModalOverlay} onClick={() => setIsFilterOpen(false)}>
+              <div className={s.filterModal} onClick={(e) => e.stopPropagation()}>
+                <div className={s.filterModalHeader}>
+                  <h3>Filter Leads</h3>
+                  <button className={s.filterModalClose} onClick={() => setIsFilterOpen(false)}>✕</button>
+                </div>
+                <div className={s.filterModalBody}>
+                  <div className={s.filterField}>
+                    <label>Min Deal Amount ($)</label>
+                    <input
+                      type="number"
+                      placeholder="e.g. 10000"
+                      value={filterValues.minAmount}
+                      onChange={(e) => setFilterValues(prev => ({ ...prev, minAmount: e.target.value }))}
+                    />
+                  </div>
+                  <div className={s.filterField}>
+                    <label>Priority</label>
+                    <select
+                      value={filterValues.priority}
+                      onChange={(e) => setFilterValues(prev => ({ ...prev, priority: e.target.value }))}
+                    >
+                      <option value="ALL">All</option>
+                      <option value="HIGH">HIGH</option>
+                      <option value="MEDIUM">MEDIUM</option>
+                      <option value="LOW">LOW</option>
+                    </select>
+                  </div>
+                  <div className={s.filterField}>
+                    <label>Status / Stage</label>
+                    <select
+                      value={filterValues.status}
+                      onChange={(e) => setFilterValues(prev => ({ ...prev, status: e.target.value }))}
+                    >
+                      <option value="ALL">All Stages</option>
+                      <option value="prospecting">Prospecting</option>
+                      <option value="qualification">Qualification</option>
+                      <option value="proposal">Proposal</option>
+                      <option value="negotiation">Negotiation</option>
+                      <option value="closed_won">Closed Won</option>
+                    </select>
+                  </div>
+                </div>
+                <div className={s.filterModalFooter}>
+                  <button className={s.btnGhost} onClick={() => {
+                    setFilterValues({ minAmount: "", priority: "ALL", status: "ALL" });
+                    setIsFilterOpen(false);
+                  }}>Clear & Close</button>
+                  <button className={s.btnPrimary} onClick={() => setIsFilterOpen(false)}>Apply Filters</button>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
 
-        {/* Footer */}
-        <footer className={s.footer}>
+        <footer className={s.footer} style={{ backgroundColor: "#f8f9fa", borderTop: "1px solid #e9ecef" }}>
           <span>© 2024 Synergy ERP Systems. All rights reserved.</span>
           <div className={s.footerRight}>
             <a href="#" className={s.footerLink}>Privacy Policy</a>
-            <a href="#" className={s.footerLink}>Terms of Service</a>
-            <span className={s.statusDot}>● System Status: Operational</span>
+            <span className={s.statusDot}>● Operational</span>
             <span>v2.4.0-stable</span>
           </div>
         </footer>

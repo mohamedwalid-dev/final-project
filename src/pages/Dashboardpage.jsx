@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/refs */
 // ─── Pages/DashboardPage.jsx ──────────────────────────────────────────────────
 
 import { useState, useEffect, useCallback, useRef, memo } from "react";
@@ -7,26 +8,27 @@ import {
   Tooltip, ResponsiveContainer,
 } from "recharts";
 import Sidebar from "../components/Finance/Layout/Sidebar";
-import Header  from "../components/Finance/Layout/Header";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BACKEND SERVICE STUB (swap with real API calls)
 // ─────────────────────────────────────────────────────────────────────────────
 const dashboardService = {
+  // eslint-disable-next-line no-unused-vars
   async fetchStats(range = "monthly", signal) {
     await new Promise(r => setTimeout(r, 700));
     const multiplier = range === "weekly" ? 0.25 : range === "yearly" ? 12 : 1;
     return {
       data: [
-        { id: "revenue",   label: "Total Revenue",  value: Math.round(2482900 * multiplier), raw: 2482900 * multiplier, change: "+12.5%", changeType: "up"   },
+        { id: "revenue",   label: "Total Revenue",  value: Math.round(2482900 * multiplier), raw: 2482900 * multiplier, change: "+12.5%", changeType: "up" },
         { id: "expenses",  label: "Total Expenses", value: Math.round(1102450 * multiplier), raw: 1102450 * multiplier, change: "+4.2%",  changeType: "down" },
-        { id: "profit",    label: "Net Profit",     value: Math.round(1380450 * multiplier), raw: 1380450 * multiplier, change: "+18.1%", changeType: "up"   },
-        { id: "orders",    label: "Sales Orders",   value: Math.round(1240  * multiplier),   raw: 1240  * multiplier,   change: "+8.4%",  changeType: "up"   },
-        { id: "employees", label: "Employees",      value: 458,                               raw: 458,                   change: "+2.1%",  changeType: "up"   },
+        { id: "profit",    label: "Net Profit",     value: Math.round(1380450 * multiplier), raw: 1380450 * multiplier, change: "+18.1%", changeType: "up" },
+        { id: "orders",    label: "Sales Orders",   value: Math.round(1240  * multiplier),   raw: 1240  * multiplier,   change: "+8.4%",  changeType: "up" },
+        { id: "employees", label: "Employees",      value: 458,                               raw: 458,                   change: "+2.1%",  changeType: "up" },
       ],
     };
   },
 
+  // eslint-disable-next-line no-unused-vars
   async fetchRevenueChart(range = "monthly", signal) {
     await new Promise(r => setTimeout(r, 900));
     const months = ["Jan","Feb","Mar","Apr","May","Jun"];
@@ -39,6 +41,7 @@ const dashboardService = {
     };
   },
 
+  // eslint-disable-next-line no-unused-vars
   async fetchEfficiency(signal) {
     await new Promise(r => setTimeout(r, 600));
     return {
@@ -52,6 +55,7 @@ const dashboardService = {
     };
   },
 
+  // eslint-disable-next-line no-unused-vars
   async fetchRecentOperations(signal) {
     await new Promise(r => setTimeout(r, 500));
     return {
@@ -64,6 +68,7 @@ const dashboardService = {
     };
   },
 
+  // eslint-disable-next-line no-unused-vars
   async fetchTasks(signal) {
     await new Promise(r => setTimeout(r, 400));
     return {
@@ -72,6 +77,20 @@ const dashboardService = {
         { id: "t2", title: "Annual Performance Reviews",      priority: "Medium", dueLabel: "In 2 days", checked: false },
         { id: "t3", title: "Inventory Reorder Strategy",      priority: "High",   dueLabel: "Tomorrow",  checked: false },
         { id: "t4", title: "New Customer Success Lead Intro", priority: "Low",    dueLabel: "Friday",    checked: false },
+      ],
+    };
+  },
+
+  // eslint-disable-next-line no-unused-vars
+  async fetchNotifications(signal) {
+    await new Promise(r => setTimeout(r, 300));
+    return {
+      data: [
+        { id: "n1", title: "New message from CEO", message: "Q3 strategy meeting scheduled for tomorrow at 10 AM", time: "5 min ago", read: false, type: "message", action: "message" },
+        { id: "n2", title: "System Update Complete", message: "Version 2.4.1 has been successfully deployed", time: "1 hour ago", read: false, type: "system", action: "system" },
+        { id: "n3", title: "Approval Required", message: "Pending budget approval for Q3 Marketing campaign", time: "3 hours ago", read: true, type: "action", action: "approval" },
+        { id: "n4", title: "Weekly Report Ready", message: "Your weekly performance report is now available", time: "Yesterday", read: true, type: "report", action: "report" },
+        { id: "n5", title: "Team Reminder", message: "Team sync meeting in 30 minutes", time: "Yesterday", read: true, type: "reminder", action: "reminder" },
       ],
     };
   },
@@ -376,20 +395,6 @@ const AIInsightsPanel = memo(() => {
           <li key={i} style={{ fontSize: 12, color: T.textSec, lineHeight: 1.5 }}>{insight}</li>
         ))}
       </ul>
-
-      <button
-        style={{
-          marginTop: 16, width: "100%", padding: "11px 0",
-          background: T.primary, color: "#fff",
-          border: "none", borderRadius: 10,
-          fontSize: 13, fontWeight: 700, cursor: "pointer",
-          transition: "opacity 0.15s",
-        }}
-        onMouseEnter={e => e.currentTarget.style.opacity = "0.88"}
-        onMouseLeave={e => e.currentTarget.style.opacity = "1"}
-      >
-        Deep Dive Strategy
-      </button>
     </div>
   );
 });
@@ -459,10 +464,6 @@ const RecentOperations = memo(({ ops, loading }) => {
           <h3 style={{ fontSize: 14.5, fontWeight: 700, color: T.text, margin: 0 }}>Recent Operations</h3>
           <p style={{ fontSize: 12, color: T.textMuted, margin: "2px 0 0" }}>Live feed of enterprise-wide actions</p>
         </div>
-        <button style={{
-          background: "none", border: "none", fontSize: 12, fontWeight: 600,
-          color: T.primary, cursor: "pointer", padding: "4px 8px",
-        }}>View Log</button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -516,12 +517,6 @@ const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
     <div ref={anim.ref} style={{ ...cardStyle, ...anim.style }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <h3 style={{ fontSize: 14.5, fontWeight: 700, color: T.text, margin: 0 }}>Executive Tasks</h3>
-        <button style={{
-          width: 28, height: 28, borderRadius: 7,
-          border: `1px solid ${T.border}`, background: T.surface,
-          fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-          color: T.textMuted,
-        }}>+</button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -568,27 +563,636 @@ const ExecutiveTasks = memo(({ tasks: initialTasks, loading }) => {
           );
         })}
       </div>
-
-      <button
-        style={{
-          marginTop: 14, width: "100%", padding: "10px 0",
-          background: T.borderSoft, color: T.textSec,
-          border: `1px solid ${T.border}`, borderRadius: 10,
-          fontSize: 13, fontWeight: 600, cursor: "pointer",
-          transition: "background 0.15s",
-        }}
-        onMouseEnter={e => e.currentTarget.style.background = T.border}
-        onMouseLeave={e => e.currentTarget.style.background = T.borderSoft}
-      >
-        Sync Calendar
-      </button>
     </div>
   );
 });
 ExecutiveTasks.displayName = "ExecutiveTasks";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ENTERPRISE SHORTCUTS
+// NOTIFICATION COMPONENT (كل زرار يعمل وظيفة مختلفة حسب اسمه)
+// ─────────────────────────────────────────────────────────────────────────────
+// eslint-disable-next-line no-unused-vars
+const NotificationsDropdown = memo(({ notifications, loading, onClose, onMarkAsRead, navigate }) => {
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  const getTypeIcon = (type) => {
+    switch(type) {
+      case 'message': return '💬';
+      case 'system': return '⚙️';
+      case 'action': return '📋';
+      case 'report': return '📊';
+      case 'reminder': return '⏰';
+      default: return '🔔';
+    }
+  };
+
+  // دالة تنفيذ الإجراء حسب نوع الإشعار
+  const handleNotificationAction = (notif) => {
+    // تحديث حالة الإشعار إلى مقروء إذا لم يكن مقروءاً
+    if (!notif.read) {
+      onMarkAsRead(notif.id);
+    }
+    
+    // تنفيذ الإجراء المناسب حسب نوع الإشعار
+    switch(notif.action) {
+      case 'message':
+        alert(`📬 فتح صندوق الوارد\n\nرسالة من: CEO\nالموضوع: ${notif.title}\n\nالمحتوى: ${notif.message}`);
+        break;
+        
+      case 'system':
+        alert(`⚙️ فتح إعدادات النظام\n\nالتحديث: ${notif.title}\n\nالتفاصيل: ${notif.message}`);
+        break;
+        
+      case 'approval':
+        alert(`📋 فتح صفحة الموافقات\n\nطلب موافقة: ${notif.title}\n\nالتفاصيل: ${notif.message}`);
+        break;
+        
+      case 'report':
+        alert(`📊 فتح التقارير\n\nالتقرير: ${notif.title}\n\nالتفاصيل: ${notif.message}`);
+        break;
+        
+      case 'reminder':
+        alert(`⏰ فتح التقويم\n\nتذكير: ${notif.title}\n\nالتفاصيل: ${notif.message}`);
+        break;
+        
+      default:
+        alert(`🔔 ${notif.title}\n\n${notif.message}`);
+    }
+  };
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 'calc(100% + 8px)',
+      right: 0,
+      width: 360,
+      maxHeight: 480,
+      background: T.surface,
+      borderRadius: 16,
+      boxShadow: '0 10px 40px rgba(0,0,0,0.15)',
+      border: `1px solid ${T.border}`,
+      overflow: 'hidden',
+      zIndex: 1000,
+    }}>
+      
+      {/* Header */}
+      <div style={{
+        padding: '16px 20px',
+        borderBottom: `1px solid ${T.borderSoft}`,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+      }}>
+        <div>
+          <span style={{ fontSize: 16, fontWeight: 700, color: T.text }}>Notifications</span>
+          {unreadCount > 0 && (
+            <span style={{
+              marginLeft: 8,
+              padding: '2px 8px',
+              background: T.primary,
+              color: '#fff',
+              borderRadius: 12,
+              fontSize: 11,
+              fontWeight: 600,
+            }}>
+              {unreadCount} new
+            </span>
+          )}
+        </div>
+        {unreadCount > 0 && (
+          <button
+            onClick={() => onMarkAsRead('all')}
+            style={{
+              background: 'none',
+              border: 'none',
+              fontSize: 12,
+              color: T.primary,
+              cursor: 'pointer',
+              fontWeight: 500,
+              transition: 'opacity 0.15s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.opacity = '0.7'}
+            onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+          >
+            Mark all as read
+          </button>
+        )}
+      </div>
+
+      {/* Notifications List - كل إشعار له وظيفة مختلفة */}
+      <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+        {loading ? (
+          <div style={{ padding: 20 }}>
+            {[1,2,3].map(i => (
+              <div key={i} style={{ marginBottom: 16 }}>
+                <Skeleton w="80%" h={12} style={{ marginBottom: 8 }} />
+                <Skeleton w="60%" h={10} />
+              </div>
+            ))}
+          </div>
+        ) : notifications.length === 0 ? (
+          <div style={{
+            padding: '40px 20px',
+            textAlign: 'center',
+            color: T.textMuted,
+            fontSize: 13,
+          }}>
+            🔔 No notifications
+          </div>
+        ) : (
+          notifications.map(notif => {
+            let actionLabel = '';
+            switch(notif.action) {
+              case 'message': actionLabel = 'Open messages'; break;
+              case 'system': actionLabel = 'View system updates'; break;
+              case 'approval': actionLabel = 'Review approval'; break;
+              case 'report': actionLabel = 'View report'; break;
+              case 'reminder': actionLabel = 'Open calendar'; break;
+              default: actionLabel = 'View details';
+            }
+            
+            return (
+              <div
+                key={notif.id}
+                onClick={() => handleNotificationAction(notif)}
+                style={{
+                  padding: '14px 20px',
+                  borderBottom: `1px solid ${T.borderSoft}`,
+                  cursor: 'pointer',
+                  background: notif.read ? T.surface : `${T.primaryLight}30`,
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = notif.read ? `${T.borderSoft}` : `${T.primaryLight}50`;
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = notif.read ? T.surface : `${T.primaryLight}30`;
+                }}
+                title={`Click to: ${actionLabel}`}
+              >
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  <span style={{ fontSize: 18 }}>{getTypeIcon(notif.type)}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <p style={{
+                        fontSize: 13,
+                        fontWeight: notif.read ? 500 : 700,
+                        color: notif.read ? T.textSec : T.text,
+                        margin: 0,
+                      }}>
+                        {notif.title}
+                      </p>
+                      {!notif.read && (
+                        <span style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          background: T.primary,
+                          flexShrink: 0,
+                        }} />
+                      )}
+                    </div>
+                    <p style={{ fontSize: 12, color: T.textMuted, margin: '0 0 4px' }}>
+                      {notif.message.length > 60 ? notif.message.substring(0, 60) + '...' : notif.message}
+                    </p>
+                    <p style={{ fontSize: 10, color: T.textMuted, margin: 0 }}>
+                      {notif.time}
+                    </p>
+                    <p style={{ fontSize: 9, color: T.primary, margin: '4px 0 0', opacity: 0.7 }}>
+                      {actionLabel} →
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Footer with Close button */}
+      <div style={{
+        padding: '12px 20px',
+        borderTop: `1px solid ${T.borderSoft}`,
+        textAlign: 'center',
+      }}>
+        <button
+          onClick={onClose}
+          style={{
+            background: 'none',
+            border: 'none',
+            fontSize: 12,
+            color: T.textMuted,
+            cursor: 'pointer',
+            transition: 'color 0.15s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.color = T.primary}
+          onMouseLeave={e => e.currentTarget.style.color = T.textMuted}
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+});
+NotificationsDropdown.displayName = "NotificationsDropdown";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGIN PAGE COMPONENT (بالتصميم الجديد)
+// ─────────────────────────────────────────────────────────────────────────────
+const LoginPage = ({ onLogin }) => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!email || !password) {
+      setError('Please enter both email and password');
+      return;
+    }
+    setError('');
+    if (email === 'admin@prime.com' && password === 'admin123') {
+      onLogin();
+    } else {
+      setError('Invalid email or password. Try admin@prime.com / admin123');
+    }
+  };
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      fontFamily: "'DM Sans','Segoe UI',sans-serif",
+    }}>
+      <div style={{
+        background: T.surface,
+        borderRadius: 24,
+        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+        width: '100%',
+        maxWidth: 480,
+        margin: 20,
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          padding: '32px 32px 0 32px',
+          textAlign: 'center',
+        }}>
+          <h2 style={{
+            fontSize: 20,
+            fontWeight: 700,
+            color: T.primary,
+            margin: '0 0 8px',
+            letterSpacing: '-0.3px',
+          }}>
+            ERP Auth
+          </h2>
+          <h1 style={{
+            fontSize: 28,
+            fontWeight: 800,
+            color: T.text,
+            margin: '0 0 8px',
+            letterSpacing: '-0.5px',
+          }}>
+            Welcome back
+          </h1>
+          <p style={{
+            fontSize: 14,
+            color: T.textMuted,
+            margin: 0,
+          }}>
+            Access your secure ERP workspace and manage your enterprise data with ease.
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ padding: '32px' }}>
+          <div style={{ marginBottom: 20 }}>
+            <label style={{
+              display: 'block',
+              fontSize: 13,
+              fontWeight: 600,
+              color: T.textSec,
+              marginBottom: 6,
+            }}>
+              Email Address
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@company.com"
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                border: `1px solid ${T.border}`,
+                borderRadius: 12,
+                fontSize: 14,
+                outline: 'none',
+                transition: 'all 0.15s',
+              }}
+              onFocus={e => e.target.style.borderColor = T.primary}
+              onBlur={e => e.target.style.borderColor = T.border}
+            />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{
+              display: 'block',
+              fontSize: 13,
+              fontWeight: 600,
+              color: T.textSec,
+              marginBottom: 6,
+            }}>
+              Password
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••"
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                border: `1px solid ${T.border}`,
+                borderRadius: 12,
+                fontSize: 14,
+                outline: 'none',
+                transition: 'all 0.15s',
+              }}
+              onFocus={e => e.target.style.borderColor = T.primary}
+              onBlur={e => e.target.style.borderColor = T.border}
+            />
+          </div>
+
+          {error && (
+            <div style={{
+              background: T.dangerLight,
+              color: T.danger,
+              padding: '10px 14px',
+              borderRadius: 10,
+              fontSize: 12,
+              marginBottom: 16,
+            }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 24,
+          }}>
+            <label style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              cursor: 'pointer',
+            }}>
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                style={{ width: 16, height: 16, cursor: 'pointer' }}
+              />
+              <span style={{ fontSize: 13, color: T.textSec }}>Remember for 30 days</span>
+            </label>
+            <a href="#" style={{
+              fontSize: 13,
+              color: T.primary,
+              textDecoration: 'none',
+            }}>Forgot password?</a>
+          </div>
+
+          <button
+            type="submit"
+            style={{
+              width: '100%',
+              padding: '14px',
+              background: T.primary,
+              color: '#fff',
+              border: 'none',
+              borderRadius: 12,
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: 'pointer',
+              transition: 'opacity 0.15s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
+            onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+          >
+            Login to Workspace →
+          </button>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 16,
+            margin: '24px 0',
+          }}>
+            <div style={{ flex: 1, height: 1, background: T.border }} />
+            <span style={{ fontSize: 12, color: T.textMuted }}>OR CONTINUE WITH</span>
+            <div style={{ flex: 1, height: 1, background: T.border }} />
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, marginBottom: 24 }}>
+            <button
+              type="button"
+              style={{
+                flex: 1,
+                padding: '10px',
+                background: T.surface,
+                border: `1px solid ${T.border}`,
+                borderRadius: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                cursor: 'pointer',
+                fontSize: 13,
+                fontWeight: 500,
+                color: T.textSec,
+              }}
+            >
+              <span style={{ fontSize: 16 }}>✓</span> Google
+            </button>
+            <button
+              type="button"
+              style={{
+                flex: 1,
+                padding: '10px',
+                background: T.surface,
+                border: `1px solid ${T.border}`,
+                borderRadius: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                cursor: 'pointer',
+                fontSize: 13,
+                fontWeight: 500,
+                color: T.textSec,
+              }}
+            >
+              <span style={{ fontSize: 16 }}>◆</span> Azure AD
+            </button>
+          </div>
+
+          <p style={{
+            textAlign: 'center',
+            fontSize: 13,
+            color: T.textMuted,
+            margin: 0,
+          }}>
+            New to ERP system? <a href="#" style={{ color: T.primary, textDecoration: 'none' }}>Create an account</a>
+          </p>
+        </form>
+
+        <div style={{
+          padding: '16px 32px',
+          borderTop: `1px solid ${T.borderSoft}`,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: 11,
+          color: T.textMuted,
+        }}>
+          <span>© 2026 ERP Auth System</span>
+          <div style={{ display: 'flex', gap: 16 }}>
+            <a href="#" style={{ color: T.textMuted, textDecoration: 'none' }}>Privacy Policy</a>
+            <a href="#" style={{ color: T.textMuted, textDecoration: 'none' }}>Terms of Service</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER AVATAR COMPONENT (مع Sign Out فقط)
+// ─────────────────────────────────────────────────────────────────────────────
+const UserAvatar = memo(({ onSignOut }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <div style={{ position: 'relative' }} ref={dropdownRef}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '6px 12px',
+          borderRadius: 40,
+          transition: 'all 0.15s',
+        }}
+        onMouseEnter={e => e.currentTarget.style.background = T.borderSoft}
+        onMouseLeave={e => e.currentTarget.style.background = 'none'}
+      >
+        <div style={{
+          width: 40,
+          height: 40,
+          borderRadius: '50%',
+          background: 'linear-gradient(135deg, #3B5BDB 0%, #845EF7 100%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#fff',
+          fontWeight: 700,
+          fontSize: 16,
+        }}>
+          AS
+        </div>
+        
+        <div style={{ textAlign: 'left' }}>
+          <p style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: T.text,
+            margin: 0,
+            lineHeight: 1.3,
+          }}>
+            Alex Sterling
+          </p>
+          <p style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: T.textMuted,
+            margin: 0,
+            letterSpacing: '0.5px',
+          }}>
+            EXECUTIVE ADMIN
+          </p>
+        </div>
+      </button>
+
+      {isOpen && (
+        <div style={{
+          position: 'absolute',
+          top: 'calc(100% + 8px)',
+          right: 0,
+          width: 200,
+          background: T.surface,
+          borderRadius: 12,
+          boxShadow: '0 10px 40px rgba(0,0,0,0.15)',
+          border: `1px solid ${T.border}`,
+          overflow: 'hidden',
+          zIndex: 1000,
+        }}>
+          <div style={{ padding: '8px 0' }}>
+            <div style={{
+              padding: '8px 16px',
+              borderBottom: `1px solid ${T.borderSoft}`,
+              marginBottom: 8,
+            }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: T.text, margin: 0 }}>Alex Sterling</p>
+              <p style={{ fontSize: 11, color: T.textMuted, margin: '2px 0 0' }}>alex.sterling@prime.com</p>
+            </div>
+            <button
+              onClick={onSignOut}
+              style={{
+                width: '100%',
+                padding: '10px 16px',
+                textAlign: 'left',
+                background: 'none',
+                border: 'none',
+                fontSize: 13,
+                color: T.danger,
+                cursor: 'pointer',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = T.borderSoft}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+UserAvatar.displayName = "UserAvatar";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTERPRISE SHORTCUTS - بدون مربعات فارغة
 // ─────────────────────────────────────────────────────────────────────────────
 const SHORTCUTS = [
   { id: "invoice",   label: "Create Invoice",  path: "/invoices/new" },
@@ -615,10 +1219,20 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
             key={sc.id}
             onClick={() => navigate(sc.path)}
             style={{
-              display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
-              padding: "16px 8px", border: `1px solid ${T.border}`,
-              borderRadius: 12, background: T.surface, cursor: "pointer",
-              transition: "all 0.15s", fontSize: 12, fontWeight: 600, color: T.textSec,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 4,
+              padding: "14px 8px",
+              border: `1px solid ${T.border}`,
+              borderRadius: 12,
+              background: T.surface,
+              cursor: "pointer",
+              transition: "all 0.15s",
+              fontSize: 13,
+              fontWeight: 600,
+              color: T.textSec,
             }}
             onMouseEnter={e => {
               e.currentTarget.style.borderColor = T.primary;
@@ -634,9 +1248,6 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
             }}
             aria-label={sc.label}
           >
-            <div style={{
-              width: 40, height: 40, borderRadius: 10, background: T.borderSoft,
-            }} />
             <span style={{ textAlign: "center", lineHeight: 1.3 }}>{sc.label}</span>
           </button>
         ))}
@@ -645,6 +1256,80 @@ const EnterpriseShortcuts = memo(({ navigate }) => {
   );
 });
 EnterpriseShortcuts.displayName = "EnterpriseShortcuts";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CUSTOM HEADER WITH NOTIFICATIONS + USER AVATAR
+// ─────────────────────────────────────────────────────────────────────────────
+const DashboardHeader = memo(({ onNotificationClick, notificationOpen, notifications, loading, onMarkAsRead, onClose, onSignOut, navigate }) => {
+  return (
+    <div style={{ 
+      display: 'flex', 
+      justifyContent: 'space-between', 
+      alignItems: 'center',
+      padding: '0 32px',
+      height: '64px',
+      background: T.surface,
+      borderBottom: `1px solid ${T.border}`,
+    }}>
+      <div>
+        <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>prime</span>
+        <span style={{ margin: '0 8px', color: T.textMuted }}>/</span>
+        <span style={{ fontSize: 13, color: T.textMuted }}>Analytics</span>
+        <span style={{ margin: '0 8px', color: T.textMuted }}>/</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Executive Dashboard</span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={onNotificationClick}
+            style={{
+              position: 'relative',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '8px 10px',
+              borderRadius: 10,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.15s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = T.borderSoft}
+            onMouseLeave={e => e.currentTarget.style.background = 'none'}
+          >
+            <span style={{ fontSize: 20 }}>🔔</span>
+            {notifications.some(n => !n.read) && (
+              <span style={{
+                position: 'absolute',
+                top: 4,
+                right: 4,
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                background: T.danger,
+                border: `2px solid ${T.surface}`,
+              }} />
+            )}
+          </button>
+          
+          {notificationOpen && (
+            <NotificationsDropdown
+              notifications={notifications}
+              loading={loading}
+              onClose={onClose}
+              onMarkAsRead={onMarkAsRead}
+              navigate={navigate}
+            />
+          )}
+        </div>
+
+        <UserAvatar onSignOut={onSignOut} />
+      </div>
+    </div>
+  );
+});
+DashboardHeader.displayName = "DashboardHeader";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FOOTER
@@ -656,7 +1341,7 @@ const Footer = () => (
     display: "flex", justifyContent: "space-between", alignItems: "center",
     fontSize: 11.5, color: T.textMuted,
   }}>
-    <span>2024 Synergy ERP Systems. All rights reserved.</span>
+    <span>2024 prime ERP Systems. All rights reserved.</span>
     <div style={{ display: "flex", gap: 16 }}>
       {["Privacy Policy", "Terms of Service"].map(l => (
         <a key={l} href="#" style={{ color: T.textMuted, textDecoration: "none" }}
@@ -688,9 +1373,10 @@ const GlobalStyles = () => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MAIN PAGE
+// MAIN PAGE (مع حالة تسجيل الدخول)
 // ─────────────────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
+  const [isLoggedIn, setIsLoggedIn] = useState(true);
   const [activeNav,  setActiveNav]  = useState("dashboard");
   const [range,      setRange]      = useState("monthly");
   const [stats,      setStats]      = useState([]);
@@ -698,6 +1384,9 @@ export default function DashboardPage() {
   const [efficiency, setEfficiency] = useState([]);
   const [operations, setOperations] = useState([]);
   const [tasks,      setTasks]      = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [loadingNotif, setLoadingNotif] = useState(true);
 
   const [loadingStats, setLoadingStats] = useState(true);
   const [loadingChart, setLoadingChart] = useState(true);
@@ -711,6 +1400,7 @@ export default function DashboardPage() {
     const controller = new AbortController();
     setLoadingStats(true);
     setLoadingChart(true);
+    setLoadingNotif(true);
 
     dashboardService.fetchStats(r, controller.signal).then(res => {
       setStats(res.data); setLoadingStats(false);
@@ -727,14 +1417,19 @@ export default function DashboardPage() {
     dashboardService.fetchTasks(controller.signal).then(res => {
       setTasks(res.data); setLoadingTasks(false);
     });
+    dashboardService.fetchNotifications(controller.signal).then(res => {
+      setNotifications(res.data); setLoadingNotif(false);
+    });
 
     return () => controller.abort();
   }, [range]);
 
   useEffect(() => {
-    const cleanup = loadPage(range);
-    return cleanup;
-  }, [range]);
+    if (isLoggedIn) {
+      const cleanup = loadPage(range);
+      return cleanup;
+    }
+  }, [range, isLoggedIn, loadPage]);
 
   const handleRangeChange = (r) => {
     setRange(r);
@@ -744,7 +1439,48 @@ export default function DashboardPage() {
     dashboardService.fetchRevenueChart(r).then(res => { setChartData(res.data); setLoadingChart(false); });
   };
 
+  const handleMarkAsRead = (id) => {
+    if (id === 'all') {
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    } else {
+      setNotifications(prev => prev.map(n => 
+        n.id === id ? { ...n, read: true } : n
+      ));
+    }
+  };
+
+  const handleNotificationClick = () => {
+    setNotificationOpen(!notificationOpen);
+  };
+
+  const handleCloseNotifications = () => {
+    setNotificationOpen(false);
+  };
+
+  const handleSignOut = () => {
+    setIsLoggedIn(false);
+    setNotificationOpen(false);
+  };
+
+  const handleLogin = () => {
+    setIsLoggedIn(true);
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (notificationOpen && !event.target.closest('.notification-area')) {
+        setNotificationOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [notificationOpen]);
+
   const titleAnim = useAnimateIn(0);
+
+  if (!isLoggedIn) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
 
   return (
     <>
@@ -755,7 +1491,18 @@ export default function DashboardPage() {
 
         <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
 
-          <Header breadcrumbs={["Synergy ERP", "Analytics", "Executive Dashboard"]} />
+          <div className="notification-area">
+            <DashboardHeader
+              onNotificationClick={handleNotificationClick}
+              notificationOpen={notificationOpen}
+              notifications={notifications}
+              loading={loadingNotif}
+              onMarkAsRead={handleMarkAsRead}
+              onClose={handleCloseNotifications}
+              onSignOut={handleSignOut}
+              navigate={navigate}
+            />
+          </div>
 
           <main style={{ flex: 1, padding: "28px 32px", fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
 
@@ -785,16 +1532,6 @@ export default function DashboardPage() {
                     </button>
                   ))}
                 </div>
-                <button style={{
-                  padding: "0 12px", height: 34, border: `1px solid ${T.border}`,
-                  borderRadius: 8, background: T.surface, cursor: "pointer",
-                  fontSize: 12, fontWeight: 600, color: T.textMuted,
-                }}>Settings</button>
-                <button style={{
-                  padding: "0 12px", height: 34, border: `1px solid ${T.border}`,
-                  borderRadius: 8, background: T.surface, cursor: "pointer",
-                  fontSize: 12, fontWeight: 600, color: T.textMuted,
-                }}>Export</button>
               </div>
             </div>
 

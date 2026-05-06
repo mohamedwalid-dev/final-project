@@ -236,6 +236,17 @@
   margin: 3px 0 0;
 }
 
+/* ── Filter Active Notice ─────────────────────────────────────────────────────*/
+.filterActiveNotice {
+  font-size: 11.5px;
+  color: #3B5BDB;
+  background: #EEF2FF;
+  padding: 4px 10px;
+  border-radius: 20px;
+  display: inline-block;
+  margin-top: 8px;
+}
+
 /* ── Add Lead Form ───────────────────────────────────────────────────────────*/
 .addLeadForm {
   background: #F8F9FA;
@@ -1041,4 +1052,97 @@
 
 .statusDot {
   color: #2F9E44;
+}
+
+/* ── Filter Modal ─────────────────────────────────────────────────────────────*/
+.filterModalOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.filterModal {
+  background: #fff;
+  border-radius: 16px;
+  width: 450px;
+  max-width: 90%;
+  box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.2);
+}
+
+.filterModalHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #E9ECEF;
+}
+
+.filterModalHeader h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1A1A2E;
+}
+
+.filterModalClose {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #868E96;
+  transition: color 0.12s;
+}
+
+.filterModalClose:hover {
+  color: #FA5252;
+}
+
+.filterModalBody {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.filterField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filterField label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #495057;
+}
+
+.filterField input,
+.filterField select {
+  padding: 10px 12px;
+  border: 1.5px solid #E9ECEF;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.filterField input:focus,
+.filterField select:focus {
+  outline: none;
+  border-color: #3B5BDB;
+}
+
+.filterModalFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid #E9ECEF;
 }

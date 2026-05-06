@@ -911,7 +911,9 @@ function ReportsTab() {
 
   return (
     <div>
-      <p className={s.formHint}>Reports are generated on demand. All data is role-gated — salary data masked for non-HR/Finance roles.</p>
+      <p className={s.formHint}>
+        Reports are generated on demand. All data is role-gated — salary data masked for non-HR/Finance roles.
+      </p>
       <div className={s.reportsGrid}>
         {reports.map(r => (
           <div key={r.id} className={s.reportCard}>
@@ -921,8 +923,35 @@ function ReportsTab() {
               <p className={s.reportLastRun}>Last run: {r.lastRun}</p>
             </div>
             <div className={s.reportActions}>
-              <button className={s.btnPrimarySm} onClick={()=>alert(`Generating: ${r.title}`)}>Run</button>
-              <button className={s.btnOutlineSm} onClick={()=>alert(`Exporting: ${r.title}`)}>Export</button>
+              <button
+                className={s.btnPrimarySm}
+                onClick={() => alert(`Generating: ${r.title}`)}
+              >
+                Run
+              </button>
+              <button
+                className={s.btnOutlineSm}
+                onClick={() => {
+                  const blob = new Blob(
+                    [
+                      `${r.title}\n` +
+                      `Generated: ${new Date().toLocaleString()}\n\n` +
+                      `This is a placeholder export for: ${r.title}`
+                    ],
+                    { type: "text/csv" }
+                  );
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${r.title.replace(/\s+/g, "_")}.csv`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                Export
+              </button>
             </div>
           </div>
         ))}

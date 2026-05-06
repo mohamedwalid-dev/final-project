@@ -80,30 +80,38 @@ export default function Finance() {
             <div className={s.headerActions}>
 
               <button
-                className={`${s.btn} ${s.btnOutline}`}
-                aria-label="Export reports"
-                onClick={() => setShowExport(true)}
-                disabled={loading || !!error}
-              >
-                Export Reports
-              </button>
+                  className={`${s.btn} ${s.btnOutline}`}
+                  aria-label="Finance Agent Dashboard"
+                  onClick={() => navigate("/FinanceDashboard")}
+                >
+                   Finance Agent
+                </button>
 
-              <button
-                className={`${s.btn} ${s.btnOutline}`}
-                onClick={() => navigate("/invoices")}
-                aria-label="View all invoices"
-              >
-                All Invoices
-              </button>
+                <button
+                  className={`${s.btn} ${s.btnOutline}`}
+                  aria-label="Export reports"
+                  onClick={() => setShowExport(true)}
+                  disabled={loading || !!error}
+                >
+                  Export Reports
+                </button>
 
-              <button
-                className={`${s.btn} ${s.btnPrimary}`}
-                onClick={() => navigate("/invoices/new")}
-                aria-label="Create new invoice"
-              >
-                + New Invoice
-              </button>
-            </div>
+                <button
+                  className={`${s.btn} ${s.btnOutline}`}
+                  onClick={() => navigate("/invoices")}
+                  aria-label="View all invoices"
+                >
+                  All Invoices
+                </button>
+
+                <button
+                  className={`${s.btn} ${s.btnPrimary}`}
+                  onClick={() => navigate("/invoices/new")}
+                  aria-label="Create new invoice"
+                >
+                  + New Invoice
+                </button>
+              </div>
           </header>
 
           {error && <ErrorCard message={error} onRetry={loadData} />}

@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { id: "inventory", label: "Inventory",     icon: "▤", path: "/inventory"  },
   { id: "support",   label: "Support",       icon: "◌", path: "/support"    },
   { id: "design",    label: "Design System", icon: "✦", path: "/design"     },
+  { id: "FinanceDashboard",    label: "Finance Agent", icon: "✦", path: "/FinanceDashboard"     },
 ];
 
 export default function Sidebar({ activeNav, onNavChange }) {
@@ -56,7 +57,7 @@ export default function Sidebar({ activeNav, onNavChange }) {
             />
           </svg>
         </div>
-        {!collapsed && <span className="logo-text">Synergy</span>}
+        {!collapsed && <span className="logo-text">Prime</span>}
       </div>
 
       {/* ── Nav ── */}
@@ -88,7 +89,7 @@ export default function Sidebar({ activeNav, onNavChange }) {
 
         {!collapsed && (
           <div className="storage-box">
-            <div className="storage-label">Synergy Cloud</div>
+            <div className="storage-label">prime Cloud</div>
             <div className="storage-sub">Enterprise Storage: 84% full</div>
             <div className="storage-bar">
               <div className="storage-fill" />

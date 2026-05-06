@@ -24,9 +24,12 @@ function StatCard({ icon, label, value, change, changeType, loading }) {
 
   return (
     <div className={s.statCard}>
-      <div className={s.statIconWrap}>
-        <span className={s.statIcon}>{icon}</span>
-      </div>
+      {/* إذا كانت الأيقونة فارغة لن يظهر هذا الجزء */}
+      {icon && (
+        <div className={s.statIconWrap}>
+          <span className={s.statIcon}>{icon}</span>
+        </div>
+      )}
       <p className={s.statLabel}>{label}</p>
       <p className={s.statValue}>{value}</p>
       <span className={`${s.statBadge} ${changeClass}`}>{change}</span>
@@ -187,9 +190,9 @@ function CapacityBar({ dept, pct, color }) {
 const DEPT_OPTIONS = ["Engineering", "Design", "Marketing", "Finance", "HR", "Sales", "Support", "Product"];
 
 function AddEmployeeModal({ onClose, onSubmit }) {
-  const [form,     setForm]     = useState({ name: "", title: "", dept: "Engineering", location: "", email: "" });
-  const [errors,   setErrors]   = useState({});
-  const [loading,  setLoading]  = useState(false);
+  const [form,      setForm]      = useState({ name: "", title: "", dept: "Engineering", location: "", email: "" });
+  const [errors,    setErrors]    = useState({});
+  const [loading,   setLoading]   = useState(false);
   const overlayRef = useRef(null);
 
   useEffect(() => {
@@ -205,10 +208,10 @@ function AddEmployeeModal({ onClose, onSubmit }) {
 
   const validate = () => {
     const errs = {};
-    if (!form.name.trim())     errs.name     = "Name is required";
-    if (!form.title.trim())    errs.title    = "Job title is required";
+    if (!form.name.trim())      errs.name      = "Name is required";
+    if (!form.title.trim())     errs.title     = "Job title is required";
     if (!form.location.trim()) errs.location = "Location is required";
-    if (!form.email.trim())    errs.email    = "Email is required";
+    if (!form.email.trim())     errs.email     = "Email is required";
     else if (!/\S+@\S+\.\S+/.test(form.email)) errs.email = "Invalid email";
     return errs;
   };
@@ -331,8 +334,8 @@ function getMonthGrid(year, month) {
 
 function AbsenceCalendar({ leaveRequests = [] }) {
   const today = new Date();
-  const [year,     setYear]     = useState(today.getFullYear());
-  const [month,    setMonth]    = useState(today.getMonth());
+  const [year,      setYear]      = useState(today.getFullYear());
+  const [month,     setMonth]     = useState(today.getMonth());
   const [selected, setSelected] = useState(null);
 
   const leaveMap  = useMemo(() => buildLeaveMap(leaveRequests, year), [leaveRequests, year]);
@@ -438,7 +441,7 @@ function AbsenceCalendar({ leaveRequests = [] }) {
 
 export default function HRPage() {
   const [activeNav, setActiveNav] = useState("hr");
-  const [showCalendar,   setShowCalendar]   = useState(false);
+  const [showCalendar,    setShowCalendar]    = useState(false);
   const [showCompliance, setShowCompliance] = useState(false);
   const calendarRef = useRef(null);
   const navigate = useNavigate();
@@ -453,10 +456,10 @@ export default function HRPage() {
   const {
     employees, leaveRequests, teamCapacity, statCards, departments,
     loadingEmployees, loadingStats, loadingSidebar, error,
-    viewMode,      setViewMode,
-    activeDept,    setActiveDept,
-    activeStatus,  setActiveStatus,
-    searchQuery,   setSearchQuery,
+    viewMode,       setViewMode,
+    activeDept,     setActiveDept,
+    activeStatus,   setActiveStatus,
+    searchQuery,    setSearchQuery,
     showAddEmployee, setShowAddEmployee,
     leaveResponding,
     handleLeaveAction,
@@ -483,7 +486,8 @@ export default function HRPage() {
           <div className={s.statGrid}>
             {loadingStats
               ? Array.from({ length: 4 }).map((_, i) => <StatCard key={i} loading />)
-              : statCards.map((c) => <StatCard key={c.id} {...c} />)
+              /* التعديل هنا: إضافة icon="" لإخفاء الإيموجي من البطاقات */
+              : statCards.map((c) => <StatCard key={c.id} {...c} icon="" />)
             }
           </div>
 
@@ -660,7 +664,7 @@ export default function HRPage() {
                 </button>
               </div>
 
-              <div className={s.sideCard}>
+              {/* <div className={s.sideCard}>
                 <div className={s.sideCardHeader}>
                   <div>
                     <h3 className={s.sideCardTitle}>Team Capacity</h3>
@@ -687,7 +691,7 @@ export default function HRPage() {
                 >
                   View Resource Report
                 </button>
-              </div>
+              </div> */}
 
               <div className={s.quickActions}>
                 <button

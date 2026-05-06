@@ -12,7 +12,7 @@ export const API_CONFIG = {
   // Set VITE_API_BASE_URL in your .env file
   // Development:  http://localhost:8000/api
   // Production:   https://your-backend.com/api
-  BASE_URL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api",
+  BASE_URL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost9000/api",
 
   // ── Auth ────────────────────────────────────────────────────────────────────
   // The header name your backend expects for the JWT token
