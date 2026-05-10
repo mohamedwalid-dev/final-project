@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+venv/
+venv311/
+__pycache__/
+*.pyc
+.env
+
+*.db
+*.csv

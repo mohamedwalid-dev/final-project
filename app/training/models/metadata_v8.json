@@ -1,0 +1,631 @@
+{
+  "version": "8.1",
+  "trained_at": "2026-04-25T22:25:45.083834Z",
+  "n_samples": 36742,
+  "feature_count": 41,
+  "feature_names": [
+    "amount_normalized",
+    "customer_age_normalized",
+    "years_with_company_normalized",
+    "invoice_frequency",
+    "industry_risk_factor",
+    "seasonal_factor",
+    "business_type_risk",
+    "days_to_due_normalized",
+    "credit_score_normalized",
+    "credit_score_bucket",
+    "credit_utilization",
+    "debt_ratio",
+    "credit_score_x_industry",
+    "income_normalized",
+    "invoice_to_income_ratio",
+    "balance_to_income_ratio",
+    "hist_paid_ratio",
+    "hist_late_ratio",
+    "hist_paid_ratio_3",
+    "hist_paid_ratio_6",
+    "hist_late_ratio_3",
+    "paid_trend",
+    "late_trend",
+    "last_paid",
+    "last_late",
+    "hist_max_delay",
+    "hist_avg_delay_normalized",
+    "delay_variance",
+    "payment_volatility",
+    "late_streak",
+    "good_streak",
+    "invoice_frequency_trend",
+    "payment_velocity",
+    "days_since_last_payment_norm",
+    "hist_payment_count_normalized",
+    "risk_composite",
+    "amount_x_industry_risk",
+    "clv_proxy",
+    "recovery_signal",
+    "behavioral_score",
+    "credit_x_late"
+  ],
+  "leakage_policy": {
+    "removed_v7_features": [
+      "overdue_days_normalized",
+      "overdue_x_industry",
+      "risk_composite_with_overdue"
+    ],
+    "guard_at_inference": [
+      "overdue_days",
+      "overdue_days_normalized",
+      "overdue_x_industry",
+      "payment_delay",
+      "is_bad_payer",
+      "is_late"
+    ]
+  },
+  "fp_improvements": {
+    "threshold_raised_from": "~0.14 (v8.0)",
+    "threshold_now": 0.28,
+    "fp_penalty_multiplier": 5.0,
+    "max_fp_rate_target": 0.12,
+    "three_tier_decisions": true,
+    "decision_logging": true,
+    "human_override": true
+  },
+  "schema": {
+    "csv_input_columns": [
+      "customer_id",
+      "invoice_id",
+      "age",
+      "gender",
+      "location",
+      "industry",
+      "business_type",
+      "years_with_company",
+      "income_revenue",
+      "credit_score",
+      "credit_limit",
+      "outstanding_balance",
+      "debt_ratio",
+      "invoice_amount",
+      "invoice_date",
+      "due_date",
+      "payment_date"
+    ],
+    "target": "is_bad_payer (payment_delay > 30 days)"
+  },
+  "ensemble_weights": [
+    0.5,
+    0.35,
+    0.15
+  ],
+  "decision_engine": {
+    "mode": "balanced",
+    "reject_threshold": 0.5,
+    "review_high": 0.38,
+    "review_low": 0.22,
+    "available_modes": {
+      "safe": {
+        "reject": 0.45,
+        "review_high": 0.35,
+        "review_low": 0.2,
+        "description": "حماية مالية — للإدارة المالية والائتمان"
+      },
+      "balanced": {
+        "reject": 0.5,
+        "review_high": 0.38,
+        "review_low": 0.22,
+        "description": "متوازن — الوضع الافتراضي للـ ERP"
+      },
+      "aggressive": {
+        "reject": 0.6,
+        "review_high": 0.45,
+        "review_low": 0.28,
+        "description": "نمو مبيعات — للفرق التجارية"
+      }
+    },
+    "decision_tiers": {
+      "approve": "score < 0.22",
+      "review_monitor": "score in [0.22, 0.38)",
+      "review_escalate": "score in [0.38, 0.5)",
+      "reject": "score >= 0.5"
+    }
+  },
+  "cost_optimization": {
+    "threshold": 0.28,
+    "total_cost": 666000.0,
+    "fp_rate": 0.11,
+    "fp_count": 748,
+    "fn_count": 292,
+    "cost_fn": 1000.0,
+    "cost_fp": 100.0,
+    "fp_penalty_multiplier": 5.0,
+    "max_fp_rate_target": 0.12
+  },
+  "tier_breakdown": {
+    "approve": 5246,
+    "review_monitor": 2072,
+    "review_escalate": 31,
+    "reject": 0
+  },
+  "metrics": {
+    "roc_auc": 0.8753,
+    "pr_auc": 0.2645,
+    "brier": 0.0594,
+    "ece": 0.042,
+    "f1": 0.0,
+    "recall": 0.0,
+    "f1_cost": 0.3282,
+    "recall_cost": 0.4652,
+    "precision_cost": 0.2535,
+    "fbeta2_cost": 0.3986,
+    "fp_rate": 0.11,
+    "accuracy_cost": 0.8585
+  },
+  "cv_results": {
+    "roc_auc": {
+      "test_mean": 0.9268,
+      "test_std": 0.0042,
+      "train_mean": 0.9319
+    },
+    "average_precision": {
+      "test_mean": 0.7421,
+      "test_std": 0.0108,
+      "train_mean": 0.7532
+    },
+    "f1": {
+      "test_mean": 0.4714,
+      "test_std": 0.0208,
+      "train_mean": 0.4712
+    },
+    "recall": {
+      "test_mean": 0.3087,
+      "test_std": 0.0178,
+      "train_mean": 0.3085
+    }
+  },
+  "shap_importance": {
+    "hist_max_delay": 1.172321,
+    "hist_payment_count_normalized": 0.462785,
+    "delay_variance": 0.200514,
+    "hist_avg_delay_normalized": 0.158337,
+    "credit_score_bucket": 0.135386,
+    "seasonal_factor": 0.132337,
+    "late_streak": 0.116071,
+    "days_to_due_normalized": 0.091624,
+    "business_type_risk": 0.067129,
+    "hist_paid_ratio_6": 0.065996,
+    "good_streak": 0.052567,
+    "invoice_frequency_trend": 0.03836,
+    "invoice_to_income_ratio": 0.035243,
+    "customer_age_normalized": 0.029982,
+    "credit_score_x_industry": 0.027838
+  },
+  "calibration": {
+    "ece": 0.042,
+    "bin_predicted": [
+      0.041,
+      0.1419,
+      0.2653,
+      0.3269,
+      0.4272
+    ],
+    "bin_actual": [
+      0.0014,
+      0.068,
+      0.2191,
+      0.3039,
+      0.2308
+    ],
+    "bin_counts": [
+      4836,
+      294,
+      1821,
+      385,
+      13
+    ]
+  },
+  "error_analysis": {
+    "false_negatives": {
+      "count": 292,
+      "avg_risk_score": 0.2435,
+      "hist_paid_ratio": {
+        "diff": -0.1175
+      },
+      "hist_late_ratio": {
+        "diff": 0.1175
+      },
+      "hist_paid_ratio_3": {
+        "diff": -0.1085
+      },
+      "hist_paid_ratio_6": {
+        "diff": -0.1241
+      },
+      "hist_late_ratio_3": {
+        "diff": 0.1085
+      },
+      "last_paid": {
+        "diff": -0.0905
+      },
+      "last_late": {
+        "diff": 0.0905
+      },
+      "hist_max_delay": {
+        "diff": 0.4486
+      },
+      "hist_avg_delay_normalized": {
+        "diff": 0.0874
+      },
+      "delay_variance": {
+        "diff": 0.143
+      },
+      "payment_volatility": {
+        "diff": 0.0976
+      },
+      "hist_payment_count_normalized": {
+        "diff": 0.0753
+      },
+      "behavioral_score": {
+        "diff": 0.123
+      }
+    },
+    "false_positives": {
+      "count": 748,
+      "avg_risk_score": 0.3043,
+      "credit_score_normalized": {
+        "diff": -0.0892
+      },
+      "credit_score_bucket": {
+        "diff": -0.15
+      },
+      "hist_paid_ratio": {
+        "diff": -0.1845
+      },
+      "hist_late_ratio": {
+        "diff": 0.1845
+      },
+      "hist_paid_ratio_3": {
+        "diff": -0.221
+      },
+      "hist_paid_ratio_6": {
+        "diff": -0.2157
+      },
+      "hist_late_ratio_3": {
+        "diff": 0.221
+      },
+      "last_paid": {
+        "diff": -0.244
+      },
+      "last_late": {
+        "diff": 0.244
+      },
+      "hist_max_delay": {
+        "diff": 0.5808
+      },
+      "hist_avg_delay_normalized": {
+        "diff": 0.1316
+      },
+      "delay_variance": {
+        "diff": 0.192
+      },
+      "payment_volatility": {
+        "diff": 0.1742
+      },
+      "good_streak": {
+        "diff": -0.0742
+      },
+      "risk_composite": {
+        "diff": 0.0795
+      },
+      "behavioral_score": {
+        "diff": 0.1788
+      },
+      "credit_x_late": {
+        "diff": 0.0923
+      }
+    }
+  },
+  "drift_baseline": {
+    "amount_normalized": {
+      "mean": 0.164226,
+      "std": 0.26172,
+      "p10": 0.00386,
+      "median": 0.049607,
+      "p90": 0.52338
+    },
+    "customer_age_normalized": {
+      "mean": 0.089894,
+      "std": 0.051885,
+      "p10": 0.025,
+      "median": 0.0875,
+      "p90": 0.1625
+    },
+    "years_with_company_normalized": {
+      "mean": 0.255274,
+      "std": 0.137688,
+      "p10": 0.066667,
+      "median": 0.26,
+      "p90": 0.44
+    },
+    "invoice_frequency": {
+      "mean": 0.866012,
+      "std": 0.229194,
+      "p10": 0.461538,
+      "median": 1.0,
+      "p90": 1.0
+    },
+    "industry_risk_factor": {
+      "mean": 0.384786,
+      "std": 0.113488,
+      "p10": 0.2,
+      "median": 0.4,
+      "p90": 0.55
+    },
+    "seasonal_factor": {
+      "mean": 0.375543,
+      "std": 0.086491,
+      "p10": 0.3,
+      "median": 0.35,
+      "p90": 0.5
+    },
+    "business_type_risk": {
+      "mean": 0.350257,
+      "std": 0.0708,
+      "p10": 0.3,
+      "median": 0.3,
+      "p90": 0.45
+    },
+    "days_to_due_normalized": {
+      "mean": 0.4159,
+      "std": 0.187006,
+      "p10": 0.166667,
+      "median": 0.333333,
+      "p90": 0.666667
+    },
+    "credit_score_normalized": {
+      "mean": 0.760647,
+      "std": 0.120259,
+      "p10": 0.603529,
+      "median": 0.761176,
+      "p90": 0.922353
+    },
+    "credit_score_bucket": {
+      "mean": 0.721776,
+      "std": 0.204395,
+      "p10": 0.5,
+      "median": 0.75,
+      "p90": 1.0
+    },
+    "credit_utilization": {
+      "mean": 0.289305,
+      "std": 0.169154,
+      "p10": 0.090877,
+      "median": 0.259919,
+      "p90": 0.538249
+    },
+    "debt_ratio": {
+      "mean": 0.442208,
+      "std": 0.210242,
+      "p10": 0.162,
+      "median": 0.43,
+      "p90": 0.74
+    },
+    "credit_score_x_industry": {
+      "mean": 0.092363,
+      "std": 0.054994,
+      "p10": 0.024882,
+      "median": 0.087529,
+      "p90": 0.167294
+    },
+    "income_normalized": {
+      "mean": 0.100291,
+      "std": 0.191774,
+      "p10": 0.001958,
+      "median": 0.025792,
+      "p90": 0.285965
+    },
+    "invoice_to_income_ratio": {
+      "mean": 0.220957,
+      "std": 0.120124,
+      "p10": 0.093346,
+      "median": 0.193972,
+      "p90": 0.389897
+    },
+    "balance_to_income_ratio": {
+      "mean": 0.293021,
+      "std": 0.35131,
+      "p10": 0.008458,
+      "median": 0.116345,
+      "p90": 1.0
+    },
+    "hist_paid_ratio": {
+      "mean": 0.605878,
+      "std": 0.205995,
+      "p10": 0.340965,
+      "median": 0.625,
+      "p90": 0.833333
+    },
+    "hist_late_ratio": {
+      "mean": 0.390551,
+      "std": 0.209302,
+      "p10": 0.15,
+      "median": 0.375,
+      "p90": 0.659035
+    },
+    "hist_paid_ratio_3": {
+      "mean": 0.596343,
+      "std": 0.303856,
+      "p10": 0.333333,
+      "median": 0.666667,
+      "p90": 1.0
+    },
+    "hist_paid_ratio_6": {
+      "mean": 0.597933,
+      "std": 0.24686,
+      "p10": 0.333333,
+      "median": 0.666667,
+      "p90": 1.0
+    },
+    "hist_late_ratio_3": {
+      "mean": 0.400086,
+      "std": 0.306219,
+      "p10": 0.0,
+      "median": 0.333333,
+      "p90": 0.666667
+    },
+    "paid_trend": {
+      "mean": 0.543202,
+      "std": 0.069855,
+      "p10": 0.5,
+      "median": 0.5,
+      "p90": 0.654762
+    },
+    "late_trend": {
+      "mean": 0.543202,
+      "std": 0.069855,
+      "p10": 0.5,
+      "median": 0.5,
+      "p90": 0.654762
+    },
+    "last_paid": {
+      "mean": 0.595096,
+      "std": 0.484006,
+      "p10": 0.0,
+      "median": 1.0,
+      "p90": 1.0
+    },
+    "last_late": {
+      "mean": 0.401334,
+      "std": 0.485502,
+      "p10": 0.0,
+      "median": 0.0,
+      "p90": 1.0
+    },
+    "hist_max_delay": {
+      "mean": 0.315167,
+      "std": 0.366431,
+      "p10": 0.011111,
+      "median": 0.177778,
+      "p90": 1.0
+    },
+    "hist_avg_delay_normalized": {
+      "mean": 0.067531,
+      "std": 0.093763,
+      "p10": 0.003175,
+      "median": 0.022222,
+      "p90": 0.203265
+    },
+    "delay_variance": {
+      "mean": 0.10165,
+      "std": 0.127025,
+      "p10": 0.0,
+      "median": 0.045344,
+      "p90": 0.322852
+    },
+    "payment_volatility": {
+      "mean": 0.196873,
+      "std": 0.191835,
+      "p10": 0.027778,
+      "median": 0.140625,
+      "p90": 0.434328
+    },
+    "late_streak": {
+      "mean": 0.195428,
+      "std": 0.294871,
+      "p10": 0.0,
+      "median": 0.0,
+      "p90": 0.666667
+    },
+    "good_streak": {
+      "mean": 0.246072,
+      "std": 0.292794,
+      "p10": 0.0,
+      "median": 0.166667,
+      "p90": 0.7
+    },
+    "invoice_frequency_trend": {
+      "mean": 0.497961,
+      "std": 0.009814,
+      "p10": 0.487721,
+      "median": 0.501311,
+      "p90": 0.504351
+    },
+    "payment_velocity": {
+      "mean": 0.041667,
+      "std": 0.0,
+      "p10": 0.041667,
+      "median": 0.041667,
+      "p90": 0.041667
+    },
+    "days_since_last_payment_norm": {
+      "mean": 0.08303,
+      "std": 0.087878,
+      "p10": 0.010959,
+      "median": 0.060274,
+      "p90": 0.178082
+    },
+    "hist_payment_count_normalized": {
+      "mean": 0.36978,
+      "std": 0.264027,
+      "p10": 0.044444,
+      "median": 0.333333,
+      "p90": 0.755556
+    },
+    "risk_composite": {
+      "mean": 0.310369,
+      "std": 0.080195,
+      "p10": 0.210769,
+      "median": 0.302439,
+      "p90": 0.419216
+    },
+    "amount_x_industry_risk": {
+      "mean": 0.063113,
+      "std": 0.105983,
+      "p10": 0.001339,
+      "median": 0.017898,
+      "p90": 0.190817
+    },
+    "clv_proxy": {
+      "mean": 0.036741,
+      "std": 0.072288,
+      "p10": 0.000548,
+      "median": 0.007933,
+      "p90": 0.104989
+    },
+    "recovery_signal": {
+      "mean": 0.913595,
+      "std": 0.139709,
+      "p10": 0.690476,
+      "median": 1.0,
+      "p90": 1.0
+    },
+    "behavioral_score": {
+      "mean": 0.316454,
+      "std": 0.16296,
+      "p10": 0.1375,
+      "median": 0.288207,
+      "p90": 0.54621
+    },
+    "credit_x_late": {
+      "mean": 0.100597,
+      "std": 0.084315,
+      "p10": 0.005232,
+      "median": 0.083664,
+      "p90": 0.214866
+    }
+  },
+  "logging_paths": {
+    "decisions": "C:\\Users\\lenovo\\ai_erp_system\\app\\training\\decision_logs\\decisions.jsonl",
+    "overrides": "C:\\Users\\lenovo\\ai_erp_system\\app\\training\\decision_logs\\overrides.jsonl"
+  },
+  "training_config": {
+    "n_folds": 5,
+    "n_trials": 30,
+    "smote": true,
+    "time_based_split": true,
+    "random_seed": 42,
+    "cost_fn": 1000.0,
+    "cost_fp": 100.0,
+    "fp_penalty_multiplier": 5.0,
+    "max_fp_rate_target": 0.12,
+    "bad_payer_threshold_days": 30
+  }
+}

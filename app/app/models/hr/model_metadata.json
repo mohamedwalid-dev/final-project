@@ -1,0 +1,90 @@
+{
+  "trained_at": "2026-04-19T19:17:55.473814Z",
+  "model_type": "CalibratedEnsemble(RF+GB+LR)",
+  "data_source": "synthetic",
+  "n_training_samples": 1200,
+  "feature_cols": [
+    "leave_days",
+    "leave_balance",
+    "performance_score",
+    "absence_count",
+    "years_of_experience",
+    "overtime_hours",
+    "balance_ratio",
+    "days_to_fy_end",
+    "absence_per_year",
+    "perf_balance_score",
+    "job_level_enc",
+    "salary_grade_enc"
+  ],
+  "numeric_features": [
+    "leave_days",
+    "leave_balance",
+    "performance_score",
+    "absence_count",
+    "years_of_experience",
+    "overtime_hours",
+    "balance_ratio",
+    "days_to_fy_end",
+    "absence_per_year",
+    "perf_balance_score"
+  ],
+  "categorical_features": [
+    "job_level",
+    "salary_grade"
+  ],
+  "thresholds": {
+    "approve": 0.75,
+    "escalate": 0.25,
+    "reject": 0.0,
+    "description": ">=0.75 → auto approve | 0.25–0.75 → escalate | <0.25 → auto reject"
+  },
+  "evaluation": {
+    "accuracy": 0.8433,
+    "roc_auc": 0.9038,
+    "f1_score": 0.8412,
+    "cv_auc_mean": 0.9085,
+    "cv_auc_std": 0.0155,
+    "confusion_matrix": [
+      [
+        88,
+        31
+      ],
+      [
+        16,
+        165
+      ]
+    ],
+    "decision_distribution": {
+      "auto_approve": 0.52,
+      "escalate": 0.15,
+      "auto_reject": 0.33
+    }
+  },
+  "model_path": "C:\\Users\\lenovo\\ai_erp_system\\app\\app\\models\\hr\\leave_approval_model.pkl",
+  "scaler_path": "C:\\Users\\lenovo\\ai_erp_system\\app\\app\\models\\hr\\scaler.pkl",
+  "encoder_path": "C:\\Users\\lenovo\\ai_erp_system\\app\\app\\models\\hr\\encoders.pkl",
+  "leakage_validation": {
+    "passed": true,
+    "critical_count": 0,
+    "warning_count": 0
+  },
+  "edge_case_testing": null,
+  "business_costs": {
+    "monthly_cost_egp": 7700.0,
+    "annual_cost_egp": 92400.0,
+    "cost_per_request": 38.5,
+    "optimal_thresholds": {
+      "approve": 0.75,
+      "escalate": 0.25
+    },
+    "monthly_saving_egp": 1100.0
+  },
+  "confidence_sanity": {
+    "passed": true,
+    "mean_conf": 0.5923,
+    "std_conf": 0.3759,
+    "pct_above_99": 0.01,
+    "issues": []
+  }
+}

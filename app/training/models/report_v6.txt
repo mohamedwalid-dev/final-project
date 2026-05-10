@@ -1,0 +1,56 @@
+=================================================================
+  Finance Risk Model v6.0 — Production Training Report
+  Generated: 2026-04-25T12:11:28.116257 UTC
+=================================================================
+Samples:     40,451  |  Features: 35
+Bad rate:    27.0%
+Split:       3-way time-based (train/val/test — zero leakage)
+Ensemble:    XGB + LGBM + LR (weights (0.5, 0.35, 0.15))
+
+── ROOT CAUSES FIXED ────────────────────────────────────
+  ROOT-1  History: real multi-invoice per customer
+  ROOT-2  Behavioral features: variance, streak, velocity
+  ROOT-3  Threshold: F-beta(β=2) on val set
+  ROOT-4  Over-rejection guard: FP-rate=9.3%
+  ROOT-5  Credit de-dominated: reg_alpha=2 reg_lambda=3
+  ROOT-6  LightGBM: active
+
+── Cross Validation ─────────────────────────────────────
+  roc_auc               : test=0.9749 ± 0.0014
+  average_precision     : test=0.9422 ± 0.0048
+  f1                    : test=0.8933 ± 0.0045
+  recall                : test=0.9234 ± 0.0052
+
+── Test Results ─────────────────────────────────────────
+  ROC AUC:    0.9726
+  PR AUC:     0.9345
+  Brier:      0.0490
+  ECE:        0.0179
+
+── Optimal Threshold = 0.19 ──────────────────────────
+  Precision:  0.7941
+  Recall:     0.9555
+  F1:         0.8674
+  F-beta(2):  0.9182
+  FP-rate:    9.3%
+  Cost:       152,600
+
+── Decision Engine ──────────────────────────────────────
+  Active mode: balanced
+  safe        : reject≥0.30 review≥0.18
+  balanced    : reject≥0.40 review≥0.25
+  aggressive  : reject≥0.55 review≥0.35
+
+── Classification Report ────────────────────────────────
+              precision    recall  f1-score   support
+
+  Good Payer       0.98      0.91      0.94      5887
+   Bad Payer       0.79      0.96      0.87      2204
+
+    accuracy                           0.92      8091
+   macro avg       0.89      0.93      0.91      8091
+weighted avg       0.93      0.92      0.92      8091
+
+── Error Analysis ───────────────────────────────────────
+  FN (missed bad payers):   98
+  FP (wrongly rejected):    546

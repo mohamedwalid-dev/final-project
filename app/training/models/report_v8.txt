@@ -1,0 +1,55 @@
+=================================================================
+  Finance Risk Model v8.1 — Production Training Report
+  Generated: 2026-04-25T22:25:45.079835 UTC
+=================================================================
+Samples:     36,742  |  Features: 41
+Bad rate:    7.0%
+Split:       3-way time-based | Ensemble: XGB+LGBM+LR
+
+── v8.1 FP Improvements ─────────────────────────────────
+  Threshold raised:  ~0.14 (v8.0) → 0.28 (v8.1)
+  FP penalty:        x5.0 multiplier in optimization
+  Max FP rate target: 12%
+  3-tier decisions:  approve / review (monitor|escalate) / reject
+
+  Tier breakdown (test set, n=7349):
+    ✅ approve:          5246 (71.4%)
+    🟡 review/monitor:   2072 (28.2%)
+    ⚠️  review/escalate:    31 (0.4%)
+    ❌ reject:              0 (0.0%)
+
+── Cross Validation ─────────────────────────────────────
+  roc_auc               : test=0.9268 ± 0.0042
+  average_precision     : test=0.7421 ± 0.0108
+  f1                    : test=0.4714 ± 0.0208
+  recall                : test=0.3087 ± 0.0178
+
+── Test Results ─────────────────────────────────────────
+  ROC AUC:    0.8753
+  PR AUC:     0.2645
+  Brier:      0.0594
+  ECE:        0.0420
+
+── Optimal Threshold = 0.28 ──────────────────────────
+  Precision:  0.2535
+  Recall:     0.4652
+  F1:         0.3282
+  F-beta(2):  0.3986
+  FP-rate:    11.0%
+  FP-count:   748
+  FN-count:   292
+  Cost:       666,000
+
+── Classification Report ────────────────────────────────
+              precision    recall  f1-score   support
+
+  Good Payer       0.95      0.89      0.92      6803
+   Bad Payer       0.25      0.47      0.33       546
+
+    accuracy                           0.86      7349
+   macro avg       0.60      0.68      0.62      7349
+weighted avg       0.90      0.86      0.88      7349
+
+── Error Analysis ───────────────────────────────────────
+  FN (missed bad payers): 292
+  FP (wrongly rejected):  748
