@@ -5,6 +5,10 @@ import InvoiceRoutes from './invoice.routes.js'
 import ProductRoutes from './product.routes.js'
 import { Verify, VerifyRole } from "../middleware/verify.js";
 import { sendSuccess } from "../utils/response.js";
+import ticketRoutes from "./ticketRoutes.js";
+import chatRoutes from "./chatRoutes.js";
+
+
 
 const Router = (server) => {
     server.get("/v1", (req, res) => {
@@ -20,6 +24,10 @@ const Router = (server) => {
     server.use("/v1/invoices", Verify, InvoiceRoutes)
 
     server.use("/v1/products", Verify, ProductRoutes)
+
+    server.use("/v1/tickets", Verify, ticketRoutes);
+
+    server.use("/v1/chats", Verify, chatRoutes);
 
     server.get("/v1/user", Verify, (req, res) => {
         return sendSuccess(res, [], "Welcome to your Dashboard!", 200);

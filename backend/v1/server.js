@@ -8,6 +8,7 @@ import errorHandler from "./middleware/errorHandler.js";
 import notFound from "./middleware/notFound.js";
 import Router from "./routes/index.js";
 
+
 const server = express();
 
 server.disable("x-powered-by");
