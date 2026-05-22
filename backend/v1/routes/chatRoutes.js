@@ -1,26 +1,22 @@
 import express from "express";
-
 import {
-  getChats,
-  getChatById,
-  getChatByTicketId,
-  createChat,
-  addChatMessage,
-  updateChatStatus,
-  deleteChat,
+  addInternalChatMessage,
+  addParticipantToInternalChat,
+  closeInternalChat,
+  createInternalDepartmentChat,
+  getInternalChatById,
+  getInternalChats,
+  getInternalChatsByTicketId,
 } from "../controllers/chatController.js";
 
 const router = express.Router();
 
-router.get("/", getChats);
-router.get("/ticket/:ticketId", getChatByTicketId);
-router.get("/:id", getChatById);
-
-router.post("/", createChat);
-router.post("/:id/messages", addChatMessage);
-
-router.patch("/:id/status", updateChatStatus);
-
-router.delete("/:id", deleteChat);
+router.get("/", getInternalChats);
+router.get("/ticket/:ticketId", getInternalChatsByTicketId);
+router.get("/:id", getInternalChatById);
+router.post("/internal", createInternalDepartmentChat);
+router.post("/:id/messages", addInternalChatMessage);
+router.patch("/:id/participants", addParticipantToInternalChat);
+router.patch("/:id/close", closeInternalChat);
 
 export default router;

@@ -1,27 +1,60 @@
 import mongoose from "mongoose";
+import { VALID_USER_DEPARTMENTS } from "./User.js";
 
-const messageSchema = new mongoose.Schema(
+export const TICKET_PRIORITIES = ["urgent", "high", "medium", "low"];
+export const TICKET_STATUSES = ["open", "pending", "resolved", "closed"];
+export const TICKET_CATEGORIES = [
+  "invoice",
+  "payment",
+  "hr",
+  "technical",
+  "sales",
+  "general",
+];
+
+const attachmentSchema = new mongoose.Schema(
   {
-    from: {
+    fileName: {
       type: String,
-      enum: ["customer", "agent", "system"],
-      required: true,
-      default: "customer",
+      trim: true,
     },
+    fileUrl: {
+      type: String,
+      trim: true,
+    },
+    fileType: {
+      type: String,
+      trim: true,
+    },
+  },
+  { _id: false }
+);
 
+const ticketMessageSchema = new mongoose.Schema(
+  {
+    senderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "users",
+    },
+    senderType: {
+      type: String,
+      enum: ["client", "support", "system"],
+      required: true,
+      default: "client",
+    },
+    senderName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     text: {
       type: String,
       required: true,
       trim: true,
     },
-
-    time: {
-      type: String,
-      default: () =>
-        new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
+    attachments: {
+      type: [attachmentSchema],
+      default: [],
     },
   },
   { timestamps: true }
@@ -33,65 +66,67 @@ const ticketSchema = new mongoose.Schema(
       type: String,
       unique: true,
       required: true,
+      trim: true,
+      index: true,
     },
-
-    name: {
+    clientId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "users",
+    },
+    clientName: {
       type: String,
       required: true,
       trim: true,
     },
-
-    email: {
+    clientEmail: {
       type: String,
       required: true,
       trim: true,
       lowercase: true,
     },
-
     subject: {
       type: String,
       required: true,
       trim: true,
     },
-
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    priority: {
+      type: String,
+      enum: TICKET_PRIORITIES,
+      default: "medium",
+    },
+    status: {
+      type: String,
+      enum: TICKET_STATUSES,
+      default: "open",
+    },
+    category: {
+      type: String,
+      enum: TICKET_CATEGORIES,
+      default: "general",
+    },
+    assignedSupportAgent: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "users",
+    },
+    relatedDepartment: {
+      type: String,
+      enum: VALID_USER_DEPARTMENTS,
+      default: "support",
+    },
     preview: {
       type: String,
       default: "",
+      trim: true,
     },
-
-    priority: {
-      type: String,
-      enum: ["urgent", "high", "medium", "low"],
-      default: "medium",
+    messages: {
+      type: [ticketMessageSchema],
+      default: [],
     },
-
-    status: {
-      type: String,
-      enum: ["open", "pending", "resolved", "closed"],
-      default: "open",
-    },
-
-    avatar: {
-      type: String,
-      default: "NA",
-    },
-
-    avatarColor: {
-      type: String,
-      default: "#4A6FDC",
-    },
-
-    location: {
-      type: String,
-      default: "Unknown",
-    },
-
-    lastSeen: {
-      type: String,
-      default: "Last active just now",
-    },
-
-    messages: [messageSchema],
   },
   { timestamps: true }
 );

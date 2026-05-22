@@ -1,53 +1,52 @@
 import express from "express";
 import { check } from "express-validator";
-import { Login, Logout, Me, Register } from "../controllers/auth.js";
+import {
+  getAuthUsers,
+  getInternalUsers,
+  getUsersByDepartment,
+  getUsersByRole,
+  login,
+  logout,
+  me,
+  register,
+} from "../controllers/auth.js";
 import validateRequest from "../middleware/validateRequest.js";
-import { Verify } from "../middleware/verify.js";
+import { Verify, VerifyRole } from "../middleware/verify.js";
 
 const router = express.Router();
 
-// Register route -- POST request
 router.post(
-    "/register",
-    check("email")
-        .isEmail()
-        .withMessage("Enter a valid email address")
-        .normalizeEmail(),
-    check("first_name")
-        .not()
-        .isEmpty()
-        .withMessage("You first name is required")
-        .trim()
-        .escape(),
-    check("last_name")
-        .not()
-        .isEmpty()
-        .withMessage("You last name is required")
-        .trim()
-        .escape(),
-    check("password")
-        .notEmpty()
-        .isLength({ min: 8 })
-        .withMessage("Must be at least 8 chars long"),
-    validateRequest,
-    Register
+  "/register",
+  check("email")
+    .isEmail()
+    .withMessage("Enter a valid email address")
+    .normalizeEmail(),
+  check("password")
+    .notEmpty()
+    .isLength({ min: 8 })
+    .withMessage("Must be at least 8 chars long"),
+  validateRequest,
+  register
 );
 
-// Login route == POST request
 router.post(
-    "/login",
-    check("email")
-        .isEmail()
-        .withMessage("Enter a valid email address")
-        .normalizeEmail(),
-    check("password").not().isEmpty(),
-    validateRequest,
-    Login
+  "/login",
+  check("email")
+    .isEmail()
+    .withMessage("Enter a valid email address")
+    .normalizeEmail(),
+  check("password").not().isEmpty(),
+  validateRequest,
+  login
 );
 
-router.post("/logout", Logout);
-router.get("/logout", Logout); // backwards compatibility
+router.post("/logout", logout);
+router.get("/logout", logout);
+router.get("/me", Verify, me);
 
-router.get("/me", Verify, Me);
+router.get("/users", Verify, getAuthUsers);
+router.get("/users/internal", Verify, getInternalUsers);
+router.get("/users/role/:role", Verify, getUsersByRole);
+router.get("/users/department/:department", Verify, getUsersByDepartment);
 
 export default router;

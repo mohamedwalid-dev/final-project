@@ -1,250 +1,265 @@
+import mongoose from "mongoose";
 import Chat from "../models/Chat.js";
 import Ticket from "../models/Ticket.js";
+import User, { VALID_USER_DEPARTMENTS, VALID_USER_ROLES } from "../models/User.js";
+import { TICKET_PRIORITIES } from "../models/Ticket.js";
+import { sendSuccess } from "../utils/response.js";
+import AppError from "../utils/AppError.js";
 
-// GET /v1/chats
-export const getChats = async (req, res) => {
+const chatPopulate = [
+  { path: "ticketId", select: "ticketCode clientName clientEmail subject status priority category relatedDepartment" },
+  { path: "requestedBy", select: "name first_name last_name email role department isActive" },
+  { path: "participants", select: "name first_name last_name email role department isActive" },
+];
+
+function ensureInternalAccess(req) {
+  if (req.user?.role === "client") {
+    throw new AppError("Clients cannot access internal department chats.", 403);
+  }
+}
+
+function getDisplayName(user, fallback = "Internal User") {
+  return (
+    user?.name ||
+    [user?.first_name, user?.last_name].filter(Boolean).join(" ") ||
+    fallback
+  );
+}
+
+function cleanParticipantIds(ids = []) {
+  return [...new Set(ids.filter((id) => mongoose.isValidObjectId(id)).map(String))];
+}
+
+export const getInternalChats = async (req, res, next) => {
   try {
-    const chats = await Chat.find()
-      .populate("ticketId")
+    ensureInternalAccess(req);
+
+    const chats = await Chat.find({ chatType: "internal_department" })
+      .populate(chatPopulate)
       .sort({ updatedAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      count: chats.length,
-      data: chats,
-    });
+    return sendSuccess(res, chats, "Internal chats fetched successfully.", 200);
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch chats",
-      error: error.message,
-    });
+    return next(error);
   }
 };
 
-// GET /v1/chats/:id
-export const getChatById = async (req, res) => {
+export const getInternalChatById = async (req, res, next) => {
   try {
-    const chat = await Chat.findById(req.params.id).populate("ticketId");
+    ensureInternalAccess(req);
 
+    const chat = await Chat.findById(req.params.id).populate(chatPopulate);
     if (!chat) {
-      return res.status(404).json({
-        success: false,
-        message: "Chat not found",
-      });
+      throw new AppError("Internal chat not found.", 404);
     }
 
-    res.status(200).json({
-      success: true,
-      data: chat,
-    });
+    return sendSuccess(res, chat, "Internal chat fetched successfully.", 200);
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch chat",
-      error: error.message,
-    });
+    return next(error);
   }
 };
 
-// GET /v1/chats/ticket/:ticketId
-export const getChatByTicketId = async (req, res) => {
+export const getInternalChatsByTicketId = async (req, res, next) => {
   try {
-    const chat = await Chat.findOne({
+    ensureInternalAccess(req);
+
+    const chats = await Chat.find({
       ticketId: req.params.ticketId,
-    }).populate("ticketId");
+      chatType: "internal_department",
+    })
+      .populate(chatPopulate)
+      .sort({ updatedAt: -1 });
 
-    if (!chat) {
-      return res.status(404).json({
-        success: false,
-        message: "Chat not found for this ticket",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: chat,
-    });
+    return sendSuccess(res, chats, "Ticket internal chats fetched successfully.", 200);
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch ticket chat",
-      error: error.message,
-    });
+    return next(error);
   }
 };
 
-// POST /v1/chats
-export const createChat = async (req, res) => {
+export const createInternalDepartmentChat = async (req, res, next) => {
   try {
-    const { ticketId } = req.body;
+    ensureInternalAccess(req);
 
-    if (!ticketId) {
-      return res.status(400).json({
-        success: false,
-        message: "Ticket ID is required",
-      });
+    const {
+      ticketId,
+      requestedDepartment,
+      requestedRole,
+      title,
+      summary = "",
+      participants = [],
+      requestedBy,
+      priority = "medium",
+    } = req.body;
+
+    if (!ticketId || !mongoose.isValidObjectId(ticketId)) {
+      throw new AppError("Valid ticket ID is required.", 400);
+    }
+
+    if (!requestedDepartment || !VALID_USER_DEPARTMENTS.includes(requestedDepartment)) {
+      throw new AppError("Valid requested department is required.", 400);
+    }
+
+    if (requestedRole && !VALID_USER_ROLES.includes(requestedRole)) {
+      throw new AppError("Invalid requested role.", 400);
+    }
+
+    if (!TICKET_PRIORITIES.includes(priority)) {
+      throw new AppError("Invalid chat priority.", 400);
     }
 
     const ticket = await Ticket.findById(ticketId);
-
     if (!ticket) {
-      return res.status(404).json({
-        success: false,
-        message: "Ticket not found",
-      });
+      throw new AppError("Ticket not found.", 404);
     }
 
-    const existingChat = await Chat.findOne({ ticketId });
-
-    if (existingChat) {
-      return res.status(200).json({
-        success: true,
-        message: "Chat already exists for this ticket",
-        data: existingChat,
-      });
+    const requestedById = requestedBy || req.user?._id || ticket.assignedSupportAgent;
+    if (requestedById && !mongoose.isValidObjectId(requestedById)) {
+      throw new AppError("Invalid requestedBy user ID.", 400);
     }
+
+    const participantIds = cleanParticipantIds(participants);
+    if (requestedById) participantIds.push(String(requestedById));
+
+    const activeInternalUsers = participantIds.length
+      ? await User.find({
+          _id: { $in: cleanParticipantIds(participantIds) },
+          isActive: true,
+          role: { $ne: "client" },
+        }).select("_id")
+      : [];
 
     const chat = await Chat.create({
       ticketId: ticket._id,
-      ticketCode: ticket.ticketCode,
-      customerName: ticket.name,
-      customerEmail: ticket.email,
-      messages: ticket.messages.map((msg) => ({
-        senderType: msg.from,
-        senderName: msg.from === "agent" ? "Support Agent" : ticket.name,
-        message: msg.text,
-      })),
+      chatType: "internal_department",
+      title: title || `Internal help for ${ticket.ticketCode}`,
+      requestedBy: requestedById,
+      requestedDepartment,
+      requestedRole,
+      participants: activeInternalUsers.map((user) => user._id),
+      status: "active",
+      priority,
+      summary,
+      messages: [],
     });
 
-    res.status(201).json({
-      success: true,
-      message: "Chat created successfully",
-      data: chat,
-    });
+    const populatedChat = await Chat.findById(chat._id).populate(chatPopulate);
+    return sendSuccess(res, populatedChat, "Internal department chat created successfully.", 201);
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to create chat",
-      error: error.message,
-    });
+    return next(error);
   }
 };
 
-// POST /v1/chats/:id/messages
-export const addChatMessage = async (req, res) => {
+export const addInternalChatMessage = async (req, res, next) => {
   try {
+    ensureInternalAccess(req);
+
     const {
-      senderType = "agent",
-      senderName = "Support Agent",
+      senderId,
+      senderRole,
+      senderDepartment,
+      senderName,
+      text,
       message,
-      isInternalNote = false,
+      isInternalNote = true,
       attachments = [],
     } = req.body;
+    const resolvedText = text || message;
 
-    if (!message) {
-      return res.status(400).json({
-        success: false,
-        message: "Message is required",
-      });
+    if (!resolvedText) {
+      throw new AppError("Internal message text is required.", 400);
+    }
+
+    const resolvedRole = senderRole || req.user?.role;
+    const resolvedDepartment = senderDepartment || req.user?.department;
+
+    if (!VALID_USER_ROLES.includes(resolvedRole)) {
+      throw new AppError("Valid sender role is required.", 400);
+    }
+
+    if (!VALID_USER_DEPARTMENTS.includes(resolvedDepartment)) {
+      throw new AppError("Valid sender department is required.", 400);
     }
 
     const chat = await Chat.findById(req.params.id);
-
     if (!chat) {
-      return res.status(404).json({
-        success: false,
-        message: "Chat not found",
-      });
+      throw new AppError("Internal chat not found.", 404);
     }
 
     chat.messages.push({
-      senderType,
-      senderName,
-      message,
+      senderId: senderId || req.user?._id,
+      senderRole: resolvedRole,
+      senderDepartment: resolvedDepartment,
+      senderName: senderName || getDisplayName(req.user),
+      text: resolvedText,
       isInternalNote,
       attachments,
     });
 
     await chat.save();
 
-    res.status(200).json({
-      success: true,
-      message: "Message added successfully",
-      data: chat,
-    });
+    const populatedChat = await Chat.findById(chat._id).populate(chatPopulate);
+    return sendSuccess(res, populatedChat, "Internal chat message added successfully.", 200);
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to add chat message",
-      error: error.message,
-    });
+    return next(error);
   }
 };
 
-// PATCH /v1/chats/:id/status
-export const updateChatStatus = async (req, res) => {
+export const addParticipantToInternalChat = async (req, res, next) => {
   try {
-    const { status } = req.body;
+    ensureInternalAccess(req);
 
-    const allowedStatuses = ["active", "closed"];
-
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid chat status",
-      });
+    const participantId = req.body.participantId || req.body.userId;
+    if (!participantId || !mongoose.isValidObjectId(participantId)) {
+      throw new AppError("Valid participant ID is required.", 400);
     }
+
+    const participant = await User.findOne({
+      _id: participantId,
+      isActive: true,
+      role: { $ne: "client" },
+    }).select("-password");
+
+    if (!participant) {
+      throw new AppError("Internal participant not found.", 404);
+    }
+
+    const chat = await Chat.findById(req.params.id);
+    if (!chat) {
+      throw new AppError("Internal chat not found.", 404);
+    }
+
+    chat.participants.addToSet(participant._id);
+    await chat.save();
+
+    const populatedChat = await Chat.findById(chat._id).populate(chatPopulate);
+    return sendSuccess(res, populatedChat, "Participant added successfully.", 200);
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const closeInternalChat = async (req, res, next) => {
+  try {
+    ensureInternalAccess(req);
 
     const chat = await Chat.findByIdAndUpdate(
       req.params.id,
-      { status },
-      { new: true }
-    );
+      { status: "closed" },
+      { new: true, runValidators: true }
+    ).populate(chatPopulate);
 
     if (!chat) {
-      return res.status(404).json({
-        success: false,
-        message: "Chat not found",
-      });
+      throw new AppError("Internal chat not found.", 404);
     }
 
-    res.status(200).json({
-      success: true,
-      message: "Chat status updated successfully",
-      data: chat,
-    });
+    return sendSuccess(res, chat, "Internal chat closed successfully.", 200);
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to update chat status",
-      error: error.message,
-    });
+    return next(error);
   }
 };
 
-// DELETE /v1/chats/:id
-export const deleteChat = async (req, res) => {
-  try {
-    const chat = await Chat.findByIdAndDelete(req.params.id);
-
-    if (!chat) {
-      return res.status(404).json({
-        success: false,
-        message: "Chat not found",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "Chat deleted successfully",
-      data: chat,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to delete chat",
-      error: error.message,
-    });
-  }
-};
+export const getChats = getInternalChats;
+export const getChatById = getInternalChatById;
+export const getChatByTicketId = getInternalChatsByTicketId;
+export const createChat = createInternalDepartmentChat;
+export const addChatMessage = addInternalChatMessage;

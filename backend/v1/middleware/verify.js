@@ -5,7 +5,10 @@ import { SECRET_ACCESS_TOKEN } from "../config/index.js";
 import AppError from "../utils/AppError.js";
 
 export async function Verify(req, res, next) {
-  const accessToken = req.cookies?.SessionID;
+  const bearerToken = req.headers.authorization?.startsWith("Bearer ")
+    ? req.headers.authorization.split(" ")[1]
+    : null;
+  const accessToken = bearerToken || req.cookies?.SessionID;
   if (!accessToken) return next(new AppError("Not authenticated", 401));
 
   const checkIfBlacklisted = await Blacklist.findOne({ token: accessToken });
@@ -25,6 +28,8 @@ export async function Verify(req, res, next) {
 
 export function VerifyRole(req, res, next) {
   const role = req.user?.role;
-  if (role !== "0x88") return next(new AppError("You are not authorized to view this page.", 401));
+  if (role !== "admin" && role !== "0x88") {
+    return next(new AppError("You are not authorized to view this page.", 401));
+  }
   return next();
 }
