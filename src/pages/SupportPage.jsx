@@ -159,8 +159,10 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
 
         <div className={s.modalBody}>
           <div className={s.formGrid}>
-            <label className={s.formGroup}>
-              <span className={s.formLabel}>Client name *</span>
+            <div className={s.formGroup}>
+              <label className={s.formLabel}>
+                Client name <span className={s.required}>*</span>
+              </label>
               <input
                 className={`${s.formInput} ${errors.clientName ? s.formInputError : ""}`}
                 value={form.clientName}
@@ -168,10 +170,12 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
                 autoFocus
               />
               {errors.clientName && <span className={s.fieldError}>{errors.clientName}</span>}
-            </label>
+            </div>
 
-            <label className={s.formGroup}>
-              <span className={s.formLabel}>Client email *</span>
+            <div className={s.formGroup}>
+              <label className={s.formLabel}>
+                Client email <span className={s.required}>*</span>
+              </label>
               <input
                 className={`${s.formInput} ${errors.clientEmail ? s.formInputError : ""}`}
                 type="email"
@@ -179,20 +183,22 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
                 onChange={(event) => updateField("clientEmail", event.target.value)}
               />
               {errors.clientEmail && <span className={s.fieldError}>{errors.clientEmail}</span>}
-            </label>
+            </div>
 
-            <label className={`${s.formGroup} ${s.formGroupFull}`}>
-              <span className={s.formLabel}>Subject *</span>
+            <div className={`${s.formGroup} ${s.formGroupFull}`}>
+              <label className={s.formLabel}>
+                Subject <span className={s.required}>*</span>
+              </label>
               <input
                 className={`${s.formInput} ${errors.subject ? s.formInputError : ""}`}
                 value={form.subject}
                 onChange={(event) => updateField("subject", event.target.value)}
               />
               {errors.subject && <span className={s.fieldError}>{errors.subject}</span>}
-            </label>
+            </div>
 
-            <label className={s.formGroup}>
-              <span className={s.formLabel}>Priority</span>
+            <div className={s.formGroup}>
+              <label className={s.formLabel}>Priority</label>
               <select
                 className={s.formSelect}
                 value={form.priority}
@@ -204,10 +210,10 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
 
-            <label className={s.formGroup}>
-              <span className={s.formLabel}>Category</span>
+            <div className={s.formGroup}>
+              <label className={s.formLabel}>Category</label>
               <select
                 className={s.formSelect}
                 value={form.category}
@@ -219,10 +225,10 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
 
-            <label className={`${s.formGroup} ${s.formGroupFull}`}>
-              <span className={s.formLabel}>Related department</span>
+            <div className={`${s.formGroup} ${s.formGroupFull}`}>
+              <label className={s.formLabel}>Related department</label>
               <select
                 className={s.formSelect}
                 value={form.relatedDepartment}
@@ -234,10 +240,12 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
 
-            <label className={`${s.formGroup} ${s.formGroupFull}`}>
-              <span className={s.formLabel}>Description *</span>
+            <div className={`${s.formGroup} ${s.formGroupFull}`}>
+              <label className={s.formLabel}>
+                Description <span className={s.required}>*</span>
+              </label>
               <textarea
                 className={`${s.formTextarea} ${errors.description ? s.formInputError : ""}`}
                 value={form.description}
@@ -245,7 +253,7 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
                 rows={4}
               />
               {errors.description && <span className={s.fieldError}>{errors.description}</span>}
-            </label>
+            </div>
           </div>
         </div>
 
