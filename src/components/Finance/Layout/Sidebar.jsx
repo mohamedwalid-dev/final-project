@@ -8,6 +8,7 @@ import {
   Handshake,
   Headphones,
   LayoutDashboard,
+  MessageCircle,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { id: "sales",     label: "Sales & CRM",   icon: Handshake,       path: "/sales"      },
   { id: "inventory", label: "Inventory",     icon: Boxes,           path: "/inventory"  },
   { id: "support",   label: "Support",       icon: Headphones,      path: "/support"    },
+  { id: "supportChat", label: "Support Chat", icon: MessageCircle,  path: "/support-chat" },
   { id: "design",    label: "Design System", icon: Palette,         path: "/design"     },
 ];
 
