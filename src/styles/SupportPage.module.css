@@ -198,7 +198,7 @@
 .ticketName {
   font-size: 13px;
   font-weight: 600;
-  color: #1A202C;
+  color: #1c57cd;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1326,4 +1326,32 @@
   .statusSelect {
     flex: 1;
   }
+}
+
+/* Remove default black focus outline from buttons, tabs, selects, inputs */
+button:focus,
+button:active,
+select:focus,
+select:active,
+input:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* Remove browser focus ring after mouse click */
+button:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Optional: keep a clean focus style only for keyboard users */
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 91, 219, 0.14);
 }

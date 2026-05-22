@@ -72,18 +72,14 @@ const UserSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-UserSchema.pre("validate", function normalizeName(next) {
+UserSchema.pre("save", function () {
+  if (!this.name && this.first_name && this.last_name) {
+    this.name = `${this.first_name} ${this.last_name}`.trim();
+  }
+
   if (!this.name && (this.first_name || this.last_name)) {
-    this.name = [this.first_name, this.last_name].filter(Boolean).join(" ").trim();
+    this.name = [this.first_name, this.last_name].filter(Boolean).join(" ");
   }
-
-  if (this.name && (!this.first_name || !this.last_name)) {
-    const [firstName = "", ...rest] = this.name.trim().split(/\s+/);
-    if (!this.first_name) this.first_name = firstName;
-    if (!this.last_name) this.last_name = rest.join(" ") || firstName;
-  }
-
-  next();
 });
 
 UserSchema.methods.generateAccessJWT = function generateAccessJWT() {

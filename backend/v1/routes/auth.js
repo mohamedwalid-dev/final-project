@@ -1,5 +1,6 @@
 import express from "express";
 import { check } from "express-validator";
+
 import {
   getAuthUsers,
   getInternalUsers,
@@ -10,8 +11,9 @@ import {
   me,
   register,
 } from "../controllers/auth.js";
+
 import validateRequest from "../middleware/validateRequest.js";
-import { Verify, VerifyRole } from "../middleware/verify.js";
+import { Verify } from "../middleware/verify.js";
 
 const router = express.Router();
 
@@ -42,11 +44,12 @@ router.post(
 
 router.post("/logout", logout);
 router.get("/logout", logout);
+
 router.get("/me", Verify, me);
 
-router.get("/users", Verify, getAuthUsers);
 router.get("/users/internal", Verify, getInternalUsers);
 router.get("/users/role/:role", Verify, getUsersByRole);
 router.get("/users/department/:department", Verify, getUsersByDepartment);
+router.get("/users", Verify, getAuthUsers);
 
 export default router;

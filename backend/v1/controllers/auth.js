@@ -226,9 +226,14 @@ export async function getUsersByDepartment(req, res, next) {
       `Active ${department} department users fetched successfully.`,
       200
     );
-  } catch (error) {
-    return next(error);
-  }
+} catch (error) {
+  return res.status(error.statusCode || 500).json({
+    status: "failed",
+    success: false,
+    data: [],
+    message: error.message || "Registration failed",
+  });
+}
 }
 
 export async function me(req, res) {

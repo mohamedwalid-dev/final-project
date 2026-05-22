@@ -4,6 +4,27 @@ import { http } from "../api/client";
 
 const AuthContext = createContext(null);
 
+const extractAuthPayload = (payload) => {
+  const firstDataItem = Array.isArray(payload?.data) ? payload.data[0] : payload?.data;
+
+  return {
+    token: payload?.token || firstDataItem?.token || null,
+    user: payload?.user || firstDataItem?.user || firstDataItem || null,
+  };
+};
+
+const persistAuth = ({ token, user }) => {
+  if (token) localStorage.setItem("token", token);
+  if (user) localStorage.setItem("user", JSON.stringify(user));
+};
+
+const clearAuthStorage = () => {
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  localStorage.removeItem("auth");
+  localStorage.removeItem("authUser");
+};
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -21,6 +42,7 @@ export function AuthProvider({ children }) {
     const me = Array.isArray(result.data?.data) && result.data.data.length > 0 
       ? result.data.data[0] 
       : null;
+    if (me) localStorage.setItem("user", JSON.stringify(me));
     setUser(me);
     setLoading(false);
     return { user: me, error: null, errorData: [] };
@@ -33,6 +55,8 @@ export function AuthProvider({ children }) {
   const login = useCallback(async (credentials) => {
     const result = await http.post(ENDPOINTS.AUTH.LOGIN, credentials);
     if (result.error) return result;
+    const authPayload = extractAuthPayload(result.data);
+    persistAuth(authPayload);
     // Re-check auth to get full user data
     await checkAuth();
     return result;
@@ -41,6 +65,8 @@ export function AuthProvider({ children }) {
   const register = useCallback(async (payload) => {
     const result = await http.post(ENDPOINTS.AUTH.REGISTER, payload);
     if (result.error) return result;
+    const authPayload = extractAuthPayload(result.data);
+    persistAuth(authPayload);
     // Re-check auth to get full user data
     await checkAuth();
     return result;
@@ -48,6 +74,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     const result = await http.post(ENDPOINTS.AUTH.LOGOUT, {});
+    clearAuthStorage();
     setUser(null);
     return result;
   }, []);
@@ -65,4 +92,3 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth must be used within <AuthProvider>");
   return ctx;
 }
-
