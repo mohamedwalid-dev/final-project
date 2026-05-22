@@ -7,13 +7,6 @@ import {
   getTickets,
   updateTicketStatus,
 } from "../api/ticketApi";
-import {
-  addInternalChatMessage,
-  closeInternalChat,
-  createInternalDepartmentChat,
-  getInternalChatsByTicketId,
-} from "../api/chatApi";
-import { getUsersByDepartment, getUsersByRole } from "../api/userApi";
 import s from "../styles/SupportPage.module.css";
 
 const FILTERS = [
@@ -40,10 +33,9 @@ const DEPARTMENTS = [
   "management",
   "admin",
 ];
-const ROLES = ["support", "accountant", "hr", "sales", "manager", "admin"];
 
 const titleCase = (value = "") =>
-  value ? value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ") : "—";
+  value ? value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ") : "-";
 
 const getList = (payload) => {
   if (Array.isArray(payload?.data)) return payload.data;
@@ -146,7 +138,7 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
       <form className={s.modal} onSubmit={handleSubmit}>
         <div className={s.modalHeader}>
           <div className={s.modalTitleRow}>
-            <div className={s.modalTitleIcon}>🎫</div>
+            <div className={s.modalTitleIcon}>T</div>
             <div>
               <h2 className={s.modalTitle}>New Support Ticket</h2>
               <p className={s.modalSub}>Create a customer-facing ticket.</p>
@@ -273,218 +265,6 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
   );
 }
 
-function DepartmentModal({ isOpen, onClose, onCreate, ticket }) {
-  const [form, setForm] = useState({
-    requestedDepartment: "accounting",
-    requestedRole: "accountant",
-    title: "",
-    summary: "",
-  });
-  const [users, setUsers] = useState([]);
-  const [selectedUsers, setSelectedUsers] = useState([]);
-  const [loadingUsers, setLoadingUsers] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const overlayRef = useRef(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    setForm({
-      requestedDepartment: ticket?.relatedDepartment || "accounting",
-      requestedRole: "accountant",
-      title: ticket ? `Help needed for ${ticket.ticketCode}` : "",
-      summary: ticket?.subject || "",
-    });
-    setSelectedUsers([]);
-    setError("");
-  }, [isOpen, ticket]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const loadUsers = async () => {
-      setLoadingUsers(true);
-      setError("");
-      try {
-        const payload = form.requestedRole
-          ? await getUsersByRole(form.requestedRole)
-          : await getUsersByDepartment(form.requestedDepartment);
-        setUsers(getList(payload));
-      } catch (requestError) {
-        setUsers([]);
-        setError(requestError.message);
-      } finally {
-        setLoadingUsers(false);
-      }
-    };
-
-    loadUsers();
-  }, [form.requestedDepartment, form.requestedRole, isOpen]);
-
-  if (!isOpen) return null;
-
-  const toggleUser = (userId) => {
-    setSelectedUsers((current) =>
-      current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]
-    );
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    if (!form.title.trim()) {
-      setError("Title is required.");
-      return;
-    }
-
-    setSubmitting(true);
-    setError("");
-    try {
-      await onCreate({
-        ticketId: ticket._id,
-        requestedDepartment: form.requestedDepartment,
-        requestedRole: form.requestedRole,
-        title: form.title,
-        summary: form.summary,
-        participants: selectedUsers,
-        priority: ticket.priority || "medium",
-      });
-      onClose();
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div
-      ref={overlayRef}
-      className={s.departmentModalOverlay}
-      onClick={(event) => {
-        if (event.target === overlayRef.current) onClose();
-      }}
-      role="dialog"
-      aria-modal="true"
-    >
-      <form className={s.departmentModal} onSubmit={handleSubmit}>
-        <div className={s.modalHeader}>
-          <div className={s.modalTitleRow}>
-            <div className={s.modalTitleIcon}>🏢</div>
-            <div>
-              <h2 className={s.modalTitle}>Ask Department</h2>
-              <p className={s.modalSub}>Start an internal chat linked to this ticket.</p>
-            </div>
-          </div>
-          <button type="button" className={s.modalClose} onClick={onClose}>
-            ×
-          </button>
-        </div>
-
-        <div className={s.modalBody}>
-          {error && <div className={s.toast_error}>{error}</div>}
-          <div className={s.departmentFormGrid}>
-            <label className={s.formGroup}>
-              <span className={s.formLabel}>Department</span>
-              <select
-                className={s.formSelect}
-                value={form.requestedDepartment}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, requestedDepartment: event.target.value }))
-                }
-              >
-                {DEPARTMENTS.map((department) => (
-                  <option key={department} value={department}>
-                    {titleCase(department)}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className={s.formGroup}>
-              <span className={s.formLabel}>Role</span>
-              <select
-                className={s.formSelect}
-                value={form.requestedRole}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, requestedRole: event.target.value }))
-                }
-              >
-                <option value="">Any role in department</option>
-                {ROLES.map((role) => (
-                  <option key={role} value={role}>
-                    {titleCase(role)}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className={`${s.formGroup} ${s.formGroupFull}`}>
-              <span className={s.formLabel}>Title</span>
-              <input
-                className={s.formInput}
-                value={form.title}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, title: event.target.value }))
-                }
-              />
-            </label>
-
-            <label className={`${s.formGroup} ${s.formGroupFull}`}>
-              <span className={s.formLabel}>Summary</span>
-              <textarea
-                className={s.formTextarea}
-                value={form.summary}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, summary: event.target.value }))
-                }
-                rows={3}
-              />
-            </label>
-          </div>
-
-          <div className={s.departmentUserList}>
-            {loadingUsers && <p className={s.modalSub}>Loading internal users...</p>}
-            {!loadingUsers &&
-              users.map((user) => {
-                const selected = selectedUsers.includes(user._id);
-                return (
-                  <button
-                    type="button"
-                    key={user._id}
-                    className={`${s.departmentUserItem} ${
-                      selected ? s.departmentUserSelected : ""
-                    }`}
-                    onClick={() => toggleUser(user._id)}
-                  >
-                    <strong>{user.name || `${user.first_name || ""} ${user.last_name || ""}`}</strong>
-                    <span>
-                      {titleCase(user.role)} • {titleCase(user.department)}
-                    </span>
-                  </button>
-                );
-              })}
-            {!loadingUsers && !users.length && (
-              <p className={s.modalSub}>No matching internal users found.</p>
-            )}
-          </div>
-        </div>
-
-        <div className={s.modalFooter}>
-          <p className={s.modalFooterNote}>Clients never see this internal chat.</p>
-          <div className={s.modalFooterActions}>
-            <button type="button" className={s.btnGhost} onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className={`${s.btn} ${s.btnPrimary}`} disabled={submitting}>
-              {submitting ? "Creating..." : "Create chat"}
-            </button>
-          </div>
-        </div>
-      </form>
-    </div>
-  );
-}
-
 function TicketCard({ ticket, active, onSelect }) {
   return (
     <button
@@ -532,106 +312,6 @@ function CustomerMessage({ message }) {
   );
 }
 
-function InternalChatPanel({
-  chats,
-  activeChat,
-  activeChatId,
-  onSelectChat,
-  onSendMessage,
-  onCloseChat,
-  loading,
-}) {
-  const [draft, setDraft] = useState("");
-
-  useEffect(() => {
-    setDraft("");
-  }, [activeChatId]);
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    if (!draft.trim() || !activeChat) return;
-    await onSendMessage(draft.trim());
-    setDraft("");
-  };
-
-  return (
-    <aside className={s.internalChatPanel}>
-      <div className={s.internalChatHeader}>
-        <div>
-          <h3>Internal department chats</h3>
-          <p>Private collaboration linked to this ticket.</p>
-        </div>
-        {activeChat && activeChat.status !== "closed" && (
-          <button type="button" className={s.btnGhost} onClick={() => onCloseChat(activeChat._id)}>
-            Close
-          </button>
-        )}
-      </div>
-
-      <div className={s.internalChatList}>
-        {loading && <p className={s.modalSub}>Loading internal chats...</p>}
-        {!loading &&
-          chats.map((chat) => (
-            <button
-              type="button"
-              key={chat._id}
-              className={`${s.internalChatCard} ${
-                chat._id === activeChatId ? s.internalChatCardActive : ""
-              }`}
-              onClick={() => onSelectChat(chat._id)}
-            >
-              <strong>{chat.title}</strong>
-              <span>
-                {titleCase(chat.requestedDepartment)} • {titleCase(chat.status)}
-              </span>
-              {chat.summary && <small>{chat.summary}</small>}
-            </button>
-          ))}
-        {!loading && !chats.length && (
-          <p className={s.emptyQueue}>
-            No internal department chats yet. Ask a department for help.
-          </p>
-        )}
-      </div>
-
-      <div className={s.internalMessages}>
-        {activeChat?.messages?.map((message) => (
-          <div key={message._id || message.createdAt} className={s.internalMessage}>
-            <div className={s.internalMessageMeta}>
-              <strong>{message.senderName}</strong>
-              <span>
-                {titleCase(message.senderRole)} • {titleCase(message.senderDepartment)} •{" "}
-                {formatDate(message.createdAt)}
-              </span>
-            </div>
-            <div className={s.internalMessageBubble}>{message.text}</div>
-          </div>
-        ))}
-        {activeChat && !activeChat.messages?.length && (
-          <p className={s.modalSub}>No internal messages yet.</p>
-        )}
-      </div>
-
-      <form className={s.internalComposer} onSubmit={handleSubmit}>
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={activeChat ? "Write an internal note..." : "Select an internal chat"}
-          disabled={!activeChat || activeChat.status === "closed"}
-          rows={3}
-        />
-        <button
-          type="submit"
-          className={`${s.sendBtn} ${draft.trim() ? s.sendBtnActive : ""}`}
-          disabled={!draft.trim() || !activeChat || activeChat.status === "closed"}
-        >
-          Send internal
-        </button>
-      </form>
-    </aside>
-  );
-}
-
 export default function SupportPage() {
   const [activeNav, setActiveNav] = useState("support");
   const [tickets, setTickets] = useState([]);
@@ -642,21 +322,12 @@ export default function SupportPage() {
   const [loadingTickets, setLoadingTickets] = useState(false);
   const [savingTicket, setSavingTicket] = useState(false);
   const [showNewTicket, setShowNewTicket] = useState(false);
-  const [showDepartmentModal, setShowDepartmentModal] = useState(false);
-  const [internalChats, setInternalChats] = useState([]);
-  const [activeChatId, setActiveChatId] = useState("");
-  const [loadingChats, setLoadingChats] = useState(false);
   const [toast, setToast] = useState(null);
   const messagesEndRef = useRef(null);
 
   const activeTicket = useMemo(
     () => tickets.find((ticket) => ticket._id === activeTicketId) || tickets[0] || null,
     [activeTicketId, tickets]
-  );
-
-  const activeChat = useMemo(
-    () => internalChats.find((chat) => chat._id === activeChatId) || internalChats[0] || null,
-    [activeChatId, internalChats]
   );
 
   const showToast = useCallback((message, type = "success") => {
@@ -678,38 +349,9 @@ export default function SupportPage() {
     }
   }, [showToast]);
 
-  const loadInternalChats = useCallback(
-    async (ticketId) => {
-      if (!ticketId) {
-        setInternalChats([]);
-        setActiveChatId("");
-        return;
-      }
-
-      setLoadingChats(true);
-      try {
-        const payload = await getInternalChatsByTicketId(ticketId);
-        const chats = getList(payload);
-        setInternalChats(chats);
-        setActiveChatId(chats[0]?._id || "");
-      } catch (error) {
-        setInternalChats([]);
-        setActiveChatId("");
-        showToast(error.message, "error");
-      } finally {
-        setLoadingChats(false);
-      }
-    },
-    [showToast]
-  );
-
   useEffect(() => {
     loadTickets();
   }, [loadTickets]);
-
-  useEffect(() => {
-    loadInternalChats(activeTicket?._id);
-  }, [activeTicket?._id, loadInternalChats]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -740,13 +382,6 @@ export default function SupportPage() {
     if (!updatedTicket?._id) return;
     setTickets((current) =>
       current.map((ticket) => (ticket._id === updatedTicket._id ? updatedTicket : ticket))
-    );
-  };
-
-  const replaceChat = (updatedChat) => {
-    if (!updatedChat?._id) return;
-    setInternalChats((current) =>
-      current.map((chat) => (chat._id === updatedChat._id ? updatedChat : chat))
     );
   };
 
@@ -796,39 +431,6 @@ export default function SupportPage() {
     }
   };
 
-  const handleCreateInternalChat = async (chatData) => {
-    const payload = await createInternalDepartmentChat(chatData);
-    const chat = getItem(payload);
-    setInternalChats((current) => [chat, ...current]);
-    setActiveChatId(chat._id);
-    showToast("Internal department chat created.");
-  };
-
-  const handleSendInternalMessage = async (text) => {
-    if (!activeChat) return;
-
-    try {
-      const payload = await addInternalChatMessage(activeChat._id, {
-        text,
-        isInternalNote: true,
-      });
-      replaceChat(getItem(payload));
-      showToast("Internal message sent.");
-    } catch (error) {
-      showToast(error.message, "error");
-    }
-  };
-
-  const handleCloseInternalChat = async (chatId) => {
-    try {
-      const payload = await closeInternalChat(chatId);
-      replaceChat(getItem(payload));
-      showToast("Internal chat closed.");
-    } catch (error) {
-      showToast(error.message, "error");
-    }
-  };
-
   return (
     <div className={s.appShell}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
@@ -836,10 +438,6 @@ export default function SupportPage() {
         <Header breadcrumbs={["ERP", "Support"]} />
 
         <section className={s.page}>
-          <button type="button" className={s.fabBtn} onClick={() => setShowNewTicket(true)}>
-            + New Ticket
-          </button>
-
           <div className={s.supportLayout}>
             <aside className={s.queue}>
               <div className={s.queueHeader}>
@@ -921,7 +519,7 @@ export default function SupportPage() {
                     <div className={s.chatHeaderActions}>
                       <select
                         className={s.statusSelect}
-                        value={activeTicket.status}
+                        value={activeTicket.status || "open"}
                         onChange={(event) => handleStatusChange(event.target.value)}
                       >
                         {STATUSES.map((status) => (
@@ -931,62 +529,48 @@ export default function SupportPage() {
                         ))}
                       </select>
                       <button
+                        className={s.newTicketHeaderBtn}
+                        onClick={() => setShowNewTicket(true)}
                         type="button"
-                        className={s.askDepartmentBtn}
-                        onClick={() => setShowDepartmentModal(true)}
                       >
-                        Ask Department
+                        + New Ticket
                       </button>
                     </div>
                   </div>
 
-                  <div className={s.splitConversationLayout}>
-                    <div className={s.customerConversationPanel}>
-                      <div className={s.ticketCreatedTag}>
-                        <strong>{activeTicket.status.toUpperCase()}</strong> ticket created{" "}
-                        {formatDate(activeTicket.createdAt)}
-                      </div>
-
-                      <div className={s.messages}>
-                        {activeTicket.messages?.map((message) => (
-                          <CustomerMessage key={message._id || message.createdAt} message={message} />
-                        ))}
-                        <div ref={messagesEndRef} />
-                      </div>
-
-                      <form className={s.inputArea} onSubmit={handleReply}>
-                        <textarea
-                          className={s.messageInput}
-                          value={reply}
-                          onChange={(event) => setReply(event.target.value)}
-                          placeholder="Reply to client..."
-                          rows={3}
-                        />
-                        <div className={s.inputActions}>
-                          <span className={s.modalFooterNote}>
-                            This reply is customer-facing and stored on Ticket.messages.
-                          </span>
-                          <button
-                            type="submit"
-                            className={`${s.sendBtn} ${reply.trim() ? s.sendBtnActive : ""}`}
-                            disabled={!reply.trim()}
-                          >
-                            Send reply
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-
-                    <InternalChatPanel
-                      chats={internalChats}
-                      activeChat={activeChat}
-                      activeChatId={activeChat?._id || ""}
-                      onSelectChat={setActiveChatId}
-                      onSendMessage={handleSendInternalMessage}
-                      onCloseChat={handleCloseInternalChat}
-                      loading={loadingChats}
-                    />
+                  <div className={s.ticketCreatedTag}>
+                    <strong>{activeTicket.status.toUpperCase()}</strong> ticket created{" "}
+                    {formatDate(activeTicket.createdAt)}
                   </div>
+
+                  <div className={s.messages}>
+                    {activeTicket.messages?.map((message) => (
+                      <CustomerMessage key={message._id || message.createdAt} message={message} />
+                    ))}
+                    <div ref={messagesEndRef} />
+                  </div>
+
+                  <form className={s.inputArea} onSubmit={handleReply}>
+                    <textarea
+                      className={s.messageInput}
+                      value={reply}
+                      onChange={(event) => setReply(event.target.value)}
+                      placeholder="Reply to client..."
+                      rows={3}
+                    />
+                    <div className={s.inputActions}>
+                      <span className={s.modalFooterNote}>
+                        This reply is customer-facing and stored on Ticket.messages.
+                      </span>
+                      <button
+                        type="submit"
+                        className={`${s.sendBtn} ${reply.trim() ? s.sendBtnActive : ""}`}
+                        disabled={!reply.trim()}
+                      >
+                        Send reply
+                      </button>
+                    </div>
+                  </form>
                 </>
               ) : (
                 <p className={s.emptyQueue}>Select or create a support ticket.</p>
@@ -1001,13 +585,6 @@ export default function SupportPage() {
         onClose={() => setShowNewTicket(false)}
         onCreate={handleCreateTicket}
         loading={savingTicket}
-      />
-
-      <DepartmentModal
-        isOpen={showDepartmentModal}
-        onClose={() => setShowDepartmentModal(false)}
-        onCreate={handleCreateInternalChat}
-        ticket={activeTicket}
       />
 
       {toast && (
