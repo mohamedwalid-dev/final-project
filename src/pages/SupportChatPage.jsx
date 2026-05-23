@@ -2,12 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "../components/Finance/Layout/Header";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import {
-  closeSupportChat,
   getAllSupportChats,
   getMySupportChat,
   getSupportChatById,
   markSupportChatAsRead,
-  reopenSupportChat,
   sendMySupportMessage,
   sendSupportReply,
 } from "../api/supportChatApi";
@@ -184,30 +182,6 @@ export default function SupportChatPage() {
     }
   };
 
-  const handleCloseChat = async () => {
-    if (!activeChat?._id) return;
-
-    try {
-      const payload = await closeSupportChat(activeChat._id);
-      replaceChat(getData(payload));
-      showToast("Chat closed.");
-    } catch (error) {
-      showToast(error.message, "error");
-    }
-  };
-
-  const handleReopenChat = async () => {
-    if (!activeChat?._id) return;
-
-    try {
-      const payload = await reopenSupportChat(activeChat._id);
-      replaceChat(getData(payload));
-      showToast("Chat reopened.");
-    } catch (error) {
-      showToast(error.message, "error");
-    }
-  };
-
   useEffect(() => {
     if (isSupportUser) {
       loadAllChats();
@@ -221,7 +195,7 @@ export default function SupportChatPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeChat?.messages]);
+  }, [activeChat?.messages?.length]);
 
   const filteredChats = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -256,7 +230,7 @@ export default function SupportChatPage() {
           {isSupportUser && (
             <aside className={s.inbox}>
               <div className={s.inboxHeader}>
-                <h1 className={s.inboxTitle}>Support Inbox</h1>
+                <h1 className={s.inboxTitle}>Inbox Chat</h1>
                 <input
                   className={s.inboxSearch}
                   value={search}
@@ -334,22 +308,6 @@ export default function SupportChatPage() {
                           : "We usually reply shortly. Tell us what you need help with."}
                       </p>
                     </div>
-                  </div>
-
-                  <div className={s.conversationActions}>
-                    <span className={`${s.statusBadge} ${statusClassName(activeChat.status)}`}>
-                      {activeChat.status}
-                    </span>
-                    {isSupportUser &&
-                      (activeChat.status === "closed" ? (
-                        <button type="button" onClick={handleReopenChat}>
-                          Reopen
-                        </button>
-                      ) : (
-                        <button type="button" onClick={handleCloseChat}>
-                          Close
-                        </button>
-                      ))}
                   </div>
                 </div>
 
