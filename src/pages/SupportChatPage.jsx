@@ -309,7 +309,7 @@ export default function SupportChatPage() {
     <div className={s.page}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
       <main className={s.mainArea}>
-        <Header breadcrumbs={["Synergy ERP", "Support Chat"]} />
+        <Header breadcrumbs={["Prime ERP", "Support Chat"]} />
 
         <section className={`${s.chatShell} ${!isSupportUser ? s.chatShellSingle : ""}`}>
           {isSupportUser && (

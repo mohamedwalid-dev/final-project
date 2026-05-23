@@ -625,7 +625,7 @@ export default function InvoicesManagement() {
       <div className={s.mainArea}>
 
         {/* ── Header ── */}
-        <Header breadcrumbs={["Synergy ERP", "Finance", "Invoices"]} />
+        <Header breadcrumbs={["Prime ERP", "Finance", "Invoices"]} />
 
         {/* ── Page Content ── */}
         <main className={s.page}>

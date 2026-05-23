@@ -32,8 +32,8 @@ const TYPE_SCALE = [
   { label: "Heading / H2",    size: "32px", weight: 700, sample: "Jumps over the lazy dog",        lh: "1.2" },
   { label: "Title / H3",      size: "24px", weight: 700, sample: "Quality analytics at your fingertips", lh: "1.3" },
   { label: "Body / Large",    size: "16px", weight: 400, sample: "Our ERP system focuses on clarity and efficiency providing users with the data they need to manage complex enterprise workflows.", lh: "1.6" },
-  { label: "Body / Small",    size: "13px", weight: 400, sample: "Require me to translate analytics, descriptions, and user inputs. Generate to unique sentences that capture Synergy complex enterprise workflows and data sets.", lh: "1.6" },
-  { label: "Mono / Code",     size: "13px", weight: 400, sample: "SYNERGY-PRO-2024-X0GL",          lh: "1.5", mono: true },
+  { label: "Body / Small",    size: "13px", weight: 400, sample: "Require me to translate analytics, descriptions, and user inputs. Generate to unique sentences that capture Prime complex enterprise workflows and data sets.", lh: "1.6" },
+  { label: "Mono / Code",     size: "13px", weight: 400, sample: "Prime-PRO-2024-X0GL",          lh: "1.5", mono: true },
 ];
 
 const TABLE_DATA = [
@@ -45,8 +45,8 @@ const TABLE_DATA = [
 ];
 
 const FAQ = [
-  { q: "What is Synergy Cloud Integration?",   a: "Synergy Cloud Integration connects your ERP data seamlessly with third-party cloud solutions via our open API ecosystem." },
-  { q: "Is your comfort mode available online?", a: "Yes! Synergy's comfort mode is available across all browsers and adapts to your system's dark/light preference automatically." },
+  { q: "What is Prime Cloud Integration?",   a: "Prime Cloud Integration connects your ERP data seamlessly with third-party cloud solutions via our open API ecosystem." },
+  { q: "Is your comfort mode available online?", a: "Yes! Prime's comfort mode is available across all browsers and adapts to your system's dark/light preference automatically." },
 ];
 
 const RESPONSIVE_MODULES = [
@@ -295,7 +295,7 @@ export default function DesignSystemPage() {
       <div className={s.appShell}>
         <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
         <div className={s.mainArea}>
-          <Header breadcrumbs={["Synergy ERP", "Design System", tab === "responsive" ? "Responsive Variants" : "Components"]} />
+          <Header breadcrumbs={["Prime ERP", "Design System", tab === "responsive" ? "Responsive Variants" : "Components"]} />
           <div className={s.page} id="ds-scroll">
 
             {/* Toast */}
@@ -309,12 +309,12 @@ export default function DesignSystemPage() {
                 {/* Page Header */}
                 <div className={s.pageHeader} style={headerAnim.style}>
                   <div>
-                    <div className={s.pageTag}>✦ SYNERGY DESIGN SYSTEM</div>
-                    <h1 className={s.pageTitle}>{tab === "responsive" ? "Responsive Logic" : "Synergy Design System"}</h1>
+                    <div className={s.pageTag}>✦ Prime DESIGN SYSTEM</div>
+                    <h1 className={s.pageTitle}>{tab === "responsive" ? "Responsive Logic" : "Prime Design System"}</h1>
                     <p className={s.pageSub}>
                       {tab === "responsive"
-                        ? "See how Synergy components adapt from desktop-first structures to fluid mobile-first layouts."
-                        : "A comprehensive collection of design tokens, interactive components, and visual patterns that power the Synergy ERP ecosystem."}
+                        ? "See how Prime components adapt from desktop-first structures to fluid mobile-first layouts."
+                        : "A comprehensive collection of design tokens, interactive components, and visual patterns that power the Prime ERP ecosystem."}
                     </p>
                   </div>
                   <div className={s.headerActions}>
@@ -335,7 +335,7 @@ export default function DesignSystemPage() {
                   <>
                     {/* ── Color Palette ── */}
                     <Section id="colors" title="Color Palette" delay={50}
-                      desc="A comprehensive set of brand colors and accessibility-tested UI palette variables for Synergy forms. We utilize CSS variables for dynamic theme switching.">
+                      desc="A comprehensive set of brand colors and accessibility-tested UI palette variables for Prime forms. We utilize CSS variables for dynamic theme switching.">
                       <div className={s.swatchRow}>
                         {COLORS.map(c => <Swatch key={c.name} {...c} copied={copied} onCopy={onCopy} />)}
                       </div>
@@ -403,7 +403,7 @@ export default function DesignSystemPage() {
                         <div className={s.formCol}>
                           <div className={s.formGroup}>
                             <label className={s.formLabel}>Email Address</label>
-                            <input className={s.formInput} placeholder="user@synergy.io" defaultValue="alex@synergy.io" />
+                            <input className={s.formInput} placeholder="user@Prime.io" defaultValue="alex@Prime.io" />
                             <p className={s.formHint}>This field is connected to your primary account.</p>
                           </div>
                           <div className={s.formGroup}>
@@ -644,7 +644,7 @@ export default function DesignSystemPage() {
             </div>
 
             <footer className={s.footer}>
-              <span>© 2024 Synergy ERP Systems. All rights reserved.</span>
+              <span>© 2024 Prime ERP Systems. All rights reserved.</span>
               <div className={s.footerRight}>
                 <a href="#" className={s.footerLink}>Privacy Policy</a>
                 <a href="#" className={s.footerLink}>Terms of Service</a>

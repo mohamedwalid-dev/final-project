@@ -534,3 +534,45 @@
     max-width: 88%;
   }
 }
+
+/* Support Chat Scrollbar Style */
+.chatList,
+.messages,
+.messageInput {
+  scrollbar-width: thin;
+  scrollbar-color: #9aaafc #f4f6ff;
+}
+
+/* Chrome, Edge, Safari */
+.chatList::-webkit-scrollbar,
+.messages::-webkit-scrollbar,
+.messageInput::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chatList::-webkit-scrollbar-track,
+.messages::-webkit-scrollbar-track,
+.messageInput::-webkit-scrollbar-track {
+  background: #f4f6ff;
+  border-radius: 999px;
+}
+
+.chatList::-webkit-scrollbar-thumb,
+.messages::-webkit-scrollbar-thumb,
+.messageInput::-webkit-scrollbar-thumb {
+  background: #9aaafc;
+  border-radius: 999px;
+  border: 2px solid #f4f6ff;
+}
+
+.chatList::-webkit-scrollbar-thumb:hover,
+.messages::-webkit-scrollbar-thumb:hover,
+.messageInput::-webkit-scrollbar-thumb:hover {
+  background: #3b5bdb;
+}
+
+.chatList::-webkit-scrollbar-corner,
+.messages::-webkit-scrollbar-corner,
+.messageInput::-webkit-scrollbar-corner {
+  background: transparent;
+}

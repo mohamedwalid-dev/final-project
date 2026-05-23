@@ -322,7 +322,7 @@ function AddEmployeeModal({ onClose, onSubmit }) {
               <label className={s.label}>Work Email *</label>
               <input type="email" className={`${s.input} ${errors.email ? s.inputError : ""}`}
                 value={form.email} onChange={(e) => setField("email", e.target.value)}
-                placeholder="e.g. sarah@synergy.com" />
+                placeholder="e.g. sarah@Prime.com" />
               {errors.email && <p className={s.fieldError}>{errors.email}</p>}
             </div>
           </div>
@@ -517,7 +517,7 @@ export default function HRPage() {
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
       <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
-        <Header breadcrumbs={["Synergy ERP", "Human Resources", "Employee Directory"]} />
+        <Header breadcrumbs={["Prime ERP", "Human Resources", "Employee Directory"]} />
 
         <main className={s.page}>
 

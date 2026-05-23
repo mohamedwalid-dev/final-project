@@ -1,4 +1,4 @@
-# Synergy ERP - Full Stack MERN Application
+# Prime ERP - Full Stack MERN Application
 
 A complete Enterprise Resource Planning system built with React, Express, MongoDB, and Node.js with real API integration, JWT authentication, and CRUD operations for multiple modules.
 
@@ -125,7 +125,7 @@ A complete Enterprise Resource Planning system built with React, Express, MongoD
    ```env
    PORT=5000
    FRONTEND_URL=http://localhost:5173
-   URI=mongodb+srv://username:password@cluster.mongodb.net/synergy
+   URI=mongodb+srv://username:password@cluster.mongodb.net/Prime
    SECRET_ACCESS_TOKEN=your_secret_key_min_32_chars_long
    NODE_ENV=development
    ```

@@ -839,7 +839,7 @@ export default function SalesPage() {
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
       <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh", minWidth: 0, overflowX: "hidden", background: "#F8F9FA" }}>
-        <Header breadcrumbs={["Synergy ERP", "Sales", activeTab === "pipeline" ? "Pipeline" : TABS.find(t => t.id === activeTab)?.label]} />
+        <Header breadcrumbs={["Prime ERP", "Sales", activeTab === "pipeline" ? "Pipeline" : TABS.find(t => t.id === activeTab)?.label]} />
 
         <main className={s.page}>
           {/* Page Header */}
@@ -892,7 +892,7 @@ export default function SalesPage() {
 
         {/* Footer */}
         <footer className={s.footer}>
-          <span>© 2024 Synergy ERP Systems. All rights reserved.</span>
+          <span>© 2026 Prime ERP Systems. All rights reserved.</span>
           <div className={s.footerRight}>
             <a href="#" className={s.footerLink}>Privacy Policy</a>
             <a href="#" className={s.footerLink}>Terms of Service</a>

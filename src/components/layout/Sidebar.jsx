@@ -56,7 +56,7 @@ export default function Sidebar({ activeNav, onNavChange }) {
             />
           </svg>
         </div>
-        {!collapsed && <span className="logo-text">Synergy</span>}
+        {!collapsed && <span className="logo-text">Prime</span>}
       </div>
 
       {/* ── Nav ── */}
@@ -88,7 +88,7 @@ export default function Sidebar({ activeNav, onNavChange }) {
 
         {!collapsed && (
           <div className="storage-box">
-            <div className="storage-label">Synergy Cloud</div>
+            <div className="storage-label">Prime Cloud</div>
             <div className="storage-sub">Enterprise Storage: 84% full</div>
             <div className="storage-bar">
               <div className="storage-fill" />

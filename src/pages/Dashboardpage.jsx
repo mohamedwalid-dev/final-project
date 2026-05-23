@@ -753,7 +753,7 @@ const Footer = () => (
     display: "flex", justifyContent: "space-between", alignItems: "center",
     fontSize: 11.5, color: T.textMuted,
   }}>
-    <span>2024 Synergy ERP Systems. All rights reserved.</span>
+    <span>2026 Prime ERP Systems. All rights reserved.</span>
     <div style={{ display: "flex", gap: 16 }}>
       {["Privacy Policy", "Terms of Service"].map(l => (
         <a key={l} href="#" style={{ color: T.textMuted, textDecoration: "none" }}
@@ -852,7 +852,7 @@ export default function DashboardPage() {
 
         <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
 
-          <Header breadcrumbs={["Synergy ERP", "Analytics", "Executive Dashboard"]} />
+          <Header breadcrumbs={["Prime ERP", "Analytics", "Executive Dashboard"]} />
 
           <main style={{ flex: 1, padding: "28px 32px", fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
 

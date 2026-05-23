@@ -1430,3 +1430,134 @@
   display: flex;
   align-items: center;
 }
+
+html,
+body,
+#root {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.appShell {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.mainArea {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.page {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.contentLayout {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.tableSection {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.tableWrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table {
+  width: 100%;
+  min-width: 1050px;
+  table-layout: auto;
+}
+
+.stockCell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 260px;
+  white-space: nowrap;
+}
+
+.stockBarTrack {
+  width: 130px;
+  min-width: 130px;
+  flex-shrink: 0;
+}
+
+.stockPct {
+  min-width: 42px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.statusBadge {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 170px;
+  white-space: nowrap;
+}
+
+.actionBtn {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  flex-shrink: 0;
+}
+
+.productCell {
+  min-width: 220px;
+}
+
+.skuBadge,
+.locationText {
+  white-space: nowrap;
+}
+
+/* Softer table scrollbar */
+.tableWrap {
+  scrollbar-width: thin;
+  scrollbar-color: #9aaafc #f4f6ff;
+}
+
+.tableWrap::-webkit-scrollbar {
+  height: 8px;
+}
+
+.tableWrap::-webkit-scrollbar-track {
+  background: #f4f6ff;
+  border-radius: 999px;
+  margin: 0 14px;
+}
+
+.tableWrap::-webkit-scrollbar-thumb {
+  background: #9aaafc;
+  border-radius: 999px;
+  border: 2px solid #f4f6ff;
+}
+
+.tableWrap::-webkit-scrollbar-thumb:hover {
+  background: #3f5be8;
+}

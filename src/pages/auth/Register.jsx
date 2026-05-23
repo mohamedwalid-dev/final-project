@@ -97,7 +97,7 @@ export default function Register() {
         <div className={s.card}>
           <div className={s.header}>
             <h1 className={s.title}>Create Account</h1>
-            <p className={s.subtitle}>Join Synergy and manage your business</p>
+            <p className={s.subtitle}>Join Prime and manage your business</p>
           </div>
 
           {error && <div className={s.errorAlert}>{error}</div>}
@@ -242,7 +242,7 @@ export default function Register() {
           <div className={s.illustrationBox}>
             <div className={s.illustrationCircle} />
             <div className={s.illustrationText}>
-              <p>Synergy ERP</p>
+              <p>Prime ERP</p>
               <p style={{ fontSize: "12px", opacity: 0.7, marginTop: "4px" }}>
                 Enterprise Resource Planning System
               </p>

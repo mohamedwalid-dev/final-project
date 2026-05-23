@@ -81,7 +81,7 @@ export default function Finance() {
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
       <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
-        <Header breadcrumbs={["Synergy ERP", "Finance", "Overview"]} />
+        <Header breadcrumbs={["Prime ERP", "Finance", "Overview"]} />
 
         <main className={s.page}>
 

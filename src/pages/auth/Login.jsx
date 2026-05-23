@@ -77,7 +77,7 @@ export default function Login() {
         <div className={s.card}>
           <div className={s.header}>
             <h1 className={s.title}>Welcome Back</h1>
-            <p className={s.subtitle}>Sign in to your Synergy account</p>
+            <p className={s.subtitle}>Sign in to your Prime account</p>
           </div>
 
           {error && <div className={s.errorAlert}>{error}</div>}
@@ -150,7 +150,7 @@ export default function Login() {
           <div className={s.illustrationBox}>
             <div className={s.illustrationCircle} />
             <div className={s.illustrationText}>
-              <p>Synergy ERP</p>
+              <p>Prime ERP</p>
               <p style={{ fontSize: "12px", opacity: 0.7, marginTop: "4px" }}>
                 Enterprise Resource Planning System
               </p>

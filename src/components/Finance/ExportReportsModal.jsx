@@ -69,7 +69,7 @@ function buildExportItems(pageData) {
       icon:     BarChart3,
       label:    "Finance KPIs",
       desc:     "Total revenue, net profit, expenses & unpaid invoices",
-      filename: `synergy-kpis-${today()}`,
+      filename: `Prime-kpis-${today()}`,
       rows: () =>
         (pageData?.statCards ?? []).map((c) => ({
           Metric:  c.label,
@@ -83,7 +83,7 @@ function buildExportItems(pageData) {
       icon:     TrendingUp,
       label:    "Cash Flow",
       desc:     "Monthly revenue vs expenses — Fiscal Year 2024",
-      filename: `synergy-cashflow-${today()}`,
+      filename: `Prime-cashflow-${today()}`,
       rows: () =>
         (pageData?.cashFlow ?? []).map((r) => ({
           Month:    r.month,
@@ -97,7 +97,7 @@ function buildExportItems(pageData) {
       icon:     ChartPie,
       label:    "Expense Breakdown",
       desc:     "Expense split by category this month",
-      filename: `synergy-expenses-${today()}`,
+      filename: `Prime-expenses-${today()}`,
       rows: () =>
         (pageData?.expenseBreakdown ?? []).map((e) => ({
           Category:   e.name,
@@ -109,7 +109,7 @@ function buildExportItems(pageData) {
       icon:     ReceiptText,
       label:    "Invoices",
       desc:     "All recent invoices with status & amounts",
-      filename: `synergy-invoices-${today()}`,
+      filename: `Prime-invoices-${today()}`,
       rows: () =>
         (pageData?.invoices ?? []).map((inv) => ({
           "Invoice ID":   inv.id,

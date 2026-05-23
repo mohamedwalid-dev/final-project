@@ -835,7 +835,7 @@ function StepFinalize({
           minHeight: "100vh",
         }}
       >
-        <Header breadcrumbs={["Synergy ERP", "Finance", "Invoices", "Create New Record"]} />
+        <Header breadcrumbs={["Prime ERP", "Finance", "Invoices", "Create New Record"]} />
 
         <main className={s.page}>
           <header className={s.pageHeader}>
