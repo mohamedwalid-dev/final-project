@@ -39,6 +39,7 @@ import autoTable from "jspdf-autotable";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 import s from "../styles/InventoryPage.module.css";
+import shell from "../styles/AppShell.module.css";
 import {
   getInventoryProducts,
   getInventoryStats,
@@ -1356,9 +1357,9 @@ export default function InventoryPage() {
     <>
       <style>{`@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}@keyframes modalIn{from{opacity:0;transform:scale(0.96) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}*{box-sizing:border-box}`}</style>
 
-      <div className={s.appShell}>
+      <div className={shell.appShell}>
         <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
-        <div className={s.mainArea}>
+        <div className={shell.mainArea}>
           <Header breadcrumbs={["Prime ERP","Inventory","Stock Management"]} />
           <main className={s.page}>
 

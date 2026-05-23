@@ -7,6 +7,7 @@ import useHRPage from "../hooks/useHRPage";
 import ComplianceModal from "../components/HR/ComplianceModal";
 import SmartHRPanel    from "../components/HR/SmartHRPanel";
 import s from "../styles/HRPage.module.css";
+import shell from "../styles/AppShell.module.css";
 import {
   AlertTriangle,
   Banknote,
@@ -513,10 +514,10 @@ export default function HRPage() {
   } = useHRPage();
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA" }}>
+    <div className={shell.appShell}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-      <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div className={shell.mainArea}>
         <Header breadcrumbs={["Prime ERP", "Human Resources", "Employee Directory"]} />
 
         <main className={s.page}>

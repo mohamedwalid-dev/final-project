@@ -8,6 +8,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 import s from "../styles/DesignSystemPage.module.css";
+import shell from "../styles/AppShell.module.css";
 
 // ─── DATA ────────────────────────────────────────────────────────────────────
 const COLORS = [
@@ -292,11 +293,11 @@ export default function DesignSystemPage() {
         *{box-sizing:border-box}
       `}</style>
 
-      <div className={s.appShell}>
+      <div className={shell.appShell}>
         <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
-        <div className={s.mainArea}>
+        <div className={shell.mainArea}>
           <Header breadcrumbs={["Prime ERP", "Design System", tab === "responsive" ? "Responsive Variants" : "Components"]} />
-          <div className={s.page} id="ds-scroll">
+          <main className={s.page} id="ds-scroll">
 
             {/* Toast */}
             {toast && <div className={s.toast}>{toast}</div>}
@@ -652,7 +653,7 @@ export default function DesignSystemPage() {
                 <span>v2.4.0-stable</span>
               </div>
             </footer>
-          </div>
+          </main>
         </div>
       </div>
     </>

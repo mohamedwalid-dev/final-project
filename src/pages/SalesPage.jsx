@@ -16,6 +16,7 @@ import {
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header from "../components/Finance/Layout/Header";
 import s from "../styles/SalesPage.module.css";
+import shell from "../styles/AppShell.module.css";
 import {
   ChartNoAxesCombined,
   CheckCircle2,
@@ -835,10 +836,10 @@ export default function SalesPage() {
   const navigate = useNavigate();
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA", overflowX: "hidden" }}>
+    <div className={shell.appShell}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-      <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh", minWidth: 0, overflowX: "hidden", background: "#F8F9FA" }}>
+      <div className={shell.mainArea}>
         <Header breadcrumbs={["Prime ERP", "Sales", activeTab === "pipeline" ? "Pipeline" : TABS.find(t => t.id === activeTab)?.label]} />
 
         <main className={s.page}>

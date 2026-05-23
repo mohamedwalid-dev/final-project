@@ -8,6 +8,7 @@ import {
   updateTicketStatus,
 } from "../api/ticketApi";
 import s from "../styles/SupportPage.module.css";
+import shell from "../styles/AppShell.module.css";
 
 const FILTERS = [
   "All",
@@ -464,12 +465,12 @@ export default function SupportPage() {
   };
 
   return (
-    <div className={s.appShell}>
+    <div className={shell.appShell}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
-      <main className={s.mainArea}>
+      <div className={shell.mainArea}>
         <Header breadcrumbs={["ERP", "Support"]} />
 
-        <section className={s.page}>
+        <main className={s.page}>
           <div className={s.supportLayout}>
             <aside className={s.queue}>
               <div className={s.queueHeader}>
@@ -622,8 +623,8 @@ export default function SupportPage() {
               )}
             </section>
           </div>
-        </section>
-      </main>
+        </main>
+      </div>
 
       {canCreateTicket && (
         <NewTicketModal

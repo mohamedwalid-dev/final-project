@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
+import shell from "../styles/AppShell.module.css";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BACKEND SERVICE STUB (swap with real API calls)
@@ -846,15 +847,15 @@ export default function DashboardPage() {
   return (
     <>
       <GlobalStyles />
-      <div style={{ display: "flex", minHeight: "100vh", background: T.bg }}>
+      <div className={shell.appShell}>
 
         <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-        <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+        <div className={shell.mainArea}>
 
           <Header breadcrumbs={["Prime ERP", "Analytics", "Executive Dashboard"]} />
 
-          <main style={{ flex: 1, padding: "28px 32px", fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
+          <main className={shell.page} style={{ padding: "28px 32px", fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
 
             <div ref={titleAnim.ref} style={{
               display: "flex", justifyContent: "space-between", alignItems: "flex-start",

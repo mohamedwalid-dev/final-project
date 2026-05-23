@@ -11,6 +11,7 @@ import {
 } from "../api/supportChatApi";
 import { createSocket } from "../socket/socket";
 import s from "../styles/SupportChatPage.module.css";
+import shell from "../styles/AppShell.module.css";
 
 const FILTERS = ["All", "Open", "Pending", "Closed", "Unread"];
 
@@ -306,12 +307,13 @@ export default function SupportChatPage() {
   const activeChatEmail = activeChat?.userEmail || currentUser?.email || "";
 
   return (
-    <div className={s.page}>
+    <div className={shell.appShell}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
-      <main className={s.mainArea}>
+      <div className={shell.mainArea}>
         <Header breadcrumbs={["Prime ERP", "Support Chat"]} />
 
-        <section className={`${s.chatShell} ${!isSupportUser ? s.chatShellSingle : ""}`}>
+        <main className={s.page}>
+          <section className={`${s.chatShell} ${!isSupportUser ? s.chatShellSingle : ""}`}>
           {isSupportUser && (
             <aside className={s.inbox}>
               <div className={s.inboxHeader}>
@@ -468,8 +470,9 @@ export default function SupportChatPage() {
               </div>
             )}
           </section>
-        </section>
-      </main>
+          </section>
+        </main>
+      </div>
 
       {toast && <div className={`${s.toast} ${s[`toast_${toast.type}`] || ""}`}>{toast.message}</div>}
     </div>

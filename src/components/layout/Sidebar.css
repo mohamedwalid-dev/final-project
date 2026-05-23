@@ -2,17 +2,23 @@
 
 .sidebar {
   width: 220px;
+  min-width: 220px;
+  max-width: 220px;
   background: #fff;
   border-right: 1px solid #E9ECEF;
   display: flex;
   flex-direction: column;
-  position: fixed;
-  top: 0; left: 0; bottom: 0;
+  flex-shrink: 0;
   z-index: 100;
-  transition: width 0.2s ease;
+  transition: width 0.25s ease, min-width 0.25s ease, max-width 0.25s ease;
   overflow: hidden;
+  min-height: 100vh;
 }
-.sidebar.collapsed { width: 60px; }
+.sidebar.collapsed {
+  width: 76px;
+  min-width: 76px;
+  max-width: 76px;
+}
 
 .sidebar-logo {
   display: flex;

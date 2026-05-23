@@ -16,6 +16,7 @@ import useInvoicesFilter, { INVOICE_STATUSES, PAGE_SIZE } from "../hooks/useInvo
 import { formatCurrency, formatDate } from "../utils/formatters";
 import invoicesService from "../utils/invoicesService";   // ✅ نفس مكان financeService.js
 import s from "../styles/InvoicesManagement.module.css";
+import shell from "../styles/AppShell.module.css";
 import {
   AlertTriangle,
   Banknote,
@@ -616,13 +617,13 @@ export default function InvoicesManagement() {
     : [];
 
   return (
-    <div className={s.appShell}>
+    <div className={shell.appShell}>
 
       {/* ── Sidebar ── */}
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
       {/* ── Main Area ── */}
-      <div className={s.mainArea}>
+      <div className={shell.mainArea}>
 
         {/* ── Header ── */}
         <Header breadcrumbs={["Prime ERP", "Finance", "Invoices"]} />

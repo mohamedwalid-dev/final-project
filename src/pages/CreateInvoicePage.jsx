@@ -12,6 +12,7 @@ import { useNavigate } from "react-router-dom";
 import useCreateInvoice, { STEPS, TAX_OPTIONS } from "../hooks/useCreateInvoice";
 import { formatCurrency } from "../utils/formatters";
 import s from "../components/Finance/CreateInvoice.module.css";
+import shell from "../styles/AppShell.module.css";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header from "../components/Finance/Layout/Header";
 import {
@@ -823,18 +824,10 @@ function StepFinalize({
   }
 }, [isEditMode, initialInvoice, setField, replaceLineItems]);
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA" }}>
+    <div className={shell.appShell}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-      <div
-        style={{
-          marginLeft: 220,
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          minHeight: "100vh",
-        }}
-      >
+      <div className={shell.mainArea}>
         <Header breadcrumbs={["Prime ERP", "Finance", "Invoices", "Create New Record"]} />
 
         <main className={s.page}>

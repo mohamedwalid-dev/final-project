@@ -15,6 +15,7 @@ import ExpenseBreakdown from "../components/Finance/ExpenseBreakdown";
 import InvoicesTable from "../components/Finance/InvoicesTable";
 import ExportReportsModal from "../components/Finance/ExportReportsModal";
 import s from "../components/Finance/Finance.module.css";
+import shell from "../styles/AppShell.module.css";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 
@@ -77,10 +78,10 @@ export default function Finance() {
   }, [loadData]);
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#F8F9FA" }}>
+    <div className={shell.appShell}>
       <Sidebar activeNav={activeNav} onNavChange={setActiveNav} />
 
-      <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div className={shell.mainArea}>
         <Header breadcrumbs={["Prime ERP", "Finance", "Overview"]} />
 
         <main className={s.page}>

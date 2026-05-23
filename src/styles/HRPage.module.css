@@ -4,6 +4,11 @@
 .page {
   padding: 28px 32px 48px;
   flex: 1;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  background: #F8F9FB;
 }
 
 /* ── Error Card ──────────────────────────────────────────────────────────────*/

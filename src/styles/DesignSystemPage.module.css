@@ -2,22 +2,31 @@
 
 .appShell {
   display: flex;
+  width: 100%;
   min-height: 100vh;
-  background: #F8F9FC;
+  overflow-x: hidden;
+  background: #F8F9FB;
   font-family: 'DM Sans', 'Segoe UI', sans-serif;
 }
 .mainArea {
-  margin-left: 220px;
   flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  overflow: hidden;
+  overflow-x: hidden;
+  background: #F8F9FB;
 }
 .page {
   flex: 1;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
-  background: #F8F9FC;
+  background: #F8F9FB;
   position: relative;
 }
 .page::-webkit-scrollbar { width: 5px; }
