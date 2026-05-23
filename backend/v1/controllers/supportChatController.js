@@ -110,6 +110,42 @@ const isChatOwner = (chat, user) =>
 
 const canAccessChat = (chat, user) => isSupportUser(user) || isChatOwner(chat, user);
 
+const toPayload = (document) => (document?.toObject ? document.toObject() : document);
+
+const getChatUserId = (chat) => chat?.userId?._id || chat?.userId;
+
+const getChatRoom = (chat) => `support-chat:${chat?._id}`;
+
+const getUserRoom = (userId) => `user:${userId}`;
+
+const getLatestMessage = (chat) => {
+  const messages = chat?.messages || [];
+  return toPayload(messages[messages.length - 1]);
+};
+
+const emitToRooms = (io, rooms, event, payload) => {
+  if (!io) return;
+
+  const uniqueRooms = [...new Set(rooms.filter(Boolean).map(String))];
+  if (!uniqueRooms.length) return;
+
+  uniqueRooms.reduce((target, room) => target.to(room), io).emit(event, payload);
+};
+
+const emitChatUpdated = (req, chat, rooms) => {
+  emitToRooms(req.app.get("io"), rooms, "support_chat_updated", {
+    chat: toPayload(chat),
+  });
+};
+
+const emitMessageReceived = (req, chat, message, rooms) => {
+  emitToRooms(req.app.get("io"), rooms, "support_message_received", {
+    chatId: chat?._id?.toString(),
+    message: toPayload(message),
+    chat: toPayload(chat),
+  });
+};
+
 const appendMessage = (chat, user, text, options = {}) => {
   const senderIsSupport = isSupportUser(user);
 
@@ -162,6 +198,11 @@ export const sendMySupportMessage = async (req, res) => {
     await chat.save();
 
     const updatedChat = await SupportChat.findById(chat._id).populate(supportChatPopulate);
+    const latestMessage = getLatestMessage(updatedChat);
+
+    emitChatUpdated(req, updatedChat, ["support"]);
+    emitMessageReceived(req, updatedChat, latestMessage, [getChatRoom(updatedChat)]);
+
     return sendSuccessResponse(res, updatedChat, "Message sent successfully", 201);
   } catch (error) {
     return sendErrorResponse(res, error.message || "Failed to send message", 500);
@@ -226,6 +267,13 @@ export const sendSupportReply = async (req, res) => {
     await chat.save();
 
     const updatedChat = await SupportChat.findById(chat._id).populate(supportChatPopulate);
+    const latestMessage = getLatestMessage(updatedChat);
+    const userRoom = getUserRoom(getChatUserId(chat));
+    const chatRoom = getChatRoom(updatedChat);
+
+    emitMessageReceived(req, updatedChat, latestMessage, [userRoom, chatRoom]);
+    emitChatUpdated(req, updatedChat, ["support"]);
+
     return sendSuccessResponse(res, updatedChat, "Support reply sent successfully", 201);
   } catch (error) {
     return sendErrorResponse(res, error.message || "Failed to send support reply", 500);
@@ -261,6 +309,12 @@ export const markSupportChatAsRead = async (req, res) => {
     await chat.save();
 
     const updatedChat = await SupportChat.findById(chat._id).populate(supportChatPopulate);
+    emitChatUpdated(req, updatedChat, [
+      "support",
+      getUserRoom(getChatUserId(chat)),
+      getChatRoom(updatedChat),
+    ]);
+
     return sendSuccessResponse(res, updatedChat, "Support chat marked as read");
   } catch (error) {
     return sendErrorResponse(res, error.message || "Failed to mark support chat as read", 500);
@@ -279,6 +333,12 @@ export const closeSupportChat = async (req, res) => {
     await chat.save();
 
     const updatedChat = await SupportChat.findById(chat._id).populate(supportChatPopulate);
+    emitChatUpdated(req, updatedChat, [
+      "support",
+      getUserRoom(getChatUserId(chat)),
+      getChatRoom(updatedChat),
+    ]);
+
     return sendSuccessResponse(res, updatedChat, "Support chat closed successfully");
   } catch (error) {
     return sendErrorResponse(res, error.message || "Failed to close support chat", 500);
@@ -297,6 +357,12 @@ export const reopenSupportChat = async (req, res) => {
     await chat.save();
 
     const updatedChat = await SupportChat.findById(chat._id).populate(supportChatPopulate);
+    emitChatUpdated(req, updatedChat, [
+      "support",
+      getUserRoom(getChatUserId(chat)),
+      getChatRoom(updatedChat),
+    ]);
+
     return sendSuccessResponse(res, updatedChat, "Support chat reopened successfully");
   } catch (error) {
     return sendErrorResponse(res, error.message || "Failed to reopen support chat", 500);

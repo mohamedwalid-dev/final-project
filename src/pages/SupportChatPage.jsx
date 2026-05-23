@@ -9,6 +9,7 @@ import {
   sendMySupportMessage,
   sendSupportReply,
 } from "../api/supportChatApi";
+import { createSocket } from "../socket/socket";
 import s from "../styles/SupportChatPage.module.css";
 
 const FILTERS = ["All", "Open", "Pending", "Closed", "Unread"];
@@ -66,6 +67,28 @@ const sortChats = (chatList) =>
       new Date(firstChat.lastMessageAt || firstChat.updatedAt || 0)
   );
 
+const getMessageKey = (message) =>
+  message?._id ||
+  `${message?.createdAt || ""}-${message?.senderId || ""}-${message?.text || ""}`;
+
+const dedupeMessages = (messages = []) => {
+  const messageMap = new Map();
+
+  messages.forEach((message) => {
+    messageMap.set(getMessageKey(message), message);
+  });
+
+  return Array.from(messageMap.values());
+};
+
+const normalizeChat = (chat) =>
+  chat
+    ? {
+        ...chat,
+        messages: dedupeMessages(chat.messages),
+      }
+    : chat;
+
 export default function SupportChatPage() {
   const [activeNav, setActiveNav] = useState("supportChat");
   const [currentUser] = useState(() => getStoredUser());
@@ -76,8 +99,10 @@ export default function SupportChatPage() {
   const [filter, setFilter] = useState("All");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [socketConnected, setSocketConnected] = useState(false);
   const [toast, setToast] = useState(null);
   const messagesEndRef = useRef(null);
+  const socketRef = useRef(null);
 
   const isSupportUser = ["support", "admin"].includes(currentUser?.role);
   const currentUserId = getUserId(currentUser);
@@ -88,21 +113,36 @@ export default function SupportChatPage() {
   }, []);
 
   const replaceChat = useCallback((updatedChat) => {
-    if (!updatedChat?._id) return;
+    const normalizedChat = normalizeChat(updatedChat);
+    if (!normalizedChat?._id) return;
 
     setChats((currentChats) => {
-      const exists = currentChats.some((chat) => chat._id === updatedChat._id);
+      const exists = currentChats.some((chat) => chat._id === normalizedChat._id);
       const nextChats = exists
-        ? currentChats.map((chat) => (chat._id === updatedChat._id ? updatedChat : chat))
-        : [updatedChat, ...currentChats];
+        ? currentChats.map((chat) => (chat._id === normalizedChat._id ? normalizedChat : chat))
+        : [normalizedChat, ...currentChats];
 
       return sortChats(nextChats);
     });
 
     setActiveChat((currentChat) =>
-      currentChat?._id === updatedChat._id || !currentChat ? updatedChat : currentChat
+      currentChat?._id === normalizedChat._id || !currentChat ? normalizedChat : currentChat
     );
   }, []);
+
+  const handleRealtimeChatUpdated = useCallback(
+    (payload) => {
+      replaceChat(payload?.chat);
+    },
+    [replaceChat]
+  );
+
+  const handleRealtimeMessageReceived = useCallback(
+    (payload) => {
+      replaceChat(payload?.chat);
+    },
+    [replaceChat]
+  );
 
   const loadMyChat = useCallback(async () => {
     setLoading(true);
@@ -185,13 +225,58 @@ export default function SupportChatPage() {
   useEffect(() => {
     if (isSupportUser) {
       loadAllChats();
-      const intervalId = window.setInterval(loadAllChats, 15000);
-      return () => window.clearInterval(intervalId);
+      return undefined;
     }
 
     loadMyChat();
     return undefined;
   }, [isSupportUser, loadAllChats, loadMyChat]);
+
+  useEffect(() => {
+    const socket = createSocket();
+    socketRef.current = socket;
+
+    const handleConnect = () => setSocketConnected(true);
+    const handleDisconnect = () => setSocketConnected(false);
+    const handleConnectError = (error) => {
+      setSocketConnected(false);
+      showToast(error.message || "Real-time connection failed.", "error");
+    };
+    const handleSocketError = (payload) => {
+      showToast(payload?.message || "Support chat socket error.", "error");
+    };
+
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
+    socket.on("connect_error", handleConnectError);
+    socket.on("support_chat_updated", handleRealtimeChatUpdated);
+    socket.on("support_message_received", handleRealtimeMessageReceived);
+    socket.on("support_chat_error", handleSocketError);
+
+    socket.connect();
+
+    return () => {
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("connect_error", handleConnectError);
+      socket.off("support_chat_updated", handleRealtimeChatUpdated);
+      socket.off("support_message_received", handleRealtimeMessageReceived);
+      socket.off("support_chat_error", handleSocketError);
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [handleRealtimeChatUpdated, handleRealtimeMessageReceived, showToast]);
+
+  useEffect(() => {
+    if (!socketRef.current || !activeChat?._id) return undefined;
+
+    const chatId = activeChat._id;
+    socketRef.current.emit("join_support_chat", { chatId });
+
+    return () => {
+      socketRef.current?.emit("leave_support_chat", { chatId });
+    };
+  }, [activeChat?._id]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -307,6 +392,13 @@ export default function SupportChatPage() {
                           ? activeChatEmail
                           : "We usually reply shortly. Tell us what you need help with."}
                       </p>
+                      <span
+                        className={
+                          socketConnected ? s.onlineSocketBadge : s.offlineSocketBadge
+                        }
+                      >
+                        {socketConnected ? "Real-time connected" : "Reconnecting..."}
+                      </span>
                     </div>
                   </div>
                 </div>
