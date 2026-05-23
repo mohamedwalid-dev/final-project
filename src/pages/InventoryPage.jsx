@@ -30,12 +30,20 @@ import {
   RadioTower,
   Search,
   SlidersHorizontal,
+  Trash2,
   Warehouse,
   X,
 } from "lucide-react";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 import s from "../styles/InventoryPage.module.css";
+import {
+  getInventoryProducts,
+  getInventoryStats,
+  createInventoryProduct,
+  updateInventoryProduct,
+  deleteInventoryProduct,
+} from "../services/inventoryApi";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── MOCK DATA
@@ -48,22 +56,12 @@ const INITIAL_STATS = [
 ];
 
 const STAT_ICONS = {
-  assets: CircleDollarSign,
-  turnover: ArrowLeftRight,
-  util: Boxes,
+  products: Package,
+  units: Boxes,
+  average: ChartNoAxesCombined,
   lowstock: AlertTriangle,
 };
 
-const INITIAL_PRODUCTS = [
-  { id:"p1", name:"Quantum Processor X1",  category:"Electronics", sku:"SYN-Q100", location:"Warehouse A-12", stockPct:85, status:"Healthy",  units:850, threshold:100 },
-  { id:"p2", name:"Nebula Glass Screen",   category:"Electronics", sku:"SYN-N550", location:"Warehouse B-04", stockPct:12, status:"Critical", units:12,  threshold:50  },
-  { id:"p3", name:"Titanium Chassis V2",   category:"Electronics", sku:"SYN-T600", location:"Central Hub",    stockPct:45, status:"Warning",  units:225, threshold:80  },
-  { id:"p4", name:"Optic Fiber Bundle",    category:"Electronics", sku:"SYN-F80",  location:"Warehouse A-10", stockPct:92, status:"Healthy",  units:920, threshold:100 },
-  { id:"p5", name:"Fusion Cell Unit",      category:"Electronics", sku:"SYN-FC01", location:"Secure Vault",   stockPct:8,  status:"Low",      units:8,   threshold:20  },
-  { id:"p6", name:"Neural Interface Chip", category:"Electronics", sku:"SYN-NI22", location:"Warehouse A-12", stockPct:61, status:"Healthy",  units:610, threshold:100 },
-  { id:"p7", name:"Liquid Coolant X-9",    category:"Consumables", sku:"SYN-LC99", location:"Warehouse B-04", stockPct:0,  status:"Out",      units:0,   threshold:10  },
-  { id:"p8", name:"Power Relay Module",    category:"Electronics", sku:"SYN-PR77", location:"Central Hub",    stockPct:34, status:"Warning",  units:170, threshold:200 },
-];
 
 const CRITICAL_ALERTS = [
   { id:"a1", name:"Nebula Glass Screen", sku:"SKU: SYN-N550", unitsLeft:12, threshold:50,  color:"#FA5252" },
@@ -129,6 +127,21 @@ function toCSV(rows) {
   if (!rows?.length) return "";
   const headers = Object.keys(rows[0]);
   return [headers.join(","), ...rows.map(r => headers.map(h => { const v=String(r[h]??""); return v.includes(",")||v.includes('"')?`"${v.replace(/"/g,'""')}"`:v; }).join(","))].join("\n");
+}
+
+function formatTimeAgo(dateValue) {
+  if (!dateValue) return "Just now";
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return "Just now";
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMinutes = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffMinutes < 1) return "Just now";
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${diffDays}d ago`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -277,62 +290,97 @@ function ExportReportModal({ isOpen, onClose, products }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ── ADD NEW PRODUCT MODAL
 // ─────────────────────────────────────────────────────────────────────────────
-const EMPTY_FORM = { name:"", category:"Electronics", sku:"", location:"Warehouse A-12", units:"", threshold:"", status:"Healthy" };
+const EMPTY_FORM = { name:"", category:"Electronics", sku:"", location:"Warehouse A-12", units:"", threshold:"" };
 
-function AddProductModal({ isOpen, onClose, onAdd }) {
-  const [form,    setForm]    = useState(EMPTY_FORM);
-  const [errors,  setErrors]  = useState({});
-  const [loading, setLoading] = useState(false);
+function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, submitting = false }) {
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [errors, setErrors] = useState({});
   const overlayRef = useRef(null);
+  const mode = product ? "edit" : "add";
 
   useEffect(() => {
     if (!isOpen) return;
-    const fn = e => { if (e.key==="Escape") onClose(); };
+    const fn = (e) => {
+      if (e.key === "Escape") onClose();
+    };
     document.addEventListener("keydown", fn);
     return () => document.removeEventListener("keydown", fn);
   }, [isOpen, onClose]);
 
-  useEffect(() => { if (isOpen) { setForm(EMPTY_FORM); setErrors({}); } }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen) return;
+    setErrors({});
+    setForm(
+      product
+        ? {
+            name: product.name ?? "",
+            category: product.category ?? "Electronics",
+            sku: product.sku ?? "",
+            location: product.location ?? "Warehouse A-12",
+            units: product.units != null ? String(product.units) : "",
+            threshold: product.threshold != null ? String(product.threshold) : "",
+          }
+        : EMPTY_FORM
+    );
+  }, [isOpen, product]);
 
   const setField = (field, value) => {
-    setForm(p => ({ ...p, [field]:value }));
-    setErrors(p => { const n={...p}; delete n[field]; return n; });
+    setForm((p) => ({ ...p, [field]: value }));
+    setErrors((p) => {
+      const next = { ...p };
+      delete next[field];
+      return next;
+    });
   };
 
   const validate = () => {
     const e = {};
-    if (!form.name.trim())                             e.name      = "Product name is required";
-    if (!form.sku.trim())                              e.sku       = "SKU is required";
-    if (!form.units || isNaN(form.units) || Number(form.units)<0)  e.units     = "Valid unit count required";
-    if (!form.threshold || isNaN(form.threshold) || Number(form.threshold)<0) e.threshold = "Valid threshold required";
+    if (!form.name.trim()) e.name = "Product name is required";
+    if (!form.sku.trim()) e.sku = "SKU is required";
+    if (!form.units || isNaN(form.units) || Number(form.units) < 0) e.units = "Valid unit count required";
+    if (!form.threshold || isNaN(form.threshold) || Number(form.threshold) < 0) e.threshold = "Valid threshold required";
     return e;
   };
 
   const handleSubmit = async () => {
     const errs = validate();
-    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
-    setLoading(true);
-    await new Promise(r => setTimeout(r, 600));
-    const units     = Number(form.units);
-    const threshold = Number(form.threshold);
-    const stockPct  = threshold > 0 ? Math.min(100, Math.round((units / (threshold*2))*100)) : 100;
-    onAdd({ id:"p"+Date.now(), name:form.name.trim(), category:form.category, sku:form.sku.trim().toUpperCase(), location:form.location, units, threshold, stockPct, status:form.status });
-    setLoading(false);
-    onClose();
+    if (Object.keys(errs).length > 0) {
+      setErrors(errs);
+      return;
+    }
+
+    const payload = {
+      name: form.name.trim(),
+      category: form.category,
+      sku: form.sku.trim().toUpperCase(),
+      location: form.location,
+      units: Number(form.units),
+      threshold: Number(form.threshold),
+    };
+
+    if (mode === "edit") {
+      await onUpdate(product._id || product.id, payload);
+      return;
+    }
+
+    await onAdd(payload);
   };
 
   if (!isOpen) return null;
 
   const Field = ({ id, label, required, error, children }) => (
     <div className={s.formGroup}>
-      <label className={s.formLabel} htmlFor={id}>{label}{required && <span className={s.required}> *</span>}</label>
+      <label className={s.formLabel} htmlFor={id}>
+        {label}
+        {required && <span className={s.required}> *</span>}
+      </label>
       {children}
       {error && <p className={s.fieldError}>{error}</p>}
     </div>
   );
 
   return (
-    <div className={s.modalOverlay} ref={overlayRef} onClick={e=>{ if(e.target===overlayRef.current) onClose(); }} role="dialog" aria-modal="true">
+    <div className={s.modalOverlay} ref={overlayRef} onClick={(e) => { if (e.target === overlayRef.current) onClose(); }} role="dialog" aria-modal="true">
       <div className={s.modal}>
         {/* Header */}
         <div className={s.modalHeader}>
@@ -341,8 +389,12 @@ function AddProductModal({ isOpen, onClose, onAdd }) {
               <PackagePlus className={s.modalTitleIconSvg} />
             </div>
             <div>
-              <h2 className={s.modalTitle}>Add New Product</h2>
-              <p className={s.modalSub}>Fill in the details to add a product to inventory.</p>
+              <h2 className={s.modalTitle}>{mode === "edit" ? "Edit Product" : "Add New Product"}</h2>
+              <p className={s.modalSub}>
+                {mode === "edit"
+                  ? "Update product details and send them to inventory."
+                  : "Fill in the details to add a product to inventory."}
+              </p>
             </div>
           </div>
           <button className={s.modalClose} onClick={onClose} aria-label="Close add product modal" title="Close">
@@ -356,50 +408,83 @@ function AddProductModal({ isOpen, onClose, onAdd }) {
 
             {/* Product Name — full width */}
             <div className={`${s.formGroup} ${s.formGroupFull}`}>
-              <label className={s.formLabel} htmlFor="ap-name">Product Name <span className={s.required}>*</span></label>
-              <input id="ap-name" className={`${s.formInput} ${errors.name?s.formInputError:""}`}
-                value={form.name} onChange={e=>setField("name",e.target.value)}
-                placeholder="e.g. Quantum Processor X2" autoFocus />
+              <label className={s.formLabel} htmlFor="ap-name">
+                Product Name <span className={s.required}>*</span>
+              </label>
+              <input
+                id="ap-name"
+                className={`${s.formInput} ${errors.name ? s.formInputError : ""}`}
+                value={form.name}
+                onChange={(e) => setField("name", e.target.value)}
+                placeholder="e.g. Quantum Processor X2"
+                autoFocus
+              />
               {errors.name && <p className={s.fieldError}>{errors.name}</p>}
             </div>
 
             {/* SKU */}
             <Field id="ap-sku" label="SKU" required error={errors.sku}>
-              <input id="ap-sku" className={`${s.formInput} ${errors.sku?s.formInputError:""}`}
-                value={form.sku} onChange={e=>setField("sku",e.target.value)} placeholder="e.g. SYN-Q200" />
+              <input
+                id="ap-sku"
+                className={`${s.formInput} ${errors.sku ? s.formInputError : ""}`}
+                value={form.sku}
+                onChange={(e) => setField("sku", e.target.value)}
+                placeholder="e.g. SYN-Q200"
+              />
             </Field>
 
             {/* Category */}
             <Field id="ap-cat" label="Category">
-              <select id="ap-cat" className={s.formSelect} value={form.category} onChange={e=>setField("category",e.target.value)}>
-                {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+              <select
+                id="ap-cat"
+                className={s.formSelect}
+                value={form.category}
+                onChange={(e) => setField("category", e.target.value)}
+              >
+                {CATEGORIES.map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
               </select>
             </Field>
 
             {/* Location */}
             <Field id="ap-loc" label="Location">
-              <select id="ap-loc" className={s.formSelect} value={form.location} onChange={e=>setField("location",e.target.value)}>
-                {LOCATIONS.map(l=><option key={l}>{l}</option>)}
-              </select>
-            </Field>
-
-            {/* Status */}
-            <Field id="ap-st" label="Initial Status">
-              <select id="ap-st" className={s.formSelect} value={form.status} onChange={e=>setField("status",e.target.value)}>
-                {STATUS_OPTIONS.map(st=><option key={st}>{st}</option>)}
+              <select
+                id="ap-loc"
+                className={s.formSelect}
+                value={form.location}
+                onChange={(e) => setField("location", e.target.value)}
+              >
+                {LOCATIONS.map((l) => (
+                  <option key={l}>{l}</option>
+                ))}
               </select>
             </Field>
 
             {/* Units */}
             <Field id="ap-units" label="Unit Count" required error={errors.units}>
-              <input id="ap-units" type="number" min="0" className={`${s.formInput} ${errors.units?s.formInputError:""}`}
-                value={form.units} onChange={e=>setField("units",e.target.value)} placeholder="e.g. 500" />
+              <input
+                id="ap-units"
+                type="number"
+                min="0"
+                className={`${s.formInput} ${errors.units ? s.formInputError : ""}`}
+                value={form.units}
+                onChange={(e) => setField("units", e.target.value)}
+                placeholder="e.g. 500"
+              />
             </Field>
 
             {/* Threshold */}
             <Field id="ap-thr" label="Low Stock Threshold" required error={errors.threshold}>
-              <input id="ap-thr" type="number" min="0" className={`${s.formInput} ${errors.threshold?s.formInputError:""}`}
-                value={form.threshold} onChange={e=>setField("threshold",e.target.value)} placeholder="e.g. 50" />
+              <input
+                id="ap-thr"
+                type="number"
+                min="0"
+                className={`${s.formInput} ${errors.threshold ? s.formInputError : ""}`}
+                value={form.threshold}
+                onChange={(e) => setField("threshold", e.target.value)}
+                placeholder="e.g. 50"
+              />
             </Field>
 
           </div>
@@ -413,9 +498,107 @@ function AddProductModal({ isOpen, onClose, onAdd }) {
           </p>
           <div className={s.modalFooterActions}>
             <button className={s.btnGhost} onClick={onClose}>Cancel</button>
-            <button className={`${s.btn} ${s.btnPrimary}`} onClick={handleSubmit} disabled={loading}>
-              {loading ? <><span className={s.exportSpinner}/> Adding...</> : <><CheckCircle2 className={s.btnIcon} aria-hidden="true" />Add Product</>}
+            <button className={`${s.btn} ${s.btnPrimary}`} onClick={handleSubmit} disabled={submitting}>
+              {submitting ? (
+                <><span className={s.exportSpinner} /> {mode === "edit" ? "Saving..." : "Adding..."}</>
+              ) : (
+                <><CheckCircle2 className={s.btnIcon} aria-hidden="true" />{mode === "edit" ? "Save Changes" : "Add Product"}</>
+              )}
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ViewProductModal({ isOpen, product, onClose }) {
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const fn = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", fn);
+    return () => document.removeEventListener("keydown", fn);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || !product) return null;
+
+  const createdAt = product.createdAt ? new Date(product.createdAt).toLocaleString() : null;
+  const updatedAt = product.updatedAt ? new Date(product.updatedAt).toLocaleString() : null;
+
+  return (
+    <div className={s.modalOverlay} ref={overlayRef} onClick={(e) => { if (e.target === overlayRef.current) onClose(); }} role="dialog" aria-modal="true">
+      <div className={s.modal} style={{ maxWidth: "560px" }}>
+        <div className={s.modalHeader}>
+          <div className={s.modalTitleRow}>
+            <div className={s.modalTitleIcon} aria-hidden="true">
+              <Eye className={s.modalTitleIconSvg} />
+            </div>
+            <div>
+              <h2 className={s.modalTitle}>Product Details</h2>
+              <p className={s.modalSub}>Review inventory item details and stock health.</p>
+            </div>
+          </div>
+          <button className={s.modalClose} onClick={onClose} aria-label="Close view product modal" title="Close">
+            <X aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className={s.modalBody}>
+          <div className={s.modalDetailGrid}>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Product Name</p>
+              <p className={s.modalDetailValue}>{product.name}</p>
+            </div>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>SKU</p>
+              <p className={s.modalDetailValue}>{product.sku}</p>
+            </div>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Category</p>
+              <p className={s.modalDetailValue}>{product.category}</p>
+            </div>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Location</p>
+              <p className={s.modalDetailValue}>{product.location}</p>
+            </div>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Units</p>
+              <p className={s.modalDetailValue}>{product.units}</p>
+            </div>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Threshold</p>
+              <p className={s.modalDetailValue}>{product.threshold}</p>
+            </div>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Stock Percentage</p>
+              <p className={s.modalDetailValue}>{product.stockPct}%</p>
+            </div>
+            <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Status</p>
+              <p className={s.modalDetailValue}>{product.status}</p>
+            </div>
+            {createdAt && (
+              <div className={s.modalDetailItem}>
+                <p className={s.modalDetailLabel}>Created</p>
+                <p className={s.modalDetailValue}>{createdAt}</p>
+              </div>
+            )}
+            {updatedAt && (
+              <div className={s.modalDetailItem}>
+                <p className={s.modalDetailLabel}>Updated</p>
+                <p className={s.modalDetailValue}>{updatedAt}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className={s.modalFooter}>
+          <div className={s.modalFooterActions}>
+            <button className={s.btnGhost} onClick={onClose}>Close</button>
           </div>
         </div>
       </div>
@@ -441,7 +624,7 @@ const StatCard = memo(({ stat, loading, delay=0 }) => {
   );
   return (
     <div ref={anim.ref} className={s.statCard} style={anim.style}>
-      <div className={`${s.statIconBadge} ${stat.id==="assets"?s.statIconBadgeActive:s.statIconBadgeNeutral}`} aria-hidden="true">
+      <div className={`${s.statIconBadge} ${stat.id==="products"?s.statIconBadgeActive:s.statIconBadgeNeutral}`} aria-hidden="true">
         <Icon className={s.statIconSvg} strokeWidth={2.2} />
       </div>
       <p className={s.statLabel}>{stat.label}</p>
@@ -458,11 +641,12 @@ StatCard.displayName = "StatCard";
 // ─────────────────────────────────────────────────────────────────────────────
 // ── PRODUCT ROW
 // ─────────────────────────────────────────────────────────────────────────────
-function ProductRow({ product, delay=0 }) {
+function ProductRow({ product, delay = 0, onView = () => {}, onEdit = () => {}, onDelete = () => {} }) {
   const [drawn, setDrawn] = useState(false);
   const anim = useAnimateIn(delay);
+  const productId = product._id || product.id;
   const sm = getStatusMeta(product.status);
-  useEffect(() => { const t=setTimeout(()=>setDrawn(true), delay+200); return ()=>clearTimeout(t); }, [delay]);
+  useEffect(() => { const t = setTimeout(() => setDrawn(true), delay + 200); return () => clearTimeout(t); }, [delay]);
   return (
     <tr ref={anim.ref} className={s.tableRow} style={anim.style}>
       <td className={s.td}>
@@ -478,19 +662,22 @@ function ProductRow({ product, delay=0 }) {
       <td className={s.td}>
         <div className={s.stockCell}>
           <div className={s.stockBarTrack}>
-            <div className={s.stockBarFill} style={{ width:drawn?`${product.stockPct}%`:"0%", background:sm.barColor, transition:"width 0.9s cubic-bezier(0.22,1,0.36,1)" }} />
+            <div className={s.stockBarFill} style={{ width: drawn ? `${product.stockPct}%` : "0%", background: sm.barColor, transition: "width 0.9s cubic-bezier(0.22,1,0.36,1)" }} />
           </div>
           <span className={s.stockPct}>{product.stockPct}%</span>
-          <span className={s.statusBadge} style={{ background:sm.bg, color:sm.color }}>{product.status}</span>
+          <span className={s.statusBadge} style={{ background: sm.bg, color: sm.color }}>{product.status}</span>
         </div>
       </td>
       <td className={s.td}>
         <div className={s.rowActions}>
-          <button className={s.actionBtn} aria-label={`View ${product.name}`} title="View">
+          <button className={s.actionBtn} aria-label={`View ${product.name}`} title="View" onClick={() => onView(product)}>
             <Eye aria-hidden="true" />
           </button>
-          <button className={s.actionBtn} aria-label={`Edit ${product.name}`} title="Edit">
+          <button className={s.actionBtn} aria-label={`Edit ${product.name}`} title="Edit" onClick={() => onEdit(product)}>
             <Pencil aria-hidden="true" />
+          </button>
+          <button className={`${s.actionBtn} ${s.deleteActionBtn}`} aria-label={`Delete ${product.name}`} title="Delete" onClick={() => onDelete(productId)}>
+            <Trash2 aria-hidden="true" />
           </button>
           <button className={s.actionBtn} aria-label={`More actions for ${product.name}`} title="More actions">
             <MoreHorizontal aria-hidden="true" />
@@ -504,10 +691,10 @@ function ProductRow({ product, delay=0 }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ── SIDE PANELS
 // ─────────────────────────────────────────────────────────────────────────────
-const CriticalAlertsPanel = memo(({ loading }) => {
+const CriticalAlertsPanel = memo(({ loading, alerts = [] }) => {
   const anim = useAnimateIn(200);
   const [pulse, setPulse] = useState(true);
-  useEffect(() => { const id=setInterval(()=>setPulse(p=>!p),1100); return ()=>clearInterval(id); }, []);
+  useEffect(() => { const id = setInterval(() => setPulse((p) => !p), 1100); return () => clearInterval(id); }, []);
   return (
     <div ref={anim.ref} className={s.sideCard} style={anim.style}>
       <div className={s.sideCardHeader}>
@@ -515,59 +702,116 @@ const CriticalAlertsPanel = memo(({ loading }) => {
           <AlertTriangle className={`${s.sideIconSvg} ${s.alertIcon}`} aria-hidden="true" />
           <h3 className={s.sideCardTitle}>Critical Alerts</h3>
         </div>
-        <span className={s.liveBadge}><span style={{ width:6,height:6,borderRadius:"50%",background:"#FA5252",opacity:pulse?1:0.3,transition:"opacity 0.4s",display:"inline-block",marginRight:5 }}/>LIVE</span>
+        <span className={s.liveBadge}>
+          <span style={{ width:6,height:6,borderRadius:"50%",background:"#FA5252",opacity:pulse?1:0.3,transition:"opacity 0.4s",display:"inline-block",marginRight:5 }} />LIVE
+        </span>
       </div>
-      <p className={s.sideCardSub}>Immediate action required for 14 items.</p>
-      {loading ? <div style={{ display:"flex",flexDirection:"column",gap:10,marginTop:12 }}>{[1,2,3].map(i=><div key={i} style={{ display:"flex",gap:10 }}><Skeleton w={32} h={32} style={{ borderRadius:8,flexShrink:0 }}/><div style={{ flex:1 }}><Skeleton w="70%" h={12} style={{ marginBottom:5 }}/><Skeleton w="45%" h={10}/></div></div>)}</div>
-      : <div className={s.alertList}>{CRITICAL_ALERTS.map(a=>(
-          <div key={a.id} className={s.alertItem}>
-            <div className={s.alertDot} style={{ background:a.color+"22",color:a.color }} aria-hidden="true">
-              <AlertTriangle className={s.alertDotIcon} />
+      <p className={s.sideCardSub}>Immediate action required for {alerts.length} items.</p>
+      {loading ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
+          {[1, 2, 3].map((i) => (
+            <div key={i} style={{ display: "flex", gap: 10 }}>
+              <Skeleton w={32} h={32} style={{ borderRadius: 8, flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <Skeleton w="70%" h={12} style={{ marginBottom: 5 }} />
+                <Skeleton w="45%" h={10} />
+              </div>
             </div>
-            <div className={s.alertInfo}><p className={s.alertName}>{a.name}</p><p className={s.alertSku}>{a.sku}</p></div>
-            <div className={s.alertRight}>
-              <span className={s.alertUnits} style={{ color:a.unitsLeft===0?"#C92A2A":"#E67700" }}>{a.unitsLeft} units left</span>
-              <span className={s.alertThreshold}>Threshold: {a.threshold}</span>
+          ))}
+        </div>
+      ) : alerts.length === 0 ? (
+        <div className={s.emptyState} style={{ padding: "24px 12px" }}>
+          <p className={s.emptyTitle}>No critical stock alerts.</p>
+        </div>
+      ) : (
+        <div className={s.alertList}>
+          {alerts.map((product) => (
+            <div key={product._id || product.id} className={s.alertItem}>
+              <div className={s.alertDot} style={{ background: product.status === "Out" ? "#C92A2A22" : "#FA525222", color: product.status === "Out" ? "#C92A2A" : "#E67700" }} aria-hidden="true">
+                <AlertTriangle className={s.alertDotIcon} />
+              </div>
+              <div className={s.alertInfo}>
+                <p className={s.alertName}>{product.name}</p>
+                <p className={s.alertSku}>{product.sku}</p>
+              </div>
+              <div className={s.alertRight}>
+                <span className={s.alertUnits} style={{ color: product.units === 0 ? "#C92A2A" : "#E67700" }}>
+                  {product.units} units left
+                </span>
+                <span className={s.alertThreshold}>Threshold: {product.threshold}</span>
+                <span className={s.statusBadge} style={{ display: "inline-block", marginTop: 6, background: getStatusMeta(product.status).bg, color: getStatusMeta(product.status).color }}>
+                  {product.status}
+                </span>
+              </div>
             </div>
-          </div>
-        ))}</div>}
+          ))}
+        </div>
+      )}
       <button className={s.sideCardLink}>View all replenishment needs</button>
     </div>
   );
 });
 CriticalAlertsPanel.displayName = "CriticalAlertsPanel";
 
-const WarehouseMapPanel = memo(({ loading }) => {
+const WarehouseMapPanel = memo(({ loading, warehouses = [] }) => {
   const anim = useAnimateIn(350);
-  const [expanded, setExpanded] = useState({ w1:true, w2:false });
+  const [expanded, setExpanded] = useState({});
   return (
     <div ref={anim.ref} className={s.sideCard} style={anim.style}>
-      <div className={s.sideCardTitleRow} style={{ marginBottom:14 }}>
+      <div className={s.sideCardTitleRow} style={{ marginBottom: 14 }}>
         <Warehouse className={s.sideIconSvg} aria-hidden="true" />
         <h3 className={s.sideCardTitle}>Warehouse Map</h3>
       </div>
-      {loading ? <><Skeleton h={80} style={{ borderRadius:10,marginBottom:12 }}/><Skeleton h={50} style={{ borderRadius:10 }}/></> :
-        WAREHOUSES.map(wh => {
+      {loading ? (
+        <><Skeleton h={80} style={{ borderRadius: 10, marginBottom: 12 }} /><Skeleton h={50} style={{ borderRadius: 10 }} /></>
+      ) : warehouses.length === 0 ? (
+        <div className={s.emptyState} style={{ padding: "24px 12px" }}>
+          <p className={s.emptyTitle}>No warehouse data available.</p>
+        </div>
+      ) : (
+        warehouses.map((wh) => {
           const isOpen = expanded[wh.id];
           return (
             <div key={wh.id} className={s.warehouseCard}>
-              <div className={s.warehouseHeader} onClick={()=>setExpanded(p=>({...p,[wh.id]:!p[wh.id]}))} role="button" tabIndex={0} onKeyDown={e=>e.key==="Enter"&&setExpanded(p=>({...p,[wh.id]:!p[wh.id]}))}>
+              <div className={s.warehouseHeader} onClick={() => setExpanded((p) => ({ ...p, [wh.id]: !p[wh.id] }))} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && setExpanded((p) => ({ ...p, [wh.id]: !p[wh.id] }))}>
                 <div className={s.warehouseLeft}>
-                  <div className={s.warehouseIconSmall} style={{ background:wh.color+"18",color:wh.color }} aria-hidden="true">
+                  <div className={s.warehouseIconSmall} style={{ background: "#E9ECEF", color: "#3B5BDB" }} aria-hidden="true">
                     <Warehouse className={s.warehouseIconSvg} />
                   </div>
                   <div>
                     <p className={s.warehouseName}>{wh.name}</p>
-                    <span className={s.warehouseTag} style={{ background:wh.color==="#3B5BDB"?"#EEF2FF":"#FFF3BF",color:wh.color }}>{wh.tag}</span>
+                    <span className={s.warehouseTag} style={{ background: wh.capacity >= 80 ? "#EEF2FF" : wh.capacity >= 50 ? "#FFF3BF" : "#FFE3E3", color: wh.capacity >= 80 ? "#3B5BDB" : wh.capacity >= 50 ? "#F59F00" : "#C92A2A" }}>
+                      {wh.tag}
+                    </span>
                   </div>
                 </div>
-                <span className={s.expandChevron}>{isOpen?"▲":"▼"}</span>
+                <span className={s.expandChevron}>{isOpen ? "▲" : "▼"}</span>
               </div>
               {isOpen && (
                 <div className={s.warehouseBody}>
                   <div className={s.warehouseStats}>
-                    <div className={s.warehouseStat}><p className={s.whStatLabel}>CAPACITY</p><p className={s.whStatValue}>{wh.capacity}%</p><div className={s.whBarTrack}><div className={s.whBarFill} style={{ width:`${wh.capacity}%`,background:wh.color }}/></div></div>
-                    <div className={s.warehouseStat}><p className={s.whStatLabel}>ITEMS</p><p className={s.whStatValue}>{wh.items.toLocaleString()}</p><p className={s.whStatDelta} style={{ color:"#2F9E44" }}>{wh.delta}</p></div>
+                    <div className={s.warehouseStat}>
+                      <p className={s.whStatLabel}>CAPACITY</p>
+                      <p className={s.whStatValue}>{wh.capacity}%</p>
+                      <div className={s.whBarTrack}>
+                        <div className={s.whBarFill} style={{ width: `${wh.capacity}%`, background: wh.capacity >= 80 ? "#3B5BDB" : wh.capacity >= 50 ? "#F59F00" : "#C92A2A" }} />
+                      </div>
+                    </div>
+                    <div className={s.warehouseStat}>
+                      <p className={s.whStatLabel}>ITEMS</p>
+                      <p className={s.whStatValue}>{wh.items.toLocaleString()}</p>
+                      <p className={s.whStatDelta} style={{ color: "#2F9E44" }}>{wh.productsCount} products</p>
+                    </div>
+                  </div>
+                  <div className={s.warehouseStats} style={{ gap: 10 }}>
+                    <div className={s.warehouseStat}>
+                      <p className={s.whStatLabel}>LOW STOCK</p>
+                      <p className={s.whStatValue}>{wh.lowStockCount}</p>
+                    </div>
+                    <div className={s.warehouseStat}>
+                      <p className={s.whStatLabel}>PRODUCTS</p>
+                      <p className={s.whStatValue}>{wh.productsCount}</p>
+                    </div>
                   </div>
                   <button className={s.manageBtn}>Manage Warehouse Inventory</button>
                 </div>
@@ -575,33 +819,60 @@ const WarehouseMapPanel = memo(({ loading }) => {
             </div>
           );
         })
-      }
+      )}
     </div>
   );
 });
 WarehouseMapPanel.displayName = "WarehouseMapPanel";
 
-const LiveFeedPanel = memo(({ loading }) => {
+const LiveFeedPanel = memo(({ loading, feed = [] }) => {
   const anim = useAnimateIn(500);
   return (
     <div ref={anim.ref} className={s.sideCard} style={anim.style}>
-      <div className={s.sideCardTitleRow} style={{ marginBottom:4 }}>
+      <div className={s.sideCardTitleRow} style={{ marginBottom: 4 }}>
         <RadioTower className={s.sideIconSvg} aria-hidden="true" />
         <h3 className={s.sideCardTitle}>Live Feed</h3>
       </div>
-      <p className={s.sideCardSub} style={{ marginBottom:14 }}>Real-time asset movement tracking.</p>
-      {loading ? <div style={{ display:"flex",flexDirection:"column",gap:14 }}>{[1,2,3,4].map(i=><div key={i} style={{ display:"flex",gap:10 }}><Skeleton w={28} h={28} style={{ borderRadius:7,flexShrink:0 }}/><div style={{ flex:1 }}><Skeleton w="75%" h={12} style={{ marginBottom:5 }}/><Skeleton w="50%" h={10}/></div><Skeleton w={50} h={10}/></div>)}</div>
-      : <div className={s.feedList}>{LIVE_FEED.map(item=>{
-          const FeedIcon = FEED_ICONS[item.direction] || ArrowLeftRight;
-          return (
-          <div key={item.id} className={s.feedItem}>
-            <div className={s.feedDot} style={{ background:item.iconColor+"18",color:item.iconColor }} aria-hidden="true">
-              <FeedIcon className={s.feedIconSvg} />
+      <p className={s.sideCardSub} style={{ marginBottom: 14 }}>Real-time asset movement tracking.</p>
+      {loading ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} style={{ display: "flex", gap: 10 }}>
+              <Skeleton w={28} h={28} style={{ borderRadius: 7, flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <Skeleton w="75%" h={12} style={{ marginBottom: 5 }} />
+                <Skeleton w="50%" h={10} />
+              </div>
+              <Skeleton w={50} h={10} />
             </div>
-            <div className={s.feedInfo}><p className={s.feedProduct}>{item.product}</p><p className={s.feedAction}>{item.action} · <span style={{ fontWeight:700,color:item.iconColor }}>{item.qty}</span></p><p className={s.feedLocation}>{item.location}</p></div>
-            <span className={s.feedTime}>{item.ago}</span>
-          </div>
-        )})}</div>}
+          ))}
+        </div>
+      ) : feed.length === 0 ? (
+        <div className={s.emptyState} style={{ padding: "24px 12px" }}>
+          <p className={s.emptyTitle}>No recent inventory activity.</p>
+        </div>
+      ) : (
+        <div className={s.feedList}>
+          {feed.map((item) => {
+            const FeedIcon = FEED_ICONS[item.direction] || ArrowLeftRight;
+            return (
+              <div key={item.id} className={s.feedItem}>
+                <div className={s.feedDot} style={{ background: item.iconColor + "18", color: item.iconColor }} aria-hidden="true">
+                  <FeedIcon className={s.feedIconSvg} />
+                </div>
+                <div className={s.feedInfo}>
+                  <p className={s.feedProduct}>{item.product}</p>
+                  <p className={s.feedAction}>
+                    {item.action} · <span style={{ fontWeight: 700, color: item.iconColor }}>{item.qty}</span>
+                  </p>
+                  <p className={s.feedLocation}>{item.location}</p>
+                </div>
+                <span className={s.feedTime}>{item.ago}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <button className={s.sideCardLink}>Open Audit Trail ↗</button>
     </div>
   );
@@ -612,29 +883,333 @@ LiveFeedPanel.displayName = "LiveFeedPanel";
 // ── MAIN PAGE
 // ─────────────────────────────────────────────────────────────────────────────
 export default function InventoryPage() {
-  const [activeNav,      setActiveNav]      = useState("inventory");
-  const [activeFilter,   setActiveFilter]   = useState("All Stock");
-  const [searchQuery,    setSearchQuery]    = useState("");
-  const [currentPage,    setCurrentPage]    = useState(1);
-  const [loading,        setLoading]        = useState(true);
-  const [products,       setProducts]       = useState(INITIAL_PRODUCTS);
-  const [showExport,     setShowExport]     = useState(false);   // Export modal
-  const [showAddProduct, setShowAddProduct] = useState(false);   // Add modal
+  const [activeNav,       setActiveNav]       = useState("inventory");
+  const [activeFilter,    setActiveFilter]    = useState("All Stock");
+  const [searchQuery,     setSearchQuery]     = useState("");
+  const [currentPage,     setCurrentPage]     = useState(1);
+  const [loading,         setLoading]         = useState(true);
+  const [products,        setProducts]        = useState([]);
+  const [stats,           setStats]           = useState(null);
+  const [error,           setError]           = useState("");
+  const [success,         setSuccess]         = useState("");
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [showViewProduct, setShowViewProduct] = useState(false);
+  const [showEditProduct, setShowEditProduct] = useState(false);
+  const [showExport,      setShowExport]      = useState(false);   // Export modal
+  const [showAddProduct,  setShowAddProduct]  = useState(false);   // Add modal
+  const [submitting,      setSubmitting]      = useState(false);
 
-  useEffect(() => { const t=setTimeout(()=>setLoading(false),800); return ()=>clearTimeout(t); }, []);
+  const clearMessages = () => {
+    setError("");
+    setSuccess("");
+  };
 
-  const handleAddProduct = useCallback(p => setProducts(prev=>[p,...prev]), []);
+  const fetchProducts = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError("");
+      const data = await getInventoryProducts();
+      setProducts(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Failed to fetch inventory products:", error);
+      setError(error.message || "Failed to load inventory products.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const filteredProducts = useMemo(() => products.filter(p => {
-    const matchFilter = activeFilter==="All Stock" || (activeFilter==="Low Health" && ["Warning","Critical","Low"].includes(p.status)) || (activeFilter==="Out of Stock" && p.status==="Out");
+  const fetchStats = useCallback(async () => {
+    try {
+      const data = await getInventoryStats();
+      setStats(data);
+    } catch (error) {
+      console.error("Failed to fetch inventory stats:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchProducts();
+    fetchStats();
+  }, [fetchProducts, fetchStats]);
+
+  const handleAddProduct = useCallback(
+    async (productData) => {
+      try {
+        setSubmitting(true);
+        clearMessages();
+
+        const createdProduct = await createInventoryProduct(productData);
+
+        setProducts((prev) => [createdProduct, ...prev]);
+        setSuccess("Product added successfully");
+        await fetchStats();
+
+        setShowAddProduct(false);
+      } catch (error) {
+        console.error("Failed to add product:", error);
+        setError(error.message || "Failed to add product.");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [fetchStats]
+  );
+
+  const handleUpdateProduct = useCallback(
+    async (id, productData) => {
+      try {
+        setSubmitting(true);
+        clearMessages();
+
+        const updatedProduct = await updateInventoryProduct(id, productData);
+
+        setProducts((prev) =>
+          prev.map((product) =>
+            (product._id || product.id) === id ? updatedProduct : product
+          )
+        );
+
+        setSuccess("Product updated successfully");
+        await fetchStats();
+
+        setShowEditProduct(false);
+        setSelectedProduct(null);
+      } catch (error) {
+        console.error("Failed to update product:", error);
+        setError(error.message || "Failed to update product.");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [fetchStats]
+  );
+
+  const handleDeleteProduct = useCallback(
+    async (id) => {
+      const confirmDelete = window.confirm(
+        "Are you sure you want to delete this product?"
+      );
+      if (!confirmDelete) return;
+
+      try {
+        clearMessages();
+        await deleteInventoryProduct(id);
+        setProducts((prev) =>
+          prev.filter((product) => (product._id || product.id) !== id)
+        );
+        setSuccess("Product deleted successfully");
+        await fetchStats();
+      } catch (error) {
+        console.error("Failed to delete product:", error);
+        setError(error.message || "Failed to delete product.");
+      }
+    },
+    [fetchStats]
+  );
+
+  const handleViewProduct = useCallback((product) => {
+    setSelectedProduct(product);
+    setShowViewProduct(true);
+  }, []);
+
+  const handleEditProduct = useCallback((product) => {
+    setSelectedProduct(product);
+    setShowEditProduct(true);
+  }, []);
+
+  const criticalAlerts = useMemo(() => {
+    return products
+      .filter((product) => {
+        const units = Number(product.units || 0);
+        const threshold = Number(product.threshold || 0);
+
+        return (
+          product.status === "Critical" ||
+          product.status === "Low" ||
+          product.status === "Out" ||
+          units <= threshold
+        );
+      })
+      .sort((a, b) => {
+        if (a.status === "Out" && b.status !== "Out") return -1;
+        if (b.status === "Out" && a.status !== "Out") return 1;
+
+        const unitsA = Number(a.units || 0);
+        const unitsB = Number(b.units || 0);
+        if (unitsA !== unitsB) return unitsA - unitsB;
+
+        return Number(a.stockPct || 0) - Number(b.stockPct || 0);
+      })
+      .slice(0, 5);
+  }, [products]);
+
+  const warehouseSummary = useMemo(() => {
+    const grouped = products.reduce((acc, product) => {
+      const location = product.location || "Unknown Location";
+      if (!acc[location]) acc[location] = [];
+      acc[location].push(product);
+      return acc;
+    }, {});
+
+    return Object.entries(grouped)
+      .map(([location, items]) => {
+        const totalUnits = items.reduce((sum, item) => sum + Number(item.units || 0), 0);
+        const averageStock = items.length
+          ? Math.round(items.reduce((sum, item) => sum + Number(item.stockPct || 0), 0) / items.length)
+          : 0;
+        const lowStockCount = items.filter((item) => {
+          const units = Number(item.units || 0);
+          const threshold = Number(item.threshold || 0);
+          return (
+            item.status === "Critical" ||
+            item.status === "Low" ||
+            item.status === "Out" ||
+            units <= threshold
+          );
+        }).length;
+
+        return {
+          id: location,
+          name: location,
+          capacity: averageStock,
+          items: totalUnits,
+          productsCount: items.length,
+          lowStockCount,
+          tag:
+            averageStock >= 80
+              ? "Optimized"
+              : averageStock >= 50
+              ? "Stable"
+              : "Needs Attention",
+        };
+      })
+      .sort((a, b) => {
+        if (b.lowStockCount !== a.lowStockCount) return b.lowStockCount - a.lowStockCount;
+        return b.items - a.items;
+      })
+      .slice(0, 3);
+  }, [products]);
+
+  const liveFeed = useMemo(() => {
+    return [...products]
+      .sort((a, b) => {
+        const dateA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+        const dateB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+        return dateB - dateA;
+      })
+      .slice(0, 5)
+      .map((product) => {
+        const units = Number(product.units || 0);
+        const threshold = Number(product.threshold || 0);
+        const timestamp = product.updatedAt || product.createdAt;
+        const ago = formatTimeAgo(timestamp);
+
+        if (units === 0 || product.status === "Out") {
+          return {
+            id: product._id || product.id,
+            product: product.name,
+            action: "Out of Stock",
+            qty: "0 units",
+            location: product.location || "Unknown Location",
+            ago,
+            direction: "out",
+            iconColor: "#C92A2A",
+          };
+        }
+
+        if (units <= threshold || product.status === "Critical" || product.status === "Low") {
+          return {
+            id: product._id || product.id,
+            product: product.name,
+            action: "Low Stock Alert",
+            qty: `${units} units left`,
+            location: product.location || "Unknown Location",
+            ago,
+            direction: "out",
+            iconColor: "#FA5252",
+          };
+        }
+
+        if (product.status === "Healthy") {
+          return {
+            id: product._id || product.id,
+            product: product.name,
+            action: "Stock Available",
+            qty: `${units} units`,
+            location: product.location || "Unknown Location",
+            ago,
+            direction: "in",
+            iconColor: "#2F9E44",
+          };
+        }
+
+        return {
+          id: product._id || product.id,
+          product: product.name,
+          action: "Inventory Updated",
+          qty: `${units} units`,
+          location: product.location || "Unknown Location",
+          ago,
+          direction: "transfer",
+          iconColor: "#3B5BDB",
+        };
+      });
+  }, [products]);
+
+  const filteredProducts = useMemo(() => products.filter((p) => {
+    const matchFilter =
+      activeFilter === "All Stock" ||
+      (activeFilter === "Low Health" && ["Warning", "Critical", "Low"].includes(p.status)) ||
+      (activeFilter === "Out of Stock" && p.status === "Out");
+
     const q = searchQuery.toLowerCase();
-    const matchSearch = !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.location.toLowerCase().includes(q);
+    const matchSearch =
+      !q ||
+      p.name?.toLowerCase().includes(q) ||
+      p.sku?.toLowerCase().includes(q) ||
+      p.location?.toLowerCase().includes(q);
+
     return matchFilter && matchSearch;
   }), [products, activeFilter, searchQuery]);
 
-  const totalPages        = Math.max(1, Math.ceil(filteredProducts.length/PAGE_SIZE));
-  const paginatedProducts = filteredProducts.slice((currentPage-1)*PAGE_SIZE, currentPage*PAGE_SIZE);
+  const totalPages        = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
+  const paginatedProducts = filteredProducts.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const titleAnim         = useAnimateIn(0);
+
+  const dynamicStats = [
+    {
+      id: "products",
+      label: "Total Products",
+      value: stats ? stats.totalProducts : 0,
+      change: "Live",
+      changeType: "up",
+      sub: "Total number of products stored in inventory.",
+    },
+    {
+      id: "units",
+      label: "Total Units",
+      value: stats ? stats.totalUnits : 0,
+      change: "Live",
+      changeType: "up",
+      sub: "Total stock units available across all products.",
+    },
+    {
+      id: "average",
+      label: "Average Stock",
+      value: stats ? `${stats.averageStock}%` : "0%",
+      change: "Live",
+      changeType: "up",
+      sub: "Average stock percentage across inventory items.",
+    },
+    {
+      id: "lowstock",
+      label: "Low Stock",
+      value: stats ? `${stats.lowStockItems} Items` : "0 Items",
+      change: stats ? `${stats.outOfStockItems} Out` : "0 Out",
+      changeType: "down",
+      sub: "Products that are below threshold or out of stock.",
+    },
+  ];
 
   return (
     <>
@@ -676,10 +1251,17 @@ export default function InventoryPage() {
             {/* Stat Cards */}
             <div className={s.statGrid}>
               {loading
-                ? Array.from({length:4}).map((_,i)=><StatCard key={i} loading delay={i*70}/>)
-                : INITIAL_STATS.map((stat,i)=><StatCard key={stat.id} stat={stat} delay={i*70}/>)
+                ? Array.from({ length: 4 }).map((_, i) => <StatCard key={i} loading delay={i * 70} />)
+                : dynamicStats.map((stat, i) => <StatCard key={stat.id} stat={stat} delay={i * 70} />)
               }
             </div>
+
+            {error && (
+              <div className={s.messageBoxError}>{error}</div>
+            )}
+            {success && (
+              <div className={s.messageBoxSuccess}>{success}</div>
+            )}
 
             {/* Content */}
             <div className={s.contentLayout}>
@@ -719,7 +1301,16 @@ export default function InventoryPage() {
                         ? Array.from({length:5}).map((_,i)=><tr key={i} className={s.tableRow}>{[160,80,110,140,90].map((w,j)=><td key={j} className={s.td}><Skeleton w={w+"px"} h={12}/></td>)}</tr>)
                         : paginatedProducts.length===0
                           ? <tr><td colSpan={5}><div className={s.emptyState}><FolderOpen className={s.emptyIcon} aria-hidden="true" /><p className={s.emptyTitle}>No products found</p><p className={s.emptySub}>Try adjusting your filters or search.</p></div></td></tr>
-                          : paginatedProducts.map((p,i)=><ProductRow key={p.id} product={p} delay={i*50}/>)
+                          : paginatedProducts.map((p,i)=>(
+                              <ProductRow
+                                key={p._id || p.id}
+                                product={p}
+                                delay={i*50}
+                                onView={handleViewProduct}
+                                onEdit={handleEditProduct}
+                                onDelete={handleDeleteProduct}
+                              />
+                            ))
                       }
                     </tbody>
                   </table>
@@ -743,9 +1334,9 @@ export default function InventoryPage() {
 
               {/* Right sidebar */}
               <aside className={s.rightSidebar}>
-                <CriticalAlertsPanel loading={loading}/>
-                <WarehouseMapPanel   loading={loading}/>
-                <LiveFeedPanel       loading={loading}/>
+                <CriticalAlertsPanel loading={loading} alerts={criticalAlerts} />
+                <WarehouseMapPanel loading={loading} warehouses={warehouseSummary} />
+                <LiveFeedPanel loading={loading} feed={liveFeed} />
               </aside>
             </div>
           </main>
@@ -768,10 +1359,28 @@ export default function InventoryPage() {
         products={products}
       />
 
+      <ViewProductModal
+        isOpen={showViewProduct}
+        product={selectedProduct}
+        onClose={() => setShowViewProduct(false)}
+      />
+
       <AddProductModal
         isOpen={showAddProduct}
         onClose={() => setShowAddProduct(false)}
         onAdd={handleAddProduct}
+        submitting={submitting}
+      />
+
+      <AddProductModal
+        isOpen={showEditProduct}
+        product={selectedProduct}
+        onClose={() => {
+          setShowEditProduct(false);
+          setSelectedProduct(null);
+        }}
+        onUpdate={handleUpdateProduct}
+        submitting={submitting}
       />
     </>
   );
