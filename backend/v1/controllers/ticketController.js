@@ -40,11 +40,55 @@ const ticketPopulate = [
     path: "assignedSupportAgent",
     select: "name first_name last_name email role department isActive",
   },
+  {
+    path: "createdBy",
+    select: "name first_name last_name email role department isActive",
+  },
 ];
+
+const getUserId = (user) => user?._id || user?.id;
+
+const isSupportOrAdmin = (user) =>
+  user?.role === "admin" || (user?.role === "support" && user?.department === "support");
+
+const canCreateTicket = (user) => isSupportOrAdmin(user);
+
+const canViewTicket = (user, ticket) => {
+  if (isSupportOrAdmin(user)) return true;
+  return ticket?.relatedDepartment === user?.department;
+};
+
+const ensureCanCreateTicket = (user) => {
+  if (!canCreateTicket(user)) {
+    throw new AppError("Only support users can create tickets.", 403);
+  }
+};
+
+const ensureCanViewTicket = (user, ticket) => {
+  if (!canViewTicket(user, ticket)) {
+    throw new AppError("You are not allowed to access this ticket.", 403);
+  }
+};
+
+const ensureSupportOrAdmin = (user, message = "Only support users can update this ticket.") => {
+  if (!isSupportOrAdmin(user)) {
+    throw new AppError(message, 403);
+  }
+};
 
 export const getTickets = async (req, res, next) => {
   try {
-    const tickets = await Ticket.find().populate(ticketPopulate).sort({ createdAt: -1 });
+    const query = {};
+
+    if (!isSupportOrAdmin(req.user)) {
+      if (!req.user?.department) {
+        throw new AppError("User department is required to view tickets.", 403);
+      }
+
+      query.relatedDepartment = req.user.department;
+    }
+
+    const tickets = await Ticket.find(query).populate(ticketPopulate).sort({ createdAt: -1 });
     return sendSuccess(res, tickets, "Tickets fetched successfully.", 200);
   } catch (error) {
     return next(error);
@@ -59,6 +103,8 @@ export const getTicketById = async (req, res, next) => {
       throw new AppError("Ticket not found.", 404);
     }
 
+    ensureCanViewTicket(req.user, ticket);
+
     return sendSuccess(res, ticket, "Ticket fetched successfully.", 200);
   } catch (error) {
     return next(error);
@@ -67,6 +113,8 @@ export const getTicketById = async (req, res, next) => {
 
 export const createTicket = async (req, res, next) => {
   try {
+    ensureCanCreateTicket(req.user);
+
     const {
       clientId,
       clientName,
@@ -111,6 +159,7 @@ export const createTicket = async (req, res, next) => {
       clientEmail: resolvedClientEmail,
       subject,
       description: resolvedDescription,
+      createdBy: getUserId(req.user),
       priority,
       status: "open",
       category,
@@ -155,6 +204,8 @@ export const addTicketMessage = async (req, res, next) => {
       throw new AppError("Ticket not found.", 404);
     }
 
+    ensureCanViewTicket(req.user, ticket);
+
     const resolvedSenderType =
       senderType || (req.user?.role === "client" ? "client" : "support");
 
@@ -186,14 +237,21 @@ export const addTicketMessage = async (req, res, next) => {
 
 export const updateTicketStatus = async (req, res, next) => {
   try {
+    ensureSupportOrAdmin(req.user, "Only support users can update ticket status.");
+
     const { status } = req.body;
 
     if (!TICKET_STATUSES.includes(status)) {
       throw new AppError("Invalid ticket status.", 400);
     }
 
+    const existingTicket = await Ticket.findById(req.params.id);
+    if (!existingTicket) {
+      throw new AppError("Ticket not found.", 404);
+    }
+
     const ticket = await Ticket.findByIdAndUpdate(
-      req.params.id,
+      existingTicket._id,
       { status },
       { new: true, runValidators: true }
     ).populate(ticketPopulate);
@@ -210,6 +268,8 @@ export const updateTicketStatus = async (req, res, next) => {
 
 export const assignTicketToSupportAgent = async (req, res, next) => {
   try {
+    ensureSupportOrAdmin(req.user, "Only support users can assign tickets.");
+
     const { agentId } = req.body;
 
     if (!agentId) {
@@ -221,8 +281,13 @@ export const assignTicketToSupportAgent = async (req, res, next) => {
       throw new AppError("Support agent not found.", 404);
     }
 
+    const existingTicket = await Ticket.findById(req.params.id);
+    if (!existingTicket) {
+      throw new AppError("Ticket not found.", 404);
+    }
+
     const ticket = await Ticket.findByIdAndUpdate(
-      req.params.id,
+      existingTicket._id,
       { assignedSupportAgent: agent._id },
       { new: true, runValidators: true }
     ).populate(ticketPopulate);
@@ -239,14 +304,21 @@ export const assignTicketToSupportAgent = async (req, res, next) => {
 
 export const updateTicketDepartment = async (req, res, next) => {
   try {
+    ensureSupportOrAdmin(req.user, "Only support users can update ticket department.");
+
     const { relatedDepartment } = req.body;
 
     if (!VALID_USER_DEPARTMENTS.includes(relatedDepartment)) {
       throw new AppError("Invalid related department.", 400);
     }
 
+    const existingTicket = await Ticket.findById(req.params.id);
+    if (!existingTicket) {
+      throw new AppError("Ticket not found.", 404);
+    }
+
     const ticket = await Ticket.findByIdAndUpdate(
-      req.params.id,
+      existingTicket._id,
       { relatedDepartment },
       { new: true, runValidators: true }
     ).populate(ticketPopulate);

@@ -60,6 +60,7 @@
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+  margin-left: 5px;
 }
 
 .queueTitle {
@@ -97,7 +98,7 @@
   pointer-events: none;
 }
 .searchInput {
-  width: 100%;
+  width: 86%;
   padding: 8px 12px 8px 32px;
   border: 1.5px solid #E2E8F0;
   border-radius: 9px;
@@ -497,7 +498,7 @@
   flex-shrink: 0;
 }
 .messageInput {
-  width: 100%;
+  width: 96%;
   border: 1.5px solid #E2E8F0;
   border-radius: 10px;
   padding: 10px 13px;
@@ -1311,6 +1312,22 @@
 .newTicketHeaderBtn:hover {
   background: #334ac0;
   transform: translateY(-1px);
+}
+
+.departmentScopeNote {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #EEF2FF;
+  color: #3B5BDB;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.statusSelect:disabled {
+  cursor: not-allowed;
+  background: #F3F4F6;
+  color: #9CA3AF;
 }
 
 @media (max-width: 768px) {

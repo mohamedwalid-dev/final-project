@@ -67,6 +67,18 @@ const initialsFor = (name = "") =>
     .toUpperCase()
     .slice(0, 2) || "ST";
 
+const getStoredUser = () => {
+  try {
+    const parsedUser = JSON.parse(localStorage.getItem("user") || "null");
+    return parsedUser && typeof parsedUser === "object" ? parsedUser : null;
+  } catch {
+    return null;
+  }
+};
+
+const isSupportOrAdmin = (user) =>
+  user?.role === "admin" || (user?.role === "support" && user?.department === "support");
+
 function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
   const [form, setForm] = useState({
     clientName: "",
@@ -314,6 +326,7 @@ function CustomerMessage({ message }) {
 
 export default function SupportPage() {
   const [activeNav, setActiveNav] = useState("support");
+  const [currentUser] = useState(() => getStoredUser());
   const [tickets, setTickets] = useState([]);
   const [activeTicketId, setActiveTicketId] = useState("");
   const [filter, setFilter] = useState("All");
@@ -325,9 +338,23 @@ export default function SupportPage() {
   const [toast, setToast] = useState(null);
   const messagesEndRef = useRef(null);
 
+  const canCreateTicket = isSupportOrAdmin(currentUser);
+
+  const visibleTickets = useMemo(
+    () =>
+      tickets.filter((ticket) => {
+        if (canCreateTicket) return true;
+        return ticket.relatedDepartment === currentUser?.department;
+      }),
+    [canCreateTicket, currentUser?.department, tickets]
+  );
+
   const activeTicket = useMemo(
-    () => tickets.find((ticket) => ticket._id === activeTicketId) || tickets[0] || null,
-    [activeTicketId, tickets]
+    () =>
+      visibleTickets.find((ticket) => ticket._id === activeTicketId) ||
+      visibleTickets[0] ||
+      null,
+    [activeTicketId, visibleTickets]
   );
 
   const showToast = useCallback((message, type = "success") => {
@@ -360,7 +387,7 @@ export default function SupportPage() {
   const filteredTickets = useMemo(() => {
     const query = search.trim().toLowerCase();
 
-    return tickets.filter((ticket) => {
+    return visibleTickets.filter((ticket) => {
       const matchesSearch =
         !query ||
         [ticket.ticketCode, ticket.clientName, ticket.clientEmail, ticket.subject]
@@ -376,7 +403,7 @@ export default function SupportPage() {
 
       return matchesSearch && matchesFilter;
     });
-  }, [filter, search, tickets]);
+  }, [filter, search, visibleTickets]);
 
   const replaceTicket = (updatedTicket) => {
     if (!updatedTicket?._id) return;
@@ -386,6 +413,11 @@ export default function SupportPage() {
   };
 
   const handleCreateTicket = async (ticketData) => {
+    if (!canCreateTicket) {
+      showToast("Only support users can create tickets.", "error");
+      return;
+    }
+
     setSavingTicket(true);
     try {
       const payload = await createTicket(ticketData);
@@ -447,6 +479,11 @@ export default function SupportPage() {
                     Refresh
                   </button>
                 </div>
+                {/* {!canCreateTicket && currentUser?.department && (
+                  <p className={s.departmentScopeNote}>
+                    Showing tickets for your department: {titleCase(currentUser.department)}
+                  </p>
+                )} */}
 
                 <div className={s.searchWrap}>
                   <span className={s.searchIcon}>⌕</span>
@@ -521,6 +558,12 @@ export default function SupportPage() {
                         className={s.statusSelect}
                         value={activeTicket.status || "open"}
                         onChange={(event) => handleStatusChange(event.target.value)}
+                        disabled={!canCreateTicket}
+                        title={
+                          canCreateTicket
+                            ? "Update ticket status"
+                            : "Only support users can update ticket status"
+                        }
                       >
                         {STATUSES.map((status) => (
                           <option key={status} value={status}>
@@ -528,13 +571,15 @@ export default function SupportPage() {
                           </option>
                         ))}
                       </select>
-                      <button
-                        className={s.newTicketHeaderBtn}
-                        onClick={() => setShowNewTicket(true)}
-                        type="button"
-                      >
-                        + New Ticket
-                      </button>
+                      {canCreateTicket && (
+                        <button
+                          className={s.newTicketHeaderBtn}
+                          onClick={() => setShowNewTicket(true)}
+                          type="button"
+                        >
+                          + New Ticket
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -580,12 +625,14 @@ export default function SupportPage() {
         </section>
       </main>
 
-      <NewTicketModal
-        isOpen={showNewTicket}
-        onClose={() => setShowNewTicket(false)}
-        onCreate={handleCreateTicket}
-        loading={savingTicket}
-      />
+      {canCreateTicket && (
+        <NewTicketModal
+          isOpen={showNewTicket}
+          onClose={() => setShowNewTicket(false)}
+          onCreate={handleCreateTicket}
+          loading={savingTicket}
+        />
+      )}
 
       {toast && (
         <div className={`${s.toast} ${s[`toast_${toast.type}`] || s.toast_success}`}>

@@ -113,6 +113,10 @@ const ticketSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "users",
     },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "users",
+    },
     relatedDepartment: {
       type: String,
       enum: VALID_USER_DEPARTMENTS,
