@@ -437,6 +437,23 @@
   border-bottom-right-radius: 4px;
   box-shadow: 0 2px 8px rgba(59,91,219,0.25);
 }
+.bubbleSender {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.bubbleSenderMeta {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 10.5px;
+  color: #6B7280;
+  line-height: 1.35;
+}
+.bubbleAgent .bubbleSender,
+.bubbleAgent .bubbleSenderMeta {
+  color: rgba(255,255,255,0.88);
+}
 .bubbleText { margin: 0; }
 .bubbleTime { font-size: 10.5px; color: #9CA3AF; }
 
@@ -895,7 +912,9 @@
 
 .categoryBadge,
 .departmentBadge,
-.priorityBadge {
+.priorityBadge,
+.socketBadgeOnline,
+.socketBadgeOffline {
   display: inline-flex;
   align-items: center;
   width: fit-content;
@@ -919,6 +938,16 @@
 .priorityBadge {
   background: #EEF2FF;
   color: #3730A3;
+}
+
+.socketBadgeOnline {
+  background: #E6FCF5;
+  color: #087F5B;
+}
+
+.socketBadgeOffline {
+  background: #FFF5F5;
+  color: #C92A2A;
 }
 
 @media (max-width: 1180px) {

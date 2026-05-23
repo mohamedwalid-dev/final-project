@@ -2,11 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header from "../components/Finance/Layout/Header";
 import {
-  addTicketMessage,
   createTicket,
   getTickets,
   updateTicketStatus,
 } from "../api/ticketApi";
+import {
+  addInternalChatMessage,
+  getInternalChatsByTicket,
+} from "../api/internalChatApi";
+import { createSocket } from "../socket/socket";
 import s from "../styles/SupportPage.module.css";
 import shell from "../styles/AppShell.module.css";
 
@@ -77,6 +81,29 @@ const getStoredUser = () => {
   }
 };
 
+const getUserId = (user) => user?._id || user?.id || "";
+
+const getMessageSenderId = (message) => message?.senderId?._id || message?.senderId || "";
+
+const appendMessageOnce = (messages = [], nextMessage) => {
+  if (!nextMessage) return messages;
+
+  const nextMessageId = nextMessage?._id;
+  const exists = messages.some((message) => {
+    if (nextMessageId && message?._id) {
+      return String(message._id) === String(nextMessageId);
+    }
+
+    return (
+      String(message?.createdAt || "") === String(nextMessage?.createdAt || "") &&
+      String(getMessageSenderId(message)) === String(getMessageSenderId(nextMessage)) &&
+      message?.text === nextMessage?.text
+    );
+  });
+
+  return exists ? messages : [...messages, nextMessage];
+};
+
 const isSupportOrAdmin = (user) =>
   user?.role === "admin" || (user?.role === "support" && user?.department === "support");
 
@@ -95,16 +122,20 @@ function NewTicketModal({ isOpen, onClose, onCreate, loading }) {
 
   useEffect(() => {
     if (!isOpen) return;
-    setForm({
-      clientName: "",
-      clientEmail: "",
-      subject: "",
-      description: "",
-      priority: "medium",
-      category: "general",
-      relatedDepartment: "support",
-    });
-    setErrors({});
+    const resetTimer = window.setTimeout(() => {
+      setForm({
+        clientName: "",
+        clientEmail: "",
+        subject: "",
+        description: "",
+        priority: "medium",
+        category: "general",
+        relatedDepartment: "support",
+      });
+      setErrors({});
+    }, 0);
+
+    return () => window.clearTimeout(resetTimer);
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -302,10 +333,10 @@ function TicketCard({ ticket, active, onSelect }) {
   );
 }
 
-function CustomerMessage({ message }) {
-  const isSupport = message.senderType === "support" || message.senderType === "system";
+function InternalChatMessage({ message, currentUser }) {
+  const isMyMessage = String(getMessageSenderId(message)) === String(getUserId(currentUser));
 
-  if (message.senderType === "system") {
+  if (message.messageType === "system") {
     return (
       <div className={s.systemMsg}>
         <span>{message.text}</span>
@@ -314,12 +345,16 @@ function CustomerMessage({ message }) {
   }
 
   return (
-    <div className={`${s.bubbleWrap} ${isSupport ? s.bubbleWrapRight : ""}`}>
-      <div className={`${s.bubble} ${isSupport ? s.bubbleAgent : s.bubbleCustomer}`}>
+    <div className={`${s.bubbleWrap} ${isMyMessage ? s.bubbleWrapRight : ""}`}>
+      <div className={`${s.bubble} ${isMyMessage ? s.bubbleAgent : s.bubbleCustomer}`}>
+        <strong className={s.bubbleSender}>{message.senderName || "Internal User"}</strong>
+        <span className={s.bubbleSenderMeta}>
+          {titleCase(message.senderRole)} - {titleCase(message.senderDepartment)}
+        </span>
         <p className={s.bubbleText}>{message.text}</p>
       </div>
       <span className={s.bubbleTime}>
-        {message.senderName} • {formatDate(message.createdAt)}
+        {formatDate(message.createdAt)}
       </span>
     </div>
   );
@@ -333,11 +368,16 @@ export default function SupportPage() {
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [reply, setReply] = useState("");
+  const [activeChat, setActiveChat] = useState(null);
   const [loadingTickets, setLoadingTickets] = useState(false);
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [socketConnected, setSocketConnected] = useState(false);
   const [savingTicket, setSavingTicket] = useState(false);
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [toast, setToast] = useState(null);
   const messagesEndRef = useRef(null);
+  const socketRef = useRef(null);
 
   const canCreateTicket = isSupportOrAdmin(currentUser);
 
@@ -377,13 +417,126 @@ export default function SupportPage() {
     }
   }, [showToast]);
 
+  const replaceActiveChat = useCallback((updatedChat) => {
+    if (!updatedChat?._id) return;
+
+    setActiveChat((currentChat) => {
+      if (currentChat?._id && String(currentChat._id) !== String(updatedChat._id)) {
+        return currentChat;
+      }
+
+      return {
+        ...updatedChat,
+        messages: Array.isArray(updatedChat.messages) ? updatedChat.messages : [],
+      };
+    });
+  }, []);
+
+  const handleNewInternalMessage = useCallback((payload) => {
+    if (!payload?.message || !payload?.chatId) return;
+
+    setActiveChat((currentChat) => {
+      if (!currentChat?._id || String(currentChat._id) !== String(payload.chatId)) {
+        return currentChat;
+      }
+
+      return {
+        ...currentChat,
+        summary: payload.message.text || currentChat.summary,
+        messages: appendMessageOnce(currentChat.messages, payload.message),
+      };
+    });
+  }, []);
+
   useEffect(() => {
-    loadTickets();
+    const loadTimer = window.setTimeout(() => {
+      loadTickets();
+    }, 0);
+
+    return () => window.clearTimeout(loadTimer);
   }, [loadTickets]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadInternalChat = async () => {
+      if (!activeTicket?._id) {
+        setActiveChat(null);
+        return;
+      }
+
+      setLoadingChat(true);
+      try {
+        const payload = await getInternalChatsByTicket(activeTicket._id);
+        const chat = getList(payload)[0] || null;
+        if (!cancelled) {
+          setActiveChat(chat);
+          setReply("");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setActiveChat(null);
+          showToast(error.message, "error");
+        }
+      } finally {
+        if (!cancelled) setLoadingChat(false);
+      }
+    };
+
+    loadInternalChat();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTicket?._id, showToast]);
+
+  useEffect(() => {
+    const socket = createSocket();
+    socketRef.current = socket;
+
+    const handleConnect = () => setSocketConnected(true);
+    const handleDisconnect = () => setSocketConnected(false);
+    const handleConnectError = (error) => {
+      setSocketConnected(false);
+      showToast(error.message || "Real-time connection failed.", "error");
+    };
+    const handleInternalChatError = (payload) => {
+      showToast(payload?.message || "Internal chat socket error.", "error");
+    };
+
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
+    socket.on("connect_error", handleConnectError);
+    socket.on("newInternalChatMessage", handleNewInternalMessage);
+    socket.on("internal_chat_error", handleInternalChatError);
+
+    socket.connect();
+
+    return () => {
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("connect_error", handleConnectError);
+      socket.off("newInternalChatMessage", handleNewInternalMessage);
+      socket.off("internal_chat_error", handleInternalChatError);
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [handleNewInternalMessage, showToast]);
+
+  useEffect(() => {
+    if (!socketRef.current || !activeChat?._id) return undefined;
+
+    const chatId = activeChat._id;
+    socketRef.current.emit("joinInternalChat", chatId);
+
+    return () => {
+      socketRef.current?.emit("leaveInternalChat", chatId);
+    };
+  }, [activeChat?._id]);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [activeTicket?.messages]);
+  }, [activeChat?.messages?.length]);
 
   const filteredTickets = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -436,19 +589,21 @@ export default function SupportPage() {
 
   const handleReply = async (event) => {
     event.preventDefault();
-    if (!reply.trim() || !activeTicket) return;
+    if (!reply.trim() || !activeTicket || !activeChat?._id || sendingMessage) return;
 
+    setSendingMessage(true);
     try {
-      const payload = await addTicketMessage(activeTicket._id, {
-        senderType: "support",
-        senderName: "Support Team",
+      const payload = await addInternalChatMessage(activeChat._id, {
         text: reply.trim(),
+        attachments: [],
       });
-      replaceTicket(getItem(payload));
+      replaceActiveChat(getItem(payload));
       setReply("");
-      showToast("Reply sent to client.");
+      showToast("Internal message sent.");
     } catch (error) {
       showToast(error.message, "error");
+    } finally {
+      setSendingMessage(false);
     }
   };
 
@@ -550,6 +705,13 @@ export default function SupportPage() {
                           <span className={s.departmentBadge}>
                             {titleCase(activeTicket.relatedDepartment)}
                           </span>
+                          <span
+                            className={
+                              socketConnected ? s.socketBadgeOnline : s.socketBadgeOffline
+                            }
+                          >
+                            {socketConnected ? "Live" : "Offline"}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -590,9 +752,21 @@ export default function SupportPage() {
                   </div>
 
                   <div className={s.messages}>
-                    {activeTicket.messages?.map((message) => (
-                      <CustomerMessage key={message._id || message.createdAt} message={message} />
-                    ))}
+                    {loadingChat && <p className={s.emptyQueue}>Loading internal chat...</p>}
+                    {!loadingChat &&
+                      activeChat?.messages?.map((message) => (
+                        <InternalChatMessage
+                          key={message._id || `${message.createdAt}-${message.text}`}
+                          message={message}
+                          currentUser={currentUser}
+                        />
+                      ))}
+                    {!loadingChat && activeChat && !activeChat.messages?.length && (
+                      <p className={s.emptyQueue}>No internal messages yet.</p>
+                    )}
+                    {!loadingChat && !activeChat && (
+                      <p className={s.emptyQueue}>No internal chat is linked to this ticket.</p>
+                    )}
                     <div ref={messagesEndRef} />
                   </div>
 
@@ -601,19 +775,20 @@ export default function SupportPage() {
                       className={s.messageInput}
                       value={reply}
                       onChange={(event) => setReply(event.target.value)}
-                      placeholder="Reply to client..."
+                      placeholder="Write an internal department reply..."
                       rows={3}
+                      disabled={!activeChat || sendingMessage}
                     />
                     <div className={s.inputActions}>
                       <span className={s.modalFooterNote}>
-                        This reply is customer-facing and stored on Ticket.messages.
+                        Visible to support and the related department.
                       </span>
                       <button
                         type="submit"
                         className={`${s.sendBtn} ${reply.trim() ? s.sendBtnActive : ""}`}
-                        disabled={!reply.trim()}
+                        disabled={!reply.trim() || !activeChat || sendingMessage}
                       >
-                        Send reply
+                        {sendingMessage ? "Sending..." : "Send reply"}
                       </button>
                     </div>
                   </form>

@@ -3,6 +3,7 @@ import Ticket, {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
 } from "../models/Ticket.js";
+import Chat from "../models/Chat.js";
 import User, { VALID_USER_DEPARTMENTS } from "../models/User.js";
 import { sendSuccess } from "../utils/response.js";
 import AppError from "../utils/AppError.js";
@@ -51,6 +52,12 @@ const getUserId = (user) => user?._id || user?.id;
 const isSupportOrAdmin = (user) =>
   user?.role === "admin" || (user?.role === "support" && user?.department === "support");
 
+const getDisplayName = (user, fallback = "Support User") =>
+  user?.name ||
+  [user?.first_name, user?.last_name].filter(Boolean).join(" ").trim() ||
+  user?.email ||
+  fallback;
+
 const canCreateTicket = (user) => isSupportOrAdmin(user);
 
 const canViewTicket = (user, ticket) => {
@@ -74,6 +81,44 @@ const ensureSupportOrAdmin = (user, message = "Only support users can update thi
   if (!isSupportOrAdmin(user)) {
     throw new AppError(message, 403);
   }
+};
+
+const createInternalChatForTicket = async (ticket, user, text, attachments = []) => {
+  const userId = getUserId(user);
+  const existingChat = await Chat.findOne({
+    ticketId: ticket._id,
+    chatType: "internal_department",
+  });
+
+  if (existingChat) {
+    if (userId) existingChat.participants.addToSet(userId);
+    await existingChat.save();
+    return existingChat;
+  }
+
+  return Chat.create({
+    ticketId: ticket._id,
+    chatType: "internal_department",
+    title: ticket.subject,
+    requestedBy: userId,
+    requestedDepartment: ticket.relatedDepartment,
+    requestedRole: user?.role,
+    participants: userId ? [userId] : [],
+    status: "active",
+    priority: ticket.priority,
+    summary: text,
+    messages: [
+      {
+        senderId: userId,
+        senderRole: user?.role,
+        senderDepartment: user?.department,
+        senderName: getDisplayName(user),
+        text,
+        isInternalNote: true,
+        attachments: Array.isArray(attachments) ? attachments : [],
+      },
+    ],
+  });
 };
 
 export const getTickets = async (req, res, next) => {
@@ -176,6 +221,8 @@ export const createTicket = async (req, res, next) => {
       ],
     });
 
+    await createInternalChatForTicket(ticket, req.user, resolvedDescription, attachments);
+
     const populatedTicket = await Ticket.findById(ticket._id).populate(ticketPopulate);
     return sendSuccess(res, populatedTicket, "Ticket created successfully.", 201);
   } catch (error) {
@@ -186,9 +233,7 @@ export const createTicket = async (req, res, next) => {
 export const addTicketMessage = async (req, res, next) => {
   try {
     const {
-      senderId,
       senderType,
-      senderName,
       text,
       message,
       attachments = [],
@@ -206,18 +251,20 @@ export const addTicketMessage = async (req, res, next) => {
 
     ensureCanViewTicket(req.user, ticket);
 
-    const resolvedSenderType =
-      senderType || (req.user?.role === "client" ? "client" : "support");
+    if (!isSupportOrAdmin(req.user) && req.user?.role !== "client") {
+      throw new AppError("Use the internal department chat for department replies.", 403);
+    }
+
+    const resolvedSenderType = req.user?.role === "client" ? "client" : senderType || "support";
 
     if (!["client", "support", "system"].includes(resolvedSenderType)) {
       throw new AppError("Invalid message sender type.", 400);
     }
 
     ticket.messages.push({
-      senderId: senderId || req.user?._id,
+      senderId: req.user?._id,
       senderType: resolvedSenderType,
       senderName:
-        senderName ||
         req.user?.name ||
         [req.user?.first_name, req.user?.last_name].filter(Boolean).join(" ") ||
         (resolvedSenderType === "client" ? ticket.clientName : "Support Team"),
@@ -326,6 +373,11 @@ export const updateTicketDepartment = async (req, res, next) => {
     if (!ticket) {
       throw new AppError("Ticket not found.", 404);
     }
+
+    await Chat.updateMany(
+      { ticketId: ticket._id, chatType: "internal_department" },
+      { requestedDepartment: relatedDepartment }
+    );
 
     return sendSuccess(res, ticket, "Ticket department updated successfully.", 200);
   } catch (error) {
