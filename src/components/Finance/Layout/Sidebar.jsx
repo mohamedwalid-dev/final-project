@@ -1,6 +1,6 @@
 // components/Finance/Layout/Sidebar.jsx
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import "./Sidebar.css";
 import {
@@ -41,6 +41,21 @@ export default function Sidebar({ activeNav, onNavChange }) {
     onNavChange?.(item.id);   // للتوافق مع الكود القديم
     navigate(item.path);
   };
+
+  // Update main area margin when sidebar collapses
+  useEffect(() => {
+    const mainArea = document.querySelector('[class*="mainArea"]') || 
+                     document.querySelector('main') ||
+                     document.querySelector('div[style*="flex"]');
+    
+    if (mainArea) {
+      if (collapsed) {
+        mainArea.style.marginLeft = '76px';
+      } else {
+        mainArea.style.marginLeft = '220px';
+      }
+    }
+  }, [collapsed]);
 
   return (
     <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
@@ -88,14 +103,16 @@ export default function Sidebar({ activeNav, onNavChange }) {
       {/* ── Bottom ── */}
       <div className="sidebar-bottom">
         <button
+          type="button"
           className="collapse-btn"
           onClick={() => setCollapsed((c) => !c)}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           <span className="nav-icon" aria-hidden="true">
             {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
           </span>
-          {!collapsed && <span>Collapse Menu</span>}
+          <span>Collapse Menu</span>
         </button>
 
         {!collapsed && (
