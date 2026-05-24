@@ -39,6 +39,13 @@ const inventorySchema = new mongoose.Schema(
       default: "Warehouse A-12",
     },
 
+    price: {
+      type: Number,
+      required: [true, "Product price is required"],
+      min: [0, "Product price cannot be negative"],
+      default: 0,
+    },
+
     units: {
       type: Number,
       required: [true, "Units are required"],

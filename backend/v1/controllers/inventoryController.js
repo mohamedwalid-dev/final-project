@@ -72,7 +72,7 @@ export const getProductById = async (req, res) => {
 // CREATE product
 export const createProduct = async (req, res) => {
   try {
-    const { name, category, sku, location, units, threshold } = req.body;
+    const { name, category, sku, location, price, units, threshold } = req.body;
 
     const existingProduct = await Inventory.findOne({ sku: sku?.toUpperCase() });
 
@@ -88,6 +88,7 @@ export const createProduct = async (req, res) => {
       category,
       sku,
       location,
+      price: Number(price),
       units,
       threshold,
     });
@@ -118,7 +119,27 @@ export const updateProduct = async (req, res) => {
       });
     }
 
-    Object.assign(product, req.body);
+    const {
+      name,
+      category,
+      sku,
+      location,
+      price,
+      units,
+      threshold,
+    } = req.body;
+
+    const allowedUpdates = {
+      ...(name !== undefined && { name }),
+      ...(category !== undefined && { category }),
+      ...(sku !== undefined && { sku }),
+      ...(location !== undefined && { location }),
+      ...(price !== undefined && { price: Number(price) }),
+      ...(units !== undefined && { units }),
+      ...(threshold !== undefined && { threshold }),
+    };
+
+    Object.assign(product, allowedUpdates);
 
     await product.save();
 

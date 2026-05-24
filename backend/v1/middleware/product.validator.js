@@ -16,7 +16,14 @@ export const createNewProductValidator = [
     .withMessage("unitCount must be a number"),
   body("lowStockThreshold")
     .isNumeric()
-    .withMessage("lowStockThreshold must be a number")
+    .withMessage("lowStockThreshold must be a number"),
+  body("price")
+    .exists({ checkFalsy: true })
+    .withMessage("Product price is required")
+    .bail()
+    .isFloat({ min: 0 })
+    .withMessage("Product price must be a valid number greater than or equal to 0")
+    .toFloat(),
 ];
 
 export const updateNewProductValidator = [
@@ -25,7 +32,12 @@ export const updateNewProductValidator = [
   body("lowStockThreshold").optional().isNumeric(),
   body("initialStatus")
     .optional()
-    .isIn(["In Stock", "Out of Stock", "Pending"])
+    .isIn(["In Stock", "Out of Stock", "Pending"]),
+  body("price")
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage("Product price must be a valid number greater than or equal to 0")
+    .toFloat(),
 ];
 
 export const getNewProductByIdValidator = [

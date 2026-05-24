@@ -261,27 +261,48 @@
   color: #ADB5BD;
 }
 
-.filterIconBtn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 8px 14px;
-  border: 1px solid #E9ECEF;
-  border-radius: 8px;
-  background: #fff;
-  color: #495057;
+.priceText {
   font-size: 13px;
   font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.15s;
-  flex-shrink: 0;
+  color: #1A1A2E;
 }
 
-.filterIconBtn:hover {
-  border-color: #3B5BDB;
-  color: #3B5BDB;
-  background: #EEF2FF;
+.rowMenu {
+  position: fixed;
+  z-index: 30;
+  min-width: 210px;
+  background: #ffffff;
+  box-shadow: 0 14px 40px rgba(12, 29, 75, 0.12);
+  border-radius: 16px;
+  padding: 8px 0;
+  border: 1px solid rgba(145, 158, 171, 0.18);
+}
+
+.rowMenuItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  padding: 12px 16px;
+  font-size: 14px;
+  color: #1A1A2E;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowMenuItem:hover {
+  background: #F8F9FA;
+}
+
+.rowMenuDelete {
+  color: #C92A2A;
+}
+
+.rowMenuIcon {
+  width: 16px;
+  height: 16px;
 }
 
 /* ── Filter Tabs ── */

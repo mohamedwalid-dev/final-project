@@ -17,19 +17,16 @@ import {
   Boxes,
   ChartNoAxesCombined,
   CheckCircle2,
-  CircleDollarSign,
   Download,
   Eye,
   FileText,
   FolderOpen,
-  MoreHorizontal,
   Package,
   PackagePlus,
   Pencil,
   Plus,
   RadioTower,
   Search,
-  SlidersHorizontal,
   Trash2,
   Warehouse,
   X,
@@ -93,7 +90,7 @@ const FEED_ICONS = {
 const CATEGORIES     = ["Electronics","Consumables","Hardware","Software","Components"];
 const LOCATIONS      = ["Warehouse A-12","Warehouse A-10","Warehouse B-04","Central Hub","Secure Vault"];
 const STATUS_OPTIONS = ["Healthy","Warning","Critical","Low","Out"];
-const PAGE_SIZE      = 5;
+const PAGE_SIZE      = 8;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── HELPERS
@@ -294,7 +291,7 @@ function ExportReportModal({ isOpen, onClose, products, stats, criticalAlerts, w
       id:"products", icon:Package, label:"Products List",
       desc:"All inventory items with SKU, location, stock & status",
       filename:`Prime-inventory-products-${today()}`,
-      rows:() => products.map(p => ({ "Product Name": p.name || "-", Category: p.category || "-", SKU: p.sku || "-", Location: p.location || "-", "Stock %": `${p.stockPct ?? 0}%`, Units: p.units ?? 0, Threshold: p.threshold ?? 0, Status: p.status || "-" })),
+      rows:() => products.map(p => ({ "Product Name": p.name || "-", Category: p.category || "-", SKU: p.sku || "-", Location: p.location || "-", Price: p.price ?? 0, "Stock %": `${p.stockPct ?? 0}%`, Units: p.units ?? 0, Threshold: p.threshold ?? 0, Status: p.status || "-" })),
     },
     {
       id:"kpis", icon:ChartNoAxesCombined, label:"Inventory KPIs",
@@ -432,7 +429,7 @@ function ExportReportModal({ isOpen, onClose, products, stats, criticalAlerts, w
 // ─────────────────────────────────────────────────────────────────────────────
 // ── ADD NEW PRODUCT MODAL
 // ─────────────────────────────────────────────────────────────────────────────
-const EMPTY_FORM = { name:"", category:"Electronics", sku:"", location:"Warehouse A-12", units:"", threshold:"" };
+const EMPTY_FORM = { name:"", category:"Electronics", sku:"", location:"Warehouse A-12", price:"", units:"", threshold:"" };
 
 function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, submitting = false }) {
   const [form, setForm] = useState(EMPTY_FORM);
@@ -459,6 +456,7 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
             category: product.category ?? "Electronics",
             sku: product.sku ?? "",
             location: product.location ?? "Warehouse A-12",
+            price: product.price != null ? String(product.price) : "",
             units: product.units != null ? String(product.units) : "",
             threshold: product.threshold != null ? String(product.threshold) : "",
           }
@@ -479,6 +477,7 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
     const e = {};
     if (!form.name.trim()) e.name = "Product name is required";
     if (!form.sku.trim()) e.sku = "SKU is required";
+    if (form.price === "" || isNaN(form.price) || Number(form.price) < 0) e.price = "Valid price required";
     if (!form.units || isNaN(form.units) || Number(form.units) < 0) e.units = "Valid unit count required";
     if (!form.threshold || isNaN(form.threshold) || Number(form.threshold) < 0) e.threshold = "Valid threshold required";
     return e;
@@ -496,6 +495,7 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
       category: form.category,
       sku: form.sku.trim().toUpperCase(),
       location: form.location,
+      price: Number(form.price),
       units: Number(form.units),
       threshold: Number(form.threshold),
     };
@@ -568,6 +568,7 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
             <Field id="ap-sku" label="SKU" required error={errors.sku}>
               <input
                 id="ap-sku"
+                type="text"
                 className={`${s.formInput} ${errors.sku ? s.formInputError : ""}`}
                 value={form.sku}
                 onChange={(e) => setField("sku", e.target.value)}
@@ -601,6 +602,20 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
                   <option key={l}>{l}</option>
                 ))}
               </select>
+            </Field>
+
+            {/* Price */}
+            <Field id="ap-price" label="Price" required error={errors.price}>
+              <input
+                id="ap-price"
+                type="text"
+                inputMode="decimal"
+                pattern="^\d*(\.\d{0,2})?$"
+                className={`${s.formInput} ${errors.price ? s.formInputError : ""}`}
+                value={form.price}
+                onChange={(e) => setField("price", e.target.value)}
+                placeholder="e.g. 1250.00"
+              />
             </Field>
 
             {/* Units */}
@@ -708,6 +723,10 @@ function ViewProductModal({ isOpen, product, onClose }) {
               <p className={s.modalDetailValue}>{product.location}</p>
             </div>
             <div className={s.modalDetailItem}>
+              <p className={s.modalDetailLabel}>Price</p>
+              <p className={s.modalDetailValue}>{`$${Number(product.price || 0).toLocaleString()}`}</p>
+            </div>
+            <div className={s.modalDetailItem}>
               <p className={s.modalDetailLabel}>Units</p>
               <p className={s.modalDetailValue}>{product.units}</p>
             </div>
@@ -783,14 +802,19 @@ StatCard.displayName = "StatCard";
 // ─────────────────────────────────────────────────────────────────────────────
 // ── PRODUCT ROW
 // ─────────────────────────────────────────────────────────────────────────────
-function ProductRow({ product, delay = 0, onView = () => {}, onEdit = () => {}, onDelete = () => {} }) {
+function ProductRow({ product, delay = 0, onSelect = () => {} }) {
   const [drawn, setDrawn] = useState(false);
   const anim = useAnimateIn(delay);
-  const productId = product._id || product.id;
   const sm = getStatusMeta(product.status);
   useEffect(() => { const t = setTimeout(() => setDrawn(true), delay + 200); return () => clearTimeout(t); }, [delay]);
   return (
-    <tr ref={anim.ref} className={s.tableRow} style={anim.style}>
+    <tr
+      ref={anim.ref}
+      className={s.tableRow}
+      style={anim.style}
+      onClick={(e) => onSelect(product, e)}
+      onContextMenu={(e) => { e.preventDefault(); onSelect(product, e); }}
+    >
       <td className={s.td}>
         <div className={s.productCell}>
           <div className={s.productIconWrap} aria-hidden="true">
@@ -801,6 +825,7 @@ function ProductRow({ product, delay = 0, onView = () => {}, onEdit = () => {}, 
       </td>
       <td className={s.td}><span className={s.skuBadge}>{product.sku}</span></td>
       <td className={s.td}><span className={s.locationText}>{product.location}</span></td>
+      <td className={s.td}><span className={s.priceText}>{`$${Number(product.price || 0).toLocaleString()}`}</span></td>
       <td className={s.td}>
         <div className={s.stockCell}>
           <div className={s.stockBarTrack}>
@@ -808,22 +833,6 @@ function ProductRow({ product, delay = 0, onView = () => {}, onEdit = () => {}, 
           </div>
           <span className={s.stockPct}>{product.stockPct}%</span>
           <span className={s.statusBadge} style={{ background: sm.bg, color: sm.color }}>{product.status}</span>
-        </div>
-      </td>
-      <td className={s.td}>
-        <div className={s.rowActions}>
-          <button className={s.actionBtn} aria-label={`View ${product.name}`} title="View" onClick={() => onView(product)}>
-            <Eye aria-hidden="true" />
-          </button>
-          <button className={s.actionBtn} aria-label={`Edit ${product.name}`} title="Edit" onClick={() => onEdit(product)}>
-            <Pencil aria-hidden="true" />
-          </button>
-          <button className={`${s.actionBtn} ${s.deleteActionBtn}`} aria-label={`Delete ${product.name}`} title="Delete" onClick={() => onDelete(productId)}>
-            <Trash2 aria-hidden="true" />
-          </button>
-          <button className={s.actionBtn} aria-label={`More actions for ${product.name}`} title="More actions">
-            <MoreHorizontal aria-hidden="true" />
-          </button>
         </div>
       </td>
     </tr>
@@ -1040,6 +1049,8 @@ export default function InventoryPage() {
   const [showExport,      setShowExport]      = useState(false);   // Export modal
   const [showAddProduct,  setShowAddProduct]  = useState(false);   // Add modal
   const [submitting,      setSubmitting]      = useState(false);
+  const [rowMenu,         setRowMenu]         = useState({ open:false, product:null, top:0, left:0 });
+  const rowMenuRef = useRef(null);
 
   const clearMessages = () => {
     setError("");
@@ -1158,6 +1169,63 @@ export default function InventoryPage() {
     setSelectedProduct(product);
     setShowEditProduct(true);
   }, []);
+
+  const openRowMenu = useCallback((product, event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const menuWidth = 210;
+    const menuHeight = 142;
+    const offset = 8;
+    const top = Math.min(event.clientY + offset, window.innerHeight - menuHeight - offset);
+    const left = Math.min(event.clientX + offset, window.innerWidth - menuWidth - offset);
+
+    setRowMenu({ open:true, product, top: Math.max(8, top), left: Math.max(8, left) });
+  }, []);
+
+  const closeRowMenu = useCallback(() => {
+    setRowMenu({ open:false, product:null, top:0, left:0 });
+  }, []);
+
+  const handleRowMenuAction = useCallback((action) => {
+    if (!rowMenu.product) return;
+
+    if (action === "view") {
+      handleViewProduct(rowMenu.product);
+    }
+    if (action === "edit") {
+      handleEditProduct(rowMenu.product);
+    }
+    if (action === "delete") {
+      handleDeleteProduct(rowMenu.product._id || rowMenu.product.id);
+    }
+
+    closeRowMenu();
+  }, [rowMenu.product, handleViewProduct, handleEditProduct, handleDeleteProduct, closeRowMenu]);
+
+  useEffect(() => {
+    if (!rowMenu.open) return;
+
+    const handleClickOutside = (event) => {
+      if (rowMenuRef.current && !rowMenuRef.current.contains(event.target)) {
+        setRowMenu({ open:false, product:null, top:0, left:0 });
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") {
+        setRowMenu({ open:false, product:null, top:0, left:0 });
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [rowMenu.open]);
 
   const criticalAlerts = useMemo(() => {
     return products
@@ -1415,10 +1483,6 @@ export default function InventoryPage() {
                     <Search className={s.searchIcon} aria-hidden="true" />
                     <input className={s.searchInput} value={searchQuery} onChange={e=>{ setSearchQuery(e.target.value); setCurrentPage(1); }} placeholder="Search products, SKUs, or locations..." aria-label="Search"/>
                   </div>
-                  <button className={s.filterIconBtn} aria-label="Filter inventory">
-                    <SlidersHorizontal className={s.btnIcon} aria-hidden="true" />
-                    Filter
-                  </button>
                 </div>
 
                 <div className={s.filterTabs}>
@@ -1435,12 +1499,12 @@ export default function InventoryPage() {
                   <table className={s.table} aria-label="Inventory products">
                     <thead>
                       <tr>
-                        {["Product Name","SKU","Location","Stock Level","Actions"].map(h=><th key={h} className={s.th}>{h}</th>)}
+                        {["Product Name","SKU","Location","Price","Stock Level"].map(h=><th key={h} className={s.th}>{h}</th>)}
                       </tr>
                     </thead>
                     <tbody>
                       {loading
-                        ? Array.from({length:5}).map((_,i)=><tr key={i} className={s.tableRow}>{[160,80,110,140,90].map((w,j)=><td key={j} className={s.td}><Skeleton w={w+"px"} h={12}/></td>)}</tr>)
+                        ? Array.from({length:8}).map((_,i)=><tr key={i} className={s.tableRow}>{[160,80,110,90,140].map((w,j)=><td key={j} className={s.td}><Skeleton w={w+"px"} h={12}/></td>)}</tr>)
                         : paginatedProducts.length===0
                           ? <tr><td colSpan={5}><div className={s.emptyState}><FolderOpen className={s.emptyIcon} aria-hidden="true" /><p className={s.emptyTitle}>No products found</p><p className={s.emptySub}>Try adjusting your filters or search.</p></div></td></tr>
                           : paginatedProducts.map((p,i)=>(
@@ -1448,15 +1512,34 @@ export default function InventoryPage() {
                                 key={p._id || p.id}
                                 product={p}
                                 delay={i*50}
-                                onView={handleViewProduct}
-                                onEdit={handleEditProduct}
-                                onDelete={handleDeleteProduct}
+                                onSelect={openRowMenu}
                               />
                             ))
                       }
                     </tbody>
                   </table>
                 </div>
+
+                {rowMenu.open && (
+                  <div
+                    ref={rowMenuRef}
+                    className={s.rowMenu}
+                    style={{ top: rowMenu.top, left: rowMenu.left }}
+                  >
+                    <button className={s.rowMenuItem} onClick={() => handleRowMenuAction("view")}>
+                      <Eye className={s.rowMenuIcon} aria-hidden="true" />
+                      View
+                    </button>
+                    <button className={s.rowMenuItem} onClick={() => handleRowMenuAction("edit")}>
+                      <Pencil className={s.rowMenuIcon} aria-hidden="true" />
+                      Edit
+                    </button>
+                    <button className={`${s.rowMenuItem} ${s.rowMenuDelete}`} onClick={() => handleRowMenuAction("delete")}> 
+                      <Trash2 className={s.rowMenuIcon} aria-hidden="true" />
+                      Delete
+                    </button>
+                  </div>
+                )}
 
                 {!loading && filteredProducts.length > 0 && (
                   <div className={s.pagination}>
