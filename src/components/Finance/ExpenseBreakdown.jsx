@@ -87,7 +87,7 @@ const CustomTooltip = ({ active, payload }) => {
     <div className={s.tooltip}>
       <p className={s.tooltipTitle}>{item.name}</p>
       <p className={s.tooltipRow}>
-        Amount: <strong>${Number(item.amount || 0).toLocaleString()}</strong>
+        Amount: <strong>EGP {Number(item.amount || 0).toLocaleString()}</strong>
       </p>
       <p className={s.tooltipRow}>
         Share: <strong>{item.value}%</strong>

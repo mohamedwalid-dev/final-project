@@ -137,7 +137,7 @@ function LiveSummary({ summary }) {
         </div>
 
         <p className={s.summaryNote}>
-          Invoice will be generated in USD. You can change currency in the final review step.
+          Invoice will be generated in EGP. You can change currency in the final review step.
         </p>
       </div>
 

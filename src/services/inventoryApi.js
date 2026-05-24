@@ -59,16 +59,33 @@ export const createInventoryProduct = async (productData) => {
 };
 
 export const updateInventoryProduct = async (productId, productData) => {
-  const payload = await request(`/${productId}`, {
+  const response = await fetch(`${API_URL}/${productId}`, {
     method: "PUT",
+    credentials: "include",
+    headers: getAuthHeaders(),
     body: JSON.stringify(productData),
   });
 
-  return payload.data;
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      payload.message || payload.error || "Failed to update product."
+    );
+  }
+
+  return payload.product || payload.data || payload;
 };
 
 export const deleteInventoryProduct = async (productId) => {
   return request(`/${productId}`, {
     method: "DELETE",
+  });
+};
+
+export const importInventoryProductsCsv = async (products) => {
+  return request("/products/import-csv", {
+    method: "POST",
+    body: JSON.stringify({ products }),
   });
 };

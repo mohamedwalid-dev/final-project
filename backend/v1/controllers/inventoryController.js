@@ -1,5 +1,25 @@
 // controllers/inventoryController.js
-import Inventory from "../models/inventoryModel.js";
+import Inventory, { getInventoryStockMeta } from "../models/inventoryModel.js";
+
+const getStringValue = (value) => (value == null ? "" : String(value).trim());
+
+const getRequiredNumber = (value, rowNumber, label) => {
+  if (value === "" || value == null) {
+    throw new Error(`Row ${rowNumber}: ${label} must be a valid number.`);
+  }
+
+  const numberValue = Number(value);
+
+  if (!Number.isFinite(numberValue) || numberValue < 0) {
+    throw new Error(`Row ${rowNumber}: ${label} must be a valid number.`);
+  }
+
+  return numberValue;
+};
+
+const isDuplicateKeyError = (error) =>
+  error?.code === 11000 ||
+  error?.writeErrors?.some((writeError) => writeError?.code === 11000);
 
 // GET all products
 export const getAllProducts = async (req, res) => {
@@ -107,6 +127,135 @@ export const createProduct = async (req, res) => {
   }
 };
 
+// IMPORT products from CSV payload
+export const importInventoryProductsCsv = async (req, res) => {
+  try {
+    const { products } = req.body;
+
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Products array is required.",
+      });
+    }
+
+    const allowedCategories = Inventory.schema.path("category").enumValues;
+    const allowedLocations = Inventory.schema.path("location").enumValues;
+    const seenSkus = new Set();
+
+    const normalizedProducts = products.map((product, index) => {
+      const rowNumber = index + 1;
+      const name = getStringValue(product.name);
+      const category = getStringValue(product.category);
+      const sku = getStringValue(product.sku).toUpperCase();
+      const location = getStringValue(product.location);
+
+      if (!name) {
+        throw new Error(`Row ${rowNumber}: Product name is required.`);
+      }
+
+      if (!category) {
+        throw new Error(`Row ${rowNumber}: Category is required.`);
+      }
+
+      if (!sku) {
+        throw new Error(`Row ${rowNumber}: SKU is required.`);
+      }
+
+      if (!location) {
+        throw new Error(`Row ${rowNumber}: Location is required.`);
+      }
+
+      if (!allowedCategories.includes(category)) {
+        throw new Error(
+          `Row ${rowNumber}: Category must be one of ${allowedCategories.join(
+            ", "
+          )}.`
+        );
+      }
+
+      if (!allowedLocations.includes(location)) {
+        throw new Error(
+          `Row ${rowNumber}: Location must be one of ${allowedLocations.join(
+            ", "
+          )}.`
+        );
+      }
+
+      const price = getRequiredNumber(product.price, rowNumber, "Price");
+      const units = getRequiredNumber(product.units, rowNumber, "Units");
+      const threshold = getRequiredNumber(
+        product.threshold,
+        rowNumber,
+        "Threshold"
+      );
+
+      if (seenSkus.has(sku)) {
+        const error = new Error(
+          `Row ${rowNumber}: Duplicate SKU "${sku}" in import payload.`
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      seenSkus.add(sku);
+
+      const stockMeta = getInventoryStockMeta(units, threshold);
+
+      return {
+        name,
+        category,
+        sku,
+        location,
+        price,
+        units,
+        threshold,
+        stockPct: stockMeta.stockPct,
+        status: stockMeta.status,
+      };
+    });
+
+    const skus = normalizedProducts.map((product) => product.sku);
+    const existingProducts = await Inventory.find({ sku: { $in: skus } })
+      .select("sku")
+      .lean();
+
+    if (existingProducts.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `One or more products have duplicate SKU values: ${existingProducts
+          .map((product) => product.sku)
+          .join(", ")}.`,
+      });
+    }
+
+    const createdProducts = await Inventory.insertMany(normalizedProducts);
+
+    return res.status(201).json({
+      success: true,
+      message: `${createdProducts.length} products imported successfully.`,
+      importedCount: createdProducts.length,
+      products: createdProducts,
+      data: createdProducts,
+    });
+  } catch (error) {
+    console.error("Import inventory products CSV error:", error);
+
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({
+        success: false,
+        message: "One or more products have duplicate SKU values.",
+        error: error.message,
+      });
+    }
+
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || "Failed to import inventory products.",
+    });
+  }
+};
+
 // UPDATE product
 export const updateProduct = async (req, res) => {
   try {
@@ -119,40 +268,51 @@ export const updateProduct = async (req, res) => {
       });
     }
 
-    const {
-      name,
-      category,
-      sku,
-      location,
-      price,
-      units,
-      threshold,
-    } = req.body;
+    const allowedUpdates = [
+      "name",
+      "category",
+      "sku",
+      "location",
+      "price",
+      "units",
+      "threshold",
+    ];
 
-    const allowedUpdates = {
-      ...(name !== undefined && { name }),
-      ...(category !== undefined && { category }),
-      ...(sku !== undefined && { sku }),
-      ...(location !== undefined && { location }),
-      ...(price !== undefined && { price: Number(price) }),
-      ...(units !== undefined && { units }),
-      ...(threshold !== undefined && { threshold }),
-    };
+    allowedUpdates.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        product[field] = req.body[field];
+      }
+    });
 
-    Object.assign(product, allowedUpdates);
+    product.price = Number(product.price);
+    product.units = Number(product.units);
+    product.threshold = Number(product.threshold);
+
+    const stockMeta = getInventoryStockMeta(product.units, product.threshold);
+    product.stockPct = stockMeta.stockPct;
+    product.status = stockMeta.status;
 
     await product.save();
 
     res.status(200).json({
       success: true,
       message: "Product updated successfully",
+      product,
       data: product,
     });
   } catch (error) {
+    console.error("Update inventory product error:", error);
+
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({
+        success: false,
+        message: "SKU already exists. Please use a different SKU.",
+      });
+    }
+
     res.status(400).json({
       success: false,
-      message: "Failed to update product",
-      error: error.message,
+      message: error.message || "Failed to update product.",
     });
   }
 };
@@ -211,6 +371,11 @@ export const getInventoryStats = async (req, res) => {
           )
         : 0;
 
+    const totalSum = products.reduce(
+      (sum, item) => sum + Number(item.price || 0),
+      0
+    );
+
     res.status(200).json({
       success: true,
       data: {
@@ -219,6 +384,7 @@ export const getInventoryStats = async (req, res) => {
         lowStockItems,
         outOfStockItems,
         averageStock,
+        totalSum,
       },
     });
   } catch (error) {

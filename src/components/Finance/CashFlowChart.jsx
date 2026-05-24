@@ -22,7 +22,7 @@ const ChartTooltip = ({ active, payload, label }) => {
       <p className={s.tooltipTitle}>{label}</p>
       {payload.map((e) => (
         <p key={e.name} className={s.tooltipRow} style={{ color: e.color }}>
-          {e.name}: <strong>${Number(e.value || 0).toLocaleString()}</strong>
+          {e.name}: <strong>EGP {Number(e.value || 0).toLocaleString()}</strong>
         </p>
       ))}
     </div>
@@ -253,7 +253,7 @@ const CashFlowChart = memo(() => {
               tick={{ fontSize: 11, fill: "#ADB5BD" }}
               axisLine={false}
               tickLine={false}
-              tickFormatter={(v) => `$${v / 1000}k`}
+              tickFormatter={(v) => `EGP ${v / 1000}k`}
             />
 
             <Tooltip content={<ChartTooltip />} />

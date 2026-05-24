@@ -153,10 +153,10 @@ const OPERATION_ICONS = {
 // ─────────────────────────────────────────────────────────────────────────────
 const fmtCurrency = (n) =>
   n >= 1_000_000
-    ? `$${(n / 1_000_000).toFixed(2)}M`.replace(".00M", "M")
+    ? `EGP ${(n / 1_000_000).toFixed(2)}M`.replace(".00M", "M")
     : n >= 1_000
-    ? `$${(n / 1_000).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`
-    : `$${n}`;
+    ? `EGP ${(n / 1_000).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`
+    : `EGP ${n}`;
 
 const fmtNumber = (n) =>
   n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : `${n}`;
@@ -313,7 +313,7 @@ const CustomTooltip = ({ active, payload, label }) => {
       <p style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, margin: "0 0 6px" }}>{label}</p>
       {payload.map(e => (
         <p key={e.name} style={{ fontSize: 13, fontWeight: 700, color: e.color, margin: "2px 0" }}>
-          {e.name}: <span style={{ color: T.text }}>${(e.value / 1000).toFixed(0)}k</span>
+          {e.name}: <span style={{ color: T.text }}>EGP {(e.value / 1000).toFixed(0)}k</span>
         </p>
       ))}
     </div>
@@ -382,7 +382,7 @@ const RevenueChart = memo(({ data, loading, range, onRangeChange }) => {
             <YAxis
               tick={{ fontSize: 11, fill: T.textMuted }}
               axisLine={false} tickLine={false}
-              tickFormatter={v => `$${v / 1000}k`}
+              tickFormatter={v => `EGP ${v / 1000}k`}
             />
             <Tooltip content={<CustomTooltip />} />
             <Area type="monotone" dataKey="Revenue" stroke="#3B5BDB" strokeWidth={2.5} fill="url(#gradRevenue)" dot={false} />
@@ -766,7 +766,7 @@ const Footer = () => (
         <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#2F9E44" }} />
         System Status: Operational
       </span>
-      <span>v2.4.0-stable</span>
+      <span>v1-stable</span>
     </div>
   </footer>
 );

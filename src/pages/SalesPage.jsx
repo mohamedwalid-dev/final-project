@@ -136,11 +136,11 @@ const CUSTOMERS = [
 // ─────────────────────────────────────────────────────────────────────────────
 const fmt = (n) =>
   n >= 1000
-    ? `$${(n / 1000).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}k`
-    : `$${n.toLocaleString()}`;
+    ? `EGP ${(n / 1000).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}k`
+    : `EGP ${n.toLocaleString()}`;
 
 const fmtFull = (n) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "EGP", maximumFractionDigits: 0 }).format(n);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── SHARED: Stat Card
@@ -230,10 +230,7 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
       <p className={s.leadCompany}>{lead.company}</p>
 
       {/* Amount */}
-      <p className={s.leadAmount}>
-        <span className={s.dollarIcon}>$</span>
-        {lead.amount.toLocaleString()}
-      </p>
+      <p className={s.leadAmount}>{fmtFull(lead.amount)}</p>
 
       {/* Footer */}
       <div className={s.leadFooter}>
@@ -332,7 +329,7 @@ function PipelineTab() {
               />
             </div>
             <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Deal Value ($)</label>
+              <label className={s.addLeadLabel}>Deal Value (EGP)</label>
               <input
                 type="number"
                 className={s.addLeadInput}
@@ -437,7 +434,7 @@ const ChartTooltip = ({ active, payload, label }) => {
       <p className={s.tooltipTitle}>{label}</p>
       {payload.map((e) => (
         <p key={e.name} className={s.tooltipRow} style={{ color: e.color }}>
-          {e.name}: <strong>{typeof e.value === "number" && e.value > 999 ? `$${e.value.toLocaleString()}` : e.value}</strong>
+          {e.name}: <strong>{typeof e.value === "number" && e.value > 999 ? `EGP ${e.value.toLocaleString()}` : e.value}</strong>
         </p>
       ))}
     </div>
@@ -449,8 +446,8 @@ function SalesAnalyticsTab() {
     <div>
       {/* KPI Row */}
       <div className={s.analyticsKpiGrid}>
-        <SalesStatCard icon={CircleDollarSign} label="Total Revenue (YTD)"  value="$928,000"  change="+18.4%" changeType="up" featured />
-        <SalesStatCard icon={ChartNoAxesCombined} label="Avg Deal Size"        value="$32,400"   change="+6.2%"  changeType="up"   />
+        <SalesStatCard icon={CircleDollarSign} label="Total Revenue (YTD)"  value="EGP 928,000"  change="+18.4%" changeType="up" featured />
+        <SalesStatCard icon={ChartNoAxesCombined} label="Avg Deal Size"        value="EGP 32,400"   change="+6.2%"  changeType="up"   />
         <SalesStatCard icon={Clock3} label="Sales Cycle (days)"   value="24d"       change="-3d"    changeType="up"   />
         <SalesStatCard icon={Target} label="Quota Attainment"     value="87%"       change="+5%"    changeType="up"   />
         <SalesStatCard icon={RefreshCcw} label="Churn Rate"           value="4.2%"      change="+0.3%"  changeType="down" />
@@ -473,7 +470,7 @@ function SalesAnalyticsTab() {
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#F1F3F5" />
               <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#ADB5BD" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+              <YAxis tick={{ fontSize: 11, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `EGP ${v / 1000}k`} />
               <Tooltip content={<ChartTooltip />} />
               <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#3B5BDB" strokeWidth={2.5} fill="url(#gradSalesRev)" dot={false} />
               <Area type="monotone" dataKey="target"  name="Target"  stroke="#CED4DA" strokeWidth={2} fill="none" strokeDasharray="4 4" dot={false} />
@@ -514,8 +511,8 @@ function SalesAnalyticsTab() {
             <BarChart data={PIPELINE_VALUE_BY_STAGE} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#F1F3F5" />
               <XAxis dataKey="stage" tick={{ fontSize: 10, fill: "#ADB5BD" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
-              <Tooltip formatter={(v) => [`$${v.toLocaleString()}`, "Value"]} />
+              <YAxis tick={{ fontSize: 10, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `EGP ${v / 1000}k`} />
+              <Tooltip formatter={(v) => [`EGP ${v.toLocaleString()}`, "Value"]} />
               <Bar dataKey="value" radius={[6, 6, 0, 0]}>
                 {PIPELINE_VALUE_BY_STAGE.map((e, i) => <Cell key={i} fill={e.fill} />)}
               </Bar>
@@ -635,7 +632,7 @@ function ProductCatalogTab() {
               </select>
             </div>
             <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Price ($) *</label>
+              <label className={s.addLeadLabel}>Price (EGP) *</label>
               <input type="number" className={s.addLeadInput} value={newProduct.price} onChange={(e) => setNewProduct((p) => ({ ...p, price: e.target.value }))} placeholder="0.00" />
             </div>
             <div className={s.addLeadField}>
@@ -898,7 +895,7 @@ export default function SalesPage() {
             <a href="#" className={s.footerLink}>Privacy Policy</a>
             <a href="#" className={s.footerLink}>Terms of Service</a>
             <span className={s.statusDot}>● System Status: Operational</span>
-            <span>v2.4.0-stable</span>
+            <span>v1-stable</span>
           </div>
         </footer>
       </div>

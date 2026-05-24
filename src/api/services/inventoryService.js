@@ -12,7 +12,7 @@ import { API_CONFIG } from "../config";
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const _STATS = {
-  totalAssets: "$2,845,000", stockTurnover: "4.2x", utilization: "78.4%", lowStock: 14,
+  totalAssets: "EGP 2,845,000", stockTurnover: "4.2x", utilization: "78.4%", lowStock: 14,
 };
 const _PRODUCTS = [
   { id:"p1", name:"Quantum Processor X1",  sku:"SYN-Q100", location:"Warehouse A-12", stockPct:85, status:"Healthy",  units:850, threshold:100 },

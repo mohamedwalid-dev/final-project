@@ -17,6 +17,7 @@ import {
   Boxes,
   ChartNoAxesCombined,
   CheckCircle2,
+  CircleDollarSign,
   Download,
   Eye,
   FileText,
@@ -28,28 +29,32 @@ import {
   RadioTower,
   Search,
   Trash2,
+  Upload,
   Warehouse,
   X,
 } from "lucide-react";
-import jsPDF from "jspdf";
+import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import "../assets/fonts/NotoSansArabic-Regular-normal";
 import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header  from "../components/Finance/Layout/Header";
 import s from "../styles/InventoryPage.module.css";
 import shell from "../styles/AppShell.module.css";
+import { formatCurrency } from "../utils/formatters";
 import {
   getInventoryProducts,
   getInventoryStats,
   createInventoryProduct,
   updateInventoryProduct,
   deleteInventoryProduct,
+  importInventoryProductsCsv,
 } from "../services/inventoryApi";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── MOCK DATA
 // ─────────────────────────────────────────────────────────────────────────────
 const INITIAL_STATS = [
-  { id:"assets",   label:"Total Assets",   value:"$2,845,000", change:"+12.8%", changeType:"up",   sub:"Current market value of all stocked items across all warehouses." },
+  { id:"assets",   label:"Total Assets",   value:"EGP 2,845,000", change:"+12.8%", changeType:"up",   sub:"Current market value of all stocked items across all warehouses." },
   { id:"turnover", label:"Stock Turnover", value:"4.2x",       change:"+0.8%",  changeType:"up",   sub:"Inventory turnover ratio for the current fiscal quarter." },
   { id:"util",     label:"Utilization",    value:"78.4%",      change:"-2.1%",  changeType:"down", sub:"Average warehouse capacity utilized nationwide." },
   { id:"lowstock", label:"Low Stock",      value:"14 Items",   change:"+3",     changeType:"down", sub:"Products that have fallen below the critical threshold." },
@@ -58,7 +63,7 @@ const INITIAL_STATS = [
 const STAT_ICONS = {
   products: Package,
   units: Boxes,
-  average: ChartNoAxesCombined,
+  totalSum: CircleDollarSign,
   lowstock: AlertTriangle,
 };
 
@@ -127,6 +132,142 @@ function toCSV(rows) {
   if (!rows?.length) return "";
   const headers = Object.keys(rows[0]);
   return [headers.join(","), ...rows.map(r => headers.map(h => { const v=String(r[h]??""); return v.includes(",")||v.includes('"')?`"${v.replace(/"/g,'""')}"`:v; }).join(","))].join("\n");
+}
+
+function containsArabic(value) {
+  return /[\u0600-\u06FF]/.test(String(value ?? ""));
+}
+
+function prepareArabicText(value) {
+  const text = String(value ?? "");
+
+  if (containsArabic(text) && typeof jsPDF.API.processArabic === "function") {
+    return jsPDF.API.processArabic(text);
+  }
+
+  return text;
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let current = "";
+  let insideQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+
+    if (char === '"' && insideQuotes && nextChar === '"') {
+      current += '"';
+      i++;
+    } else if (char === '"') {
+      insideQuotes = !insideQuotes;
+    } else if (char === "," && !insideQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  if (insideQuotes) {
+    throw new Error("CSV contains an unterminated quoted value.");
+  }
+
+  result.push(current.trim());
+  return result;
+}
+
+function parseRequiredCsvNumber(value, rowNumber, label) {
+  if (value === "" || value == null) {
+    throw new Error(`Row ${rowNumber}: ${label} must be a valid number.`);
+  }
+
+  const numberValue = Number(value);
+
+  if (!Number.isFinite(numberValue) || numberValue < 0) {
+    throw new Error(`Row ${rowNumber}: ${label} must be a valid number.`);
+  }
+
+  return numberValue;
+}
+
+function parseProductsCsv(csvText) {
+  const lines = csvText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    throw new Error("CSV file must contain a header row and at least one product row.");
+  }
+
+  const headers = parseCSVLine(lines[0]).map((header) =>
+    header.replace(/^\uFEFF/, "").trim().toLowerCase()
+  );
+
+  const requiredHeaders = [
+    "name",
+    "category",
+    "sku",
+    "location",
+    "price",
+    "units",
+    "threshold",
+  ];
+
+  const missingHeaders = requiredHeaders.filter(
+    (header) => !headers.includes(header)
+  );
+
+  if (missingHeaders.length > 0) {
+    throw new Error(`Missing required CSV headers: ${missingHeaders.join(", ")}`);
+  }
+
+  const seenSkus = new Set();
+
+  return lines.slice(1).map((line, index) => {
+    const rowNumber = index + 2;
+    const values = parseCSVLine(line);
+    const row = {};
+
+    headers.forEach((header, headerIndex) => {
+      row[header] = values[headerIndex]?.trim() ?? "";
+    });
+
+    const sku = row.sku.toUpperCase();
+
+    if (!row.name) throw new Error(`Row ${rowNumber}: Product name is required.`);
+    if (!row.category) throw new Error(`Row ${rowNumber}: Category is required.`);
+    if (!row.sku) throw new Error(`Row ${rowNumber}: SKU is required.`);
+    if (!row.location) throw new Error(`Row ${rowNumber}: Location is required.`);
+    if (!CATEGORIES.includes(row.category)) {
+      throw new Error(`Row ${rowNumber}: Category must be one of ${CATEGORIES.join(", ")}.`);
+    }
+    if (!LOCATIONS.includes(row.location)) {
+      throw new Error(`Row ${rowNumber}: Location must be one of ${LOCATIONS.join(", ")}.`);
+    }
+
+    const price = parseRequiredCsvNumber(row.price, rowNumber, "Price");
+    const units = parseRequiredCsvNumber(row.units, rowNumber, "Units");
+    const threshold = parseRequiredCsvNumber(row.threshold, rowNumber, "Threshold");
+
+    if (seenSkus.has(sku)) {
+      throw new Error(`Row ${rowNumber}: Duplicate SKU "${sku}" in CSV file.`);
+    }
+
+    seenSkus.add(sku);
+
+    return {
+      name: row.name,
+      category: row.category,
+      sku,
+      location: row.location,
+      price,
+      units,
+      threshold,
+    };
+  });
 }
 
 function generatePDFReport({ title, subtitle, rows, filename }) {
@@ -237,6 +378,22 @@ function generatePDFReport({ title, subtitle, rows, filename }) {
       left: 36,
       right: 36,
     },
+    didParseCell: function (data) {
+      const rawValue = data.cell.raw;
+      const textValue = Array.isArray(rawValue)
+        ? rawValue.join(" ")
+        : String(rawValue ?? "");
+
+      if (containsArabic(textValue)) {
+        data.cell.styles.font = "NotoSansArabic";
+        data.cell.styles.fontStyle = "normal";
+        data.cell.styles.halign = "right";
+        data.cell.text = [prepareArabicText(textValue)];
+      } else {
+        data.cell.styles.font = "helvetica";
+        data.cell.styles.halign = "left";
+      }
+    },
     didDrawPage: function () {
       const currentPage = doc.internal.getNumberOfPages();
 
@@ -291,7 +448,7 @@ function ExportReportModal({ isOpen, onClose, products, stats, criticalAlerts, w
       id:"products", icon:Package, label:"Products List",
       desc:"All inventory items with SKU, location, stock & status",
       filename:`Prime-inventory-products-${today()}`,
-      rows:() => products.map(p => ({ "Product Name": p.name || "-", Category: p.category || "-", SKU: p.sku || "-", Location: p.location || "-", Price: p.price ?? 0, "Stock %": `${p.stockPct ?? 0}%`, Units: p.units ?? 0, Threshold: p.threshold ?? 0, Status: p.status || "-" })),
+      rows:() => products.map(p => ({ "Product Name": p.name || "-", Category: p.category || "-", SKU: p.sku || "-", Location: p.location || "-", Price: `EGP ${Number(p.price || 0).toLocaleString()}`, "Stock %": `${p.stockPct ?? 0}%`, Units: p.units ?? 0, Threshold: p.threshold ?? 0, Status: p.status || "-" })),
     },
     {
       id:"kpis", icon:ChartNoAxesCombined, label:"Inventory KPIs",
@@ -475,11 +632,14 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
 
   const validate = () => {
     const e = {};
+    const isValidNumber = (value) =>
+      value !== "" && !Number.isNaN(Number(value)) && Number(value) >= 0;
+
     if (!form.name.trim()) e.name = "Product name is required";
     if (!form.sku.trim()) e.sku = "SKU is required";
-    if (form.price === "" || isNaN(form.price) || Number(form.price) < 0) e.price = "Valid price required";
-    if (!form.units || isNaN(form.units) || Number(form.units) < 0) e.units = "Valid unit count required";
-    if (!form.threshold || isNaN(form.threshold) || Number(form.threshold) < 0) e.threshold = "Valid threshold required";
+    if (!isValidNumber(form.price)) e.price = "Valid price required";
+    if (!isValidNumber(form.units)) e.units = "Valid unit count required";
+    if (!isValidNumber(form.threshold)) e.threshold = "Valid threshold required";
     return e;
   };
 
@@ -622,8 +782,8 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
             <Field id="ap-units" label="Unit Count" required error={errors.units}>
               <input
                 id="ap-units"
-                type="number"
-                min="0"
+                type="text"
+                inputMode="numeric"
                 className={`${s.formInput} ${errors.units ? s.formInputError : ""}`}
                 value={form.units}
                 onChange={(e) => setField("units", e.target.value)}
@@ -635,8 +795,8 @@ function AddProductModal({ isOpen, onClose, onAdd, onUpdate, product = null, sub
             <Field id="ap-thr" label="Low Stock Threshold" required error={errors.threshold}>
               <input
                 id="ap-thr"
-                type="number"
-                min="0"
+                type="text"
+                inputMode="numeric"
                 className={`${s.formInput} ${errors.threshold ? s.formInputError : ""}`}
                 value={form.threshold}
                 onChange={(e) => setField("threshold", e.target.value)}
@@ -724,7 +884,7 @@ function ViewProductModal({ isOpen, product, onClose }) {
             </div>
             <div className={s.modalDetailItem}>
               <p className={s.modalDetailLabel}>Price</p>
-              <p className={s.modalDetailValue}>{`$${Number(product.price || 0).toLocaleString()}`}</p>
+              <p className={s.modalDetailValue}>{formatCurrency(product.price || 0)}</p>
             </div>
             <div className={s.modalDetailItem}>
               <p className={s.modalDetailLabel}>Units</p>
@@ -825,7 +985,7 @@ function ProductRow({ product, delay = 0, onSelect = () => {} }) {
       </td>
       <td className={s.td}><span className={s.skuBadge}>{product.sku}</span></td>
       <td className={s.td}><span className={s.locationText}>{product.location}</span></td>
-      <td className={s.td}><span className={s.priceText}>{`$${Number(product.price || 0).toLocaleString()}`}</span></td>
+      <td className={s.td}><span className={s.priceText}>{formatCurrency(product.price || 0)}</span></td>
       <td className={s.td}>
         <div className={s.stockCell}>
           <div className={s.stockBarTrack}>
@@ -1049,13 +1209,15 @@ export default function InventoryPage() {
   const [showExport,      setShowExport]      = useState(false);   // Export modal
   const [showAddProduct,  setShowAddProduct]  = useState(false);   // Add modal
   const [submitting,      setSubmitting]      = useState(false);
+  const [importingCsv,    setImportingCsv]    = useState(false);
   const [rowMenu,         setRowMenu]         = useState({ open:false, product:null, top:0, left:0 });
+  const csvInputRef = useRef(null);
   const rowMenuRef = useRef(null);
 
-  const clearMessages = () => {
+  const clearMessages = useCallback(() => {
     setError("");
     setSuccess("");
-  };
+  }, []);
 
   const fetchProducts = useCallback(async () => {
     try {
@@ -1105,7 +1267,7 @@ export default function InventoryPage() {
         setSubmitting(false);
       }
     },
-    [fetchStats]
+    [fetchStats, clearMessages]
   );
 
   const handleUpdateProduct = useCallback(
@@ -1134,7 +1296,7 @@ export default function InventoryPage() {
         setSubmitting(false);
       }
     },
-    [fetchStats]
+    [fetchStats, clearMessages]
   );
 
   const handleDeleteProduct = useCallback(
@@ -1157,7 +1319,39 @@ export default function InventoryPage() {
         setError(error.message || "Failed to delete product.");
       }
     },
-    [fetchStats]
+    [fetchStats, clearMessages]
+  );
+
+  const handleImportCsv = useCallback(
+    async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      try {
+        setImportingCsv(true);
+        clearMessages();
+
+        const csvText = await file.text();
+        const parsedProducts = parseProductsCsv(csvText);
+        const result = await importInventoryProductsCsv(parsedProducts);
+
+        setSuccess(
+          result?.message ||
+            `${parsedProducts.length} products imported successfully`
+        );
+
+        setCurrentPage(1);
+        await fetchProducts();
+        await fetchStats();
+      } catch (error) {
+        console.error("Failed to import CSV:", error);
+        setError(error.message || "Failed to import CSV file.");
+      } finally {
+        setImportingCsv(false);
+        event.target.value = "";
+      }
+    },
+    [fetchProducts, fetchStats, clearMessages]
   );
 
   const handleViewProduct = useCallback((product) => {
@@ -1404,12 +1598,14 @@ export default function InventoryPage() {
       sub: "Total stock units available across all products.",
     },
     {
-      id: "average",
-      label: "Average Stock",
-      value: stats ? `${stats.averageStock}%` : "0%",
+      id: "totalSum",
+      label: "Total Sum",
+      value: stats
+        ? formatCurrency(stats.totalSum || 0)
+        : formatCurrency(products.reduce((sum, product) => sum + Number(product.price || 0), 0)),
       change: "Live",
       changeType: "up",
-      sub: "Average stock percentage across inventory items.",
+      sub: "Total sum of all product prices in inventory.",
     },
     {
       id: "lowstock",
@@ -1447,6 +1643,22 @@ export default function InventoryPage() {
                   <Download className={s.btnIcon} aria-hidden="true" />
                   Export Report
                 </button>
+                <button
+                  className={`${s.btn} ${s.btnOutline}`}
+                  onClick={() => csvInputRef.current?.click()}
+                  disabled={loading || importingCsv}
+                  aria-label="Import products from CSV"
+                >
+                  <Upload className={s.btnIcon} aria-hidden="true" />
+                  {importingCsv ? "Importing..." : "Import CSV"}
+                </button>
+                <input
+                  ref={csvInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  style={{ display: "none" }}
+                  onChange={handleImportCsv}
+                />
                 <button
                   className={`${s.btn} ${s.btnPrimary}`}
                   onClick={() => setShowAddProduct(true)}
@@ -1572,7 +1784,7 @@ export default function InventoryPage() {
               <a href="#" className={s.footerLink}>Privacy Policy</a>
               <a href="#" className={s.footerLink}>Terms of Service</a>
               <span className={s.statusDot}><span style={{ width:7,height:7,borderRadius:"50%",background:"#2F9E44",display:"inline-block",marginRight:5 }}/>System Status: Operational</span>
-              <span>v2.4.0-stable</span>
+              <span>v1-stable</span>
             </div>
           </footer>
         </div>

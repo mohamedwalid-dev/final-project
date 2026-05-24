@@ -14,7 +14,7 @@ const salesService = {
     fetchSafe(async () => {
       if (!API_CONFIG.USE_MOCK) { const r = await http.get(ENDPOINTS.SALES.STATS,{},signal); return r.data; }
       await delay(200);
-      return { totalLeads: 284, converted: 47, pipeline: "$1.2M", winRate: "22%" };
+      return { totalLeads: 284, converted: 47, pipeline: "EGP 1.2M", winRate: "22%" };
     }),
 
   /** 🔌 SWAP: return http.get(ENDPOINTS.SALES.LEADS, filters, signal); */

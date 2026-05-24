@@ -55,21 +55,21 @@ const financeService = {
           { 
             id: "revenue", 
             label: "Total Revenue", 
-            value: `$${(stats.totalAmount / 1000).toFixed(1)}k`, 
+            value: `EGP ${(stats.totalAmount / 1000).toFixed(1)}k`, 
             change: "+12.5%", 
             changeType: "up" 
           },
           { 
             id: "profit", 
             label: "Net Profit", 
-            value: `$${(stats.totalAmount * 0.6 / 1000).toFixed(1)}k`, 
+            value: `EGP ${(stats.totalAmount * 0.6 / 1000).toFixed(1)}k`, 
             change: "+8.2%", 
             changeType: "up" 
           },
           { 
             id: "expenses", 
             label: "Operational Expenses", 
-            value: `$${(stats.totalAmount * 0.4 / 1000).toFixed(1)}k`, 
+            value: `EGP ${(stats.totalAmount * 0.4 / 1000).toFixed(1)}k`, 
             change: "+14.1%", 
             changeType: "down" 
           },

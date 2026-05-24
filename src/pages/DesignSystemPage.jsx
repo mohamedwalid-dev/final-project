@@ -38,11 +38,11 @@ const TYPE_SCALE = [
 ];
 
 const TABLE_DATA = [
-  { id:"TX-1001", customer:"Acme Corporation",    date:"Oct 01, 2024", amount:"$12,400.00", status:"Paid",     risk:"Low" },
-  { id:"TX-1002", customer:"Fontaine Dynamics",   date:"Oct 08, 2024", amount:"$34,250.00", status:"Pending",  risk:"Med" },
-  { id:"TX-1003", customer:"Blue Meridian Co.",   date:"Oct 12, 2024", amount:"$8,700.00",  status:"Overdue",  risk:"High"},
-  { id:"TX-1004", customer:"Stellar Manufacturing",date:"Oct 20, 2024", amount:"$29,500.00", status:"Paid",    risk:"Low" },
-  { id:"TX-1005", customer:"Vertex Systems",      date:"Oct 25, 2024", amount:"$5,200.00",  status:"Paid",     risk:"Low" },
+  { id:"TX-1001", customer:"Acme Corporation",    date:"Oct 01, 2024", amount:"EGP 12,400.00", status:"Paid",     risk:"Low" },
+  { id:"TX-1002", customer:"Fontaine Dynamics",   date:"Oct 08, 2024", amount:"EGP 34,250.00", status:"Pending",  risk:"Med" },
+  { id:"TX-1003", customer:"Blue Meridian Co.",   date:"Oct 12, 2024", amount:"EGP 8,700.00",  status:"Overdue",  risk:"High"},
+  { id:"TX-1004", customer:"Stellar Manufacturing",date:"Oct 20, 2024", amount:"EGP 29,500.00", status:"Paid",    risk:"Low" },
+  { id:"TX-1005", customer:"Vertex Systems",      date:"Oct 25, 2024", amount:"EGP 5,200.00",  status:"Paid",     risk:"Low" },
 ];
 
 const FAQ = [
@@ -156,7 +156,7 @@ function ResponsiveLogic() {
               <div className={s.deviceCardRow}>
                 <div className={s.deviceCard} style={{ background: "linear-gradient(135deg,#EEF2FF,#C5D0FC)" }}>
                   <p className={s.dcLabel}>Monthly Revenue</p>
-                  <p className={s.dcValue}>$42,950</p>
+                  <p className={s.dcValue}>EGP 42,950</p>
                   <p className={s.dcDelta}>↑ +13.8% from last month</p>
                 </div>
                 <div className={s.deviceCard}>
@@ -169,7 +169,7 @@ function ResponsiveLogic() {
               <div className={s.dcChart}>{[40,70,55,90,65,80,48].map((h,i) => <div key={i} className={s.dcBar2} style={{ height: h+"%" }}/>)}</div>
               <p className={s.dcSection}>Recent Transactions <span style={{ float:"right", color:"#3B5BDB", fontSize:11 }}>View all</span></p>
               {["Software License #1021","Software License #1022","Software License #1023"].map((t,i) => (
-                <div key={i} className={s.dcTx}><span className={s.dcTxIcon}>📄</span><div><p className={s.dcTxName}>{t}</p><p className={s.dcTxSub}>Subscription Payment</p></div><span className={s.dcTxAmt}>-$299.00</span></div>
+                <div key={i} className={s.dcTx}><span className={s.dcTxIcon}>📄</span><div><p className={s.dcTxName}>{t}</p><p className={s.dcTxSub}>Subscription Payment</p></div><span className={s.dcTxAmt}>-EGP 299.00</span></div>
               ))}
             </div>
           </div>
@@ -190,7 +190,7 @@ function ResponsiveLogic() {
             <div className={s.deviceContent}>
               <div className={s.deviceCard} style={{ background: "linear-gradient(135deg,#EEF2FF,#C5D0FC)", marginBottom: 8 }}>
                 <p className={s.dcLabel}>Monthly Revenue</p>
-                <p className={s.dcValue}>$42,950</p>
+                <p className={s.dcValue}>EGP 42,950</p>
                 <p className={s.dcDelta}>↑ +13.8% from last month</p>
               </div>
               <div className={s.deviceCard} style={{ marginBottom: 8 }}>
@@ -202,7 +202,7 @@ function ResponsiveLogic() {
               <div className={s.dcChart} style={{ height: 60 }}>{[40,70,55,90,65,80,48].map((h,i) => <div key={i} className={s.dcBar2} style={{ height: h+"%" }}/>)}</div>
               <p className={s.dcSection}>Recent Transactions <span style={{ float:"right", color:"#3B5BDB", fontSize:10 }}>View all</span></p>
               {["Software License #1021","Software License #1022"].map((t,i) => (
-                <div key={i} className={s.dcTx}><span className={s.dcTxIcon}>📄</span><div><p className={s.dcTxName}>{t}</p></div><span className={s.dcTxAmt}>-$299.00</span></div>
+                <div key={i} className={s.dcTx}><span className={s.dcTxIcon}>📄</span><div><p className={s.dcTxName}>{t}</p></div><span className={s.dcTxAmt}>-EGP 299.00</span></div>
               ))}
               <div className={s.mobileTabBar}>{["🏠","📄","👥","◎","•••"].map((ic,i) => <button key={i} className={`${s.mobileTab} ${i===0?s.mobileTabActive:""}`}>{ic}</button>)}</div>
             </div>
@@ -650,7 +650,7 @@ export default function DesignSystemPage() {
                 <a href="#" className={s.footerLink}>Privacy Policy</a>
                 <a href="#" className={s.footerLink}>Terms of Service</a>
                 <span className={s.statusDot}><span style={{ width:7,height:7,borderRadius:"50%",background:"#2F9E44",display:"inline-block",marginRight:5 }}/>System Status: Operational</span>
-                <span>v2.4.0-stable</span>
+                <span>v1-stable</span>
               </div>
             </footer>
           </main>

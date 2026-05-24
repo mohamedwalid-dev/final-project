@@ -1,6 +1,28 @@
 // models/inventoryModel.js
 import mongoose from "mongoose";
 
+export function getInventoryStockMeta(units, threshold) {
+  const safeUnits = Number(units || 0);
+  const safeThreshold = Number(threshold || 0);
+
+  const stockPct =
+    safeThreshold > 0
+      ? Math.min(100, Math.round((safeUnits / (safeThreshold * 2)) * 100))
+      : 100;
+
+  let status = "Healthy";
+
+  if (safeUnits === 0) {
+    status = "Out";
+  } else if (safeUnits <= safeThreshold) {
+    status = "Critical";
+  } else if (stockPct < 50) {
+    status = "Warning";
+  }
+
+  return { stockPct, status };
+}
+
 const inventorySchema = new mongoose.Schema(
   {
     name: {
@@ -79,26 +101,10 @@ const inventorySchema = new mongoose.Schema(
 );
 
 // Auto-calculate stock percentage and status before save
-inventorySchema.pre("save", function (next) {
-  if (this.threshold > 0) {
-    this.stockPct = Math.min(
-      100,
-      Math.round((this.units / (this.threshold * 2)) * 100)
-    );
-  } else {
-    this.stockPct = 100;
-  }
-
-  if (this.units === 0) {
-    this.status = "Out";
-  } else if (this.units <= this.threshold) {
-    this.status = "Critical";
-  } else if (this.stockPct < 50) {
-    this.status = "Warning";
-  } else {
-    this.status = "Healthy";
-  }
-
+inventorySchema.pre("save", function () {
+  const stockMeta = getInventoryStockMeta(this.units, this.threshold);
+  this.stockPct = stockMeta.stockPct;
+  this.status = stockMeta.status;
 });
 
 const Inventory = mongoose.model("Inventory", inventorySchema);

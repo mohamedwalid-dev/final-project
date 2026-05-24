@@ -1,7 +1,7 @@
 // ─── utils/formatters.js ──────────────────────────────────────────────────────
 // Business formatting helpers — testable, reusable, single source of truth
 
-export const formatCurrency = (amount, locale = "en-US", currency = "USD") =>
+export const formatCurrency = (amount, locale = "en-US", currency = "EGP") =>
   new Intl.NumberFormat(locale, { style: "currency", currency }).format(amount);
 
 export const formatDate = (dateStr, locale = "en-US") =>

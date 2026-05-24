@@ -158,7 +158,7 @@ const PERMISSION_LABELS = {
 const AUDIT_LOGS = [
   { id:"au1",  user:"Alex Sterling",    action:"UPDATE",  entity:"Employee",    entityId:"e6", field:"status",          oldVal:"Active",    newVal:"Suspended",   at:"2024-10-01 14:22:10", ip:"192.168.1.10", reason:"Policy violation" },
   { id:"au2",  user:"Elena Rodriguez",  action:"APPROVE", entity:"Leave",       entityId:"l2", field:"status",          oldVal:"Pending",   newVal:"Approved",    at:"2024-10-10 09:05:33", ip:"192.168.1.14", reason:null },
-  { id:"au3",  user:"Alex Sterling",    action:"UPDATE",  entity:"Payroll",     entityId:"p6", field:"basicSalary",     oldVal:"$75,000",   newVal:"$85,000",     at:"2024-02-25 11:30:00", ip:"192.168.1.10", reason:"Promotion" },
+  { id:"au3",  user:"Alex Sterling",    action:"UPDATE",  entity:"Payroll",     entityId:"p6", field:"basicSalary",     oldVal:"EGP 75,000",   newVal:"EGP 85,000",     at:"2024-02-25 11:30:00", ip:"192.168.1.10", reason:"Promotion" },
   { id:"au4",  user:"Elena Rodriguez",  action:"CREATE",  entity:"Employee",    entityId:"e5", field:"—",               oldVal:null,        newVal:"Sophie Alistair",at:"2023-01-15 10:00:00",ip:"192.168.1.14", reason:null },
   { id:"au5",  user:"Elena Rodriguez",  action:"APPROVE", entity:"Leave",       entityId:"l1", field:"status",          oldVal:"Pending",   newVal:"Approved",    at:"2024-10-03 10:15:22", ip:"192.168.1.14", reason:null },
   { id:"au6",  user:"Elena Rodriguez",  action:"REJECT",  entity:"Leave",       entityId:"l6", field:"status",          oldVal:"Pending",   newVal:"Rejected",    at:"2024-08-05 13:44:01", ip:"192.168.1.14", reason:"Insufficient leave balance" },
