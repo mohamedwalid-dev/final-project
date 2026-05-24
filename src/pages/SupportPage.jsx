@@ -10,7 +10,7 @@ import {
   addInternalChatMessage,
   getInternalChatsByTicket,
 } from "../api/internalChatApi";
-import { createSocket } from "../socket/socket";
+import { connectSocket, socket } from "../socket/socket";
 import s from "../styles/SupportPage.module.css";
 import shell from "../styles/AppShell.module.css";
 
@@ -372,12 +372,11 @@ export default function SupportPage() {
   const [loadingTickets, setLoadingTickets] = useState(false);
   const [loadingChat, setLoadingChat] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
-  const [socketConnected, setSocketConnected] = useState(false);
+  const [socketConnected, setSocketConnected] = useState(() => socket.connected);
   const [savingTicket, setSavingTicket] = useState(false);
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [toast, setToast] = useState(null);
   const messagesEndRef = useRef(null);
-  const socketRef = useRef(null);
 
   const canCreateTicket = isSupportOrAdmin(currentUser);
 
@@ -432,22 +431,6 @@ export default function SupportPage() {
     });
   }, []);
 
-  const handleNewInternalMessage = useCallback((payload) => {
-    if (!payload?.message || !payload?.chatId) return;
-
-    setActiveChat((currentChat) => {
-      if (!currentChat?._id || String(currentChat._id) !== String(payload.chatId)) {
-        return currentChat;
-      }
-
-      return {
-        ...currentChat,
-        summary: payload.message.text || currentChat.summary,
-        messages: appendMessageOnce(currentChat.messages, payload.message),
-      };
-    });
-  }, []);
-
   useEffect(() => {
     const loadTimer = window.setTimeout(() => {
       loadTickets();
@@ -491,9 +474,6 @@ export default function SupportPage() {
   }, [activeTicket?._id, showToast]);
 
   useEffect(() => {
-    const socket = createSocket();
-    socketRef.current = socket;
-
     const handleConnect = () => setSocketConnected(true);
     const handleDisconnect = () => setSocketConnected(false);
     const handleConnectError = (error) => {
@@ -507,30 +487,51 @@ export default function SupportPage() {
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("connect_error", handleConnectError);
-    socket.on("newInternalChatMessage", handleNewInternalMessage);
     socket.on("internal_chat_error", handleInternalChatError);
 
-    socket.connect();
+    connectSocket();
 
     return () => {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
       socket.off("connect_error", handleConnectError);
-      socket.off("newInternalChatMessage", handleNewInternalMessage);
       socket.off("internal_chat_error", handleInternalChatError);
-      socket.disconnect();
-      socketRef.current = null;
     };
-  }, [handleNewInternalMessage, showToast]);
+  }, [showToast]);
 
   useEffect(() => {
-    if (!socketRef.current || !activeChat?._id) return undefined;
+    if (!activeChat?._id) return undefined;
 
-    const chatId = activeChat._id;
-    socketRef.current.emit("joinInternalChat", chatId);
+    const chatId = String(activeChat._id);
+    connectSocket();
+    socket.emit("joinInternalChat", chatId);
 
     return () => {
-      socketRef.current?.emit("leaveInternalChat", chatId);
+      socket.emit("leaveInternalChat", chatId);
+    };
+  }, [activeChat?._id]);
+
+  useEffect(() => {
+    const handleNewInternalMessage = (payload) => {
+      if (!payload?.message || String(payload.chatId) !== String(activeChat?._id)) return;
+
+      setActiveChat((currentChat) => {
+        if (!currentChat?._id || String(currentChat._id) !== String(payload.chatId)) {
+          return currentChat;
+        }
+
+        return {
+          ...currentChat,
+          summary: payload.message.text || currentChat.summary,
+          messages: appendMessageOnce(currentChat.messages, payload.message),
+        };
+      });
+    };
+
+    socket.on("newInternalChatMessage", handleNewInternalMessage);
+
+    return () => {
+      socket.off("newInternalChatMessage", handleNewInternalMessage);
     };
   }, [activeChat?._id]);
 

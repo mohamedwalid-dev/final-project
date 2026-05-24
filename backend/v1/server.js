@@ -15,8 +15,9 @@ import initializeSupportChatSocket from "./socket/supportChatSocket.js";
 
 const app = express();
 const httpServer = http.createServer(app);
+const clientUrl = process.env.CLIENT_URL || FRONTEND_URL;
 const corsOrigins = Array.from(
-  new Set([FRONTEND_URL, "http://localhost:5173", "http://localhost:3000"].filter(Boolean))
+  new Set([clientUrl, "http://localhost:5173", "http://localhost:3000"].filter(Boolean))
 );
 
 const io = new Server(httpServer, {

@@ -124,9 +124,15 @@ function emitInternalChatMessage(req, chat, message) {
   const io = req.app.get("io");
   if (!io || !chat?._id || !message) return;
 
-  io.to(chat._id.toString()).emit("newInternalChatMessage", {
-    chatId: chat._id,
-    ticketId: chat.ticketId?._id || chat.ticketId,
+  const roomId = String(chat._id);
+  const ticketId = chat.ticketId?._id || chat.ticketId;
+
+  console.log("Sending real-time message to room:", roomId);
+  console.log("Saved message:", toPayload(message));
+
+  io.to(roomId).emit("newInternalChatMessage", {
+    chatId: roomId,
+    ticketId: ticketId ? String(ticketId) : "",
     message: toPayload(message),
   });
 }

@@ -64,6 +64,7 @@ export const initializeSupportChatSocket = (io) => {
 
   io.on("connection", (socket) => {
     const userId = getUserId(socket.user);
+    console.log("Socket connected:", socket.id);
 
     socket.join(`user:${userId}`);
 
@@ -101,12 +102,13 @@ export const initializeSupportChatSocket = (io) => {
 
     socket.on("joinInternalChat", async (chatId) => {
       try {
-        if (!mongoose.isValidObjectId(chatId)) {
+        const roomId = String(chatId || "");
+        if (!mongoose.isValidObjectId(roomId)) {
           socket.emit("internal_chat_error", { message: "Invalid internal chat id." });
           return;
         }
 
-        const chat = await Chat.findById(chatId)
+        const chat = await Chat.findById(roomId)
           .select("ticketId requestedBy requestedDepartment participants")
           .populate({ path: "ticketId", select: "relatedDepartment" });
 
@@ -117,16 +119,24 @@ export const initializeSupportChatSocket = (io) => {
           return;
         }
 
-        socket.join(chatId);
+        socket.join(roomId);
+        console.log("Joined room:", roomId);
+        console.log(`Socket ${socket.id} joined internal chat room: ${roomId}`);
       } catch {
         socket.emit("internal_chat_error", { message: "Unable to join internal chat." });
       }
     });
 
     socket.on("leaveInternalChat", (chatId) => {
-      if (mongoose.isValidObjectId(chatId)) {
-        socket.leave(chatId);
+      const roomId = String(chatId || "");
+      if (mongoose.isValidObjectId(roomId)) {
+        socket.leave(roomId);
+        console.log(`Socket ${socket.id} left internal chat room: ${roomId}`);
       }
+    });
+
+    socket.on("disconnect", () => {
+      console.log("Socket disconnected:", socket.id);
     });
   });
 };
