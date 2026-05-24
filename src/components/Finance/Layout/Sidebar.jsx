@@ -103,7 +103,7 @@ export default function Sidebar({ activeNav, onNavChange }) {
         {!collapsed && (
           <div className="storage-box">
             <div className="storage-label">Prime Cloud</div>
-            <div className="storage-sub">Enterprise Storage: 84% full</div>
+            <div className="storage-sub"></div>
             <div className="storage-bar">
               <div className="storage-fill" />
             </div>

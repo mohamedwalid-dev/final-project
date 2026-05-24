@@ -930,6 +930,169 @@ function ViewProductModal({ isOpen, product, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ── STAT CARD
 // ─────────────────────────────────────────────────────────────────────────────
+function WarehouseInventoryModal({ isOpen, warehouse, products = [], onClose }) {
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const fn = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", fn);
+    return () => document.removeEventListener("keydown", fn);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || !warehouse) return null;
+
+  const warehouseProducts = products.filter((product) => {
+    return product.location === warehouse.name;
+  });
+
+  return (
+    <div
+      className={s.modalOverlay}
+      ref={overlayRef}
+      onClick={(e) => {
+        if (e.target === overlayRef.current) onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className={s.modal} style={{ maxWidth: "920px" }}>
+        <div className={s.modalHeader}>
+          <div className={s.modalTitleRow}>
+            <div className={s.modalTitleIcon} aria-hidden="true">
+              <Warehouse className={s.modalTitleIconSvg} />
+            </div>
+            <div>
+              <h2 className={s.modalTitle}>
+                Warehouse Inventory - {warehouse.name}
+              </h2>
+              <p className={s.modalSub}>
+                Showing all products stored in this warehouse.
+              </p>
+            </div>
+          </div>
+
+          <button
+            className={s.modalClose}
+            onClick={onClose}
+            aria-label="Close warehouse inventory modal"
+            title="Close"
+          >
+            <X aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className={s.modalBody}>
+          {warehouseProducts.length === 0 ? (
+            <div className={s.emptyState}>
+              <FolderOpen className={s.emptyIcon} aria-hidden="true" />
+              <p className={s.emptyTitle}>No products found</p>
+              <p className={s.emptySub}>
+                This warehouse does not contain any products yet.
+              </p>
+            </div>
+          ) : (
+            <div className={s.tableWrap}>
+              <table className={s.table} aria-label="Warehouse products">
+                <thead>
+                  <tr>
+                    <th className={s.th}>Product Name</th>
+                    <th className={s.th}>SKU</th>
+                    <th className={s.th}>Category</th>
+                    <th className={s.th}>Price</th>
+                    <th className={s.th}>Units</th>
+                    <th className={s.th}>Threshold</th>
+                    <th className={s.th}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {warehouseProducts.map((product) => {
+                    const sm = getStatusMeta(product.status);
+
+                    return (
+                      <tr key={product._id || product.id} className={s.tableRow}>
+                        <td className={s.td}>
+                          <div className={s.productCell}>
+                            <div className={s.productIconWrap} aria-hidden="true">
+                              <Package className={s.productIconSvg} />
+                            </div>
+                            <div>
+                              <p className={s.productName}>{product.name}</p>
+                              <p className={s.productCategory}>
+                                {product.location}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className={s.td}>
+                          <span className={s.skuBadge}>{product.sku}</span>
+                        </td>
+
+                        <td className={s.td}>
+                          <span className={s.locationText}>
+                            {product.category}
+                          </span>
+                        </td>
+
+                        <td className={s.td}>
+                          <span className={s.priceText}>
+                            {formatCurrency(product.price || 0)}
+                          </span>
+                        </td>
+
+                        <td className={s.td}>
+                          <span className={s.numberText}>
+                            {Number(product.units || 0).toLocaleString()}
+                          </span>
+                        </td>
+
+                        <td className={s.td}>
+                          <span className={s.numberText}>
+                            {Number(product.threshold || 0).toLocaleString()}
+                          </span>
+                        </td>
+
+                        <td className={s.td}>
+                          <span
+                            className={s.statusBadge}
+                            style={{
+                              background: sm.bg,
+                              color: sm.color,
+                            }}
+                          >
+                            {product.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className={s.modalFooter}>
+          <p className={s.modalFooterNote}>
+            Total products: {warehouseProducts.length}
+          </p>
+
+          <div className={s.modalFooterActions}>
+            <button className={s.btnGhost} onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const StatCard = memo(({ stat, loading, delay=0 }) => {
   const anim = useAnimateIn(delay);
   const changeColor = stat?.changeType==="up" ? "#2F9E44" : "#C92A2A";
@@ -1064,7 +1227,7 @@ const CriticalAlertsPanel = memo(({ loading, alerts = [] }) => {
 });
 CriticalAlertsPanel.displayName = "CriticalAlertsPanel";
 
-const WarehouseMapPanel = memo(({ loading, warehouses = [] }) => {
+const WarehouseMapPanel = memo(({ loading, warehouses = [], onManageWarehouse = () => {} }) => {
   const anim = useAnimateIn(350);
   const [expanded, setExpanded] = useState({});
   return (
@@ -1124,7 +1287,15 @@ const WarehouseMapPanel = memo(({ loading, warehouses = [] }) => {
                       <p className={s.whStatValue}>{wh.productsCount}</p>
                     </div>
                   </div>
-                  <button className={s.manageBtn}>Manage Warehouse Inventory</button>
+                  <button
+                    className={s.manageBtn}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onManageWarehouse(wh);
+                    }}
+                  >
+                    Manage Warehouse Inventory
+                  </button>
                 </div>
               )}
             </div>
@@ -1208,6 +1379,8 @@ export default function InventoryPage() {
   const [showEditProduct, setShowEditProduct] = useState(false);
   const [showExport,      setShowExport]      = useState(false);   // Export modal
   const [showAddProduct,  setShowAddProduct]  = useState(false);   // Add modal
+  const [selectedWarehouse, setSelectedWarehouse] = useState(null);
+  const [showWarehouseInventory, setShowWarehouseInventory] = useState(false);
   const [submitting,      setSubmitting]      = useState(false);
   const [importingCsv,    setImportingCsv]    = useState(false);
   const [rowMenu,         setRowMenu]         = useState({ open:false, product:null, top:0, left:0 });
@@ -1362,6 +1535,11 @@ export default function InventoryPage() {
   const handleEditProduct = useCallback((product) => {
     setSelectedProduct(product);
     setShowEditProduct(true);
+  }, []);
+
+  const handleManageWarehouseInventory = useCallback((warehouse) => {
+    setSelectedWarehouse(warehouse);
+    setShowWarehouseInventory(true);
   }, []);
 
   const openRowMenu = useCallback((product, event) => {
@@ -1772,7 +1950,11 @@ export default function InventoryPage() {
               {/* Right sidebar */}
               <aside className={s.rightSidebar}>
                 <CriticalAlertsPanel loading={loading} alerts={criticalAlerts} />
-                <WarehouseMapPanel loading={loading} warehouses={warehouseSummary} />
+                <WarehouseMapPanel
+                  loading={loading}
+                  warehouses={warehouseSummary}
+                  onManageWarehouse={handleManageWarehouseInventory}
+                />
                 <LiveFeedPanel loading={loading} feed={liveFeed} />
               </aside>
             </div>
@@ -1821,6 +2003,16 @@ export default function InventoryPage() {
         }}
         onUpdate={handleUpdateProduct}
         submitting={submitting}
+      />
+
+      <WarehouseInventoryModal
+        isOpen={showWarehouseInventory}
+        warehouse={selectedWarehouse}
+        products={products}
+        onClose={() => {
+          setShowWarehouseInventory(false);
+          setSelectedWarehouse(null);
+        }}
       />
     </>
   );

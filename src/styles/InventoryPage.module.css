@@ -508,6 +508,13 @@
   color: #495057;
 }
 
+.numberText {
+  color: #0f172a;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
 /* ── Stock Cell ── */
 .stockCell {
   display: flex;
