@@ -1,0 +1,15 @@
+# Local MongoDB for dev (no SSL). Start: docker compose -f docker-compose.mongo.yml up -d
+services:
+  mongodb:
+    image: mongo:7
+    container_name: ERP_DB_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - ERP_DB_mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: ERP
+
+volumes:
+  ERP_DB_mongo_data:

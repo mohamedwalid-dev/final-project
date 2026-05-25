@@ -1,29 +1,28 @@
 """
-🚀 Persistent Event Bus — v2.0 Production
-==========================================
+🚀 Persistent Event Bus — v3.0 Production (MongoDB/Motor)
+==========================================================
 File: app/core/event_bus_persistent.py
 
-Replaces the in-memory EventBus with Redis Streams.
-Events survive server restarts, crashes, and deployments.
+v3.0 Changes (Migration: MySQL → MongoDB):
+    ✅ DBEventQueue          → MongoEventQueue (Motor async بدل pymysql sync)
+    ✅ event_queue table     → MongoDB collection "event_queue"
+    ✅ FOR UPDATE SKIP LOCKED → findOneAndUpdate atomic claim بدل SQL row-lock
+    ✅ INSERT IGNORE          → upsert=True بدل MySQL ON DUPLICATE KEY
+    ✅ status='dead'          → status="dead" في MongoDB doc
+    ✅ كل import لـ core.db اتشال تماماً
+    ✅ get_finance_db() singleton من core.mongo_connect
 
 Architecture:
     Publisher  → Redis Stream  → Consumer Group → Handler
-    (fallback) → DB Queue      → Polling Job    → Handler
+    (fallback) → MongoDB Queue → Polling Job    → Handler
 
 Features:
     ✅ Redis Streams (primary)  — low latency, persistent
-    ✅ DB Queue (fallback)      — if Redis is down
+    ✅ MongoDB Queue (fallback) — if Redis is down
     ✅ Consumer Groups          — parallel workers, no duplicate processing
     ✅ Dead Letter Queue        — failed events after max retries
     ✅ At-least-once delivery   — ACK only after successful processing
     ✅ Graceful degradation     — never loses an event
-
-Usage:
-    from core.event_bus_persistent import get_event_bus
-
-    bus = get_event_bus()
-    await bus.publish("invoice_overdue", payload)
-    await bus.start_consuming()   # in background task
 """
 
 from __future__ import annotations
@@ -32,184 +31,194 @@ import asyncio
 import json
 import logging
 import os
-import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-REDIS_URL          = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-STREAM_PREFIX      = os.getenv("EVENT_STREAM_PREFIX", "synergy:events")
-CONSUMER_GROUP     = os.getenv("EVENT_CONSUMER_GROUP", "synergy-workers")
-CONSUMER_NAME      = os.getenv("EVENT_CONSUMER_NAME", f"worker-{uuid.uuid4().hex[:8]}")
-MAX_RETRIES        = int(os.getenv("EVENT_MAX_RETRIES", "3"))
-BLOCK_MS           = int(os.getenv("EVENT_BLOCK_MS", "2000"))   # 2s long-poll
-DLQ_STREAM         = f"{STREAM_PREFIX}:dlq"
-DB_QUEUE_TABLE     = "event_queue"
+REDIS_URL      = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+STREAM_PREFIX  = os.getenv("EVENT_STREAM_PREFIX", "synergy:events")
+CONSUMER_GROUP = os.getenv("EVENT_CONSUMER_GROUP", "synergy-workers")
+CONSUMER_NAME  = os.getenv("EVENT_CONSUMER_NAME", f"worker-{uuid.uuid4().hex[:8]}")
+MAX_RETRIES    = int(os.getenv("EVENT_MAX_RETRIES", "3"))
+BLOCK_MS       = int(os.getenv("EVENT_BLOCK_MS", "2000"))
+DLQ_STREAM     = f"{STREAM_PREFIX}:dlq"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 💾  DB-BACKED QUEUE  (fallback when Redis is unavailable)
+# 💾  MONGO-BACKED QUEUE  (fallback when Redis is unavailable)
 # ═════════════════════════════════════════════════════════════════════════════
 
-class DBEventQueue:
+class MongoEventQueue:
     """
-    Persistent event queue stored in MySQL.
-    Used automatically when Redis is unavailable.
+    Persistent event queue stored in MongoDB collection "event_queue".
+    بيتستخدم تلقائيًا لما Redis يبقى unavailable.
+
+    بدل DBEventQueue (كانت MySQL):
+        - _ensure_table()   → _ensure_indexes()   (Motor async)
+        - enqueue()         → insert_one()
+        - claim_batch()     → findOneAndUpdate × N  (atomic claim بدون SQL FOR UPDATE)
+        - ack()             → update_one (status=done)
+        - nack()            → update_one (retry_count++)
+        - get_stats()       → aggregate pipeline
     """
 
-    def _ensure_table(self) -> None:
+    def _get_col(self):
+        """بنجيب الـ collection من FinanceDB."""
+        from core.mongo_connect import get_finance_db
+        return get_finance_db().db["event_queue"]
+
+    async def _ensure_indexes(self) -> None:
+        """Indexes على event_queue — idempotent."""
         try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS event_queue (
-                        id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        event_id     VARCHAR(64)  NOT NULL UNIQUE,
-                        event_type   VARCHAR(100) NOT NULL,
-                        payload      LONGTEXT     NOT NULL,
-                        status       VARCHAR(20)  NOT NULL DEFAULT 'pending',
-                        retry_count  INT          NOT NULL DEFAULT 0,
-                        claimed_by   VARCHAR(100) DEFAULT NULL,
-                        claimed_at   DATETIME     DEFAULT NULL,
-                        processed_at DATETIME     DEFAULT NULL,
-                        error_msg    TEXT         DEFAULT NULL,
-                        created_at   DATETIME     DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_status     (status),
-                        INDEX idx_event_type (event_type),
-                        INDEX idx_created    (created_at)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                conn.commit()
+            from pymongo import IndexModel, ASCENDING
+            col = self._get_col()
+            await col.create_indexes([
+                IndexModel([("event_id", ASCENDING)], unique=True),
+                IndexModel([("status", ASCENDING)]),
+                IndexModel([("event_type", ASCENDING)]),
+                IndexModel([("created_at", ASCENDING)]),
+                # TTL: حذف done/dead events بعد 7 أيام تلقائيًا
+                IndexModel(
+                    [("created_at", ASCENDING)],
+                    expireAfterSeconds=7 * 86400,
+                    partialFilterExpression={"status": {"$in": ["done", "dead"]}},
+                    name="ttl_done_dead",
+                ),
+            ])
         except Exception as e:
-            logger.warning("⚠️ DBEventQueue table init failed: %s", e)
+            logger.warning("⚠️ MongoEventQueue index init failed: %s", e)
 
-    def enqueue(self, event_type: str, payload: dict) -> str:
-        """Insert event into DB queue. Returns event_id."""
-        self._ensure_table()
+    async def enqueue(self, event_type: str, payload: dict) -> str:
+        """Insert event into MongoDB queue. Returns event_id."""
+        await self._ensure_indexes()
         event_id = f"db-{uuid.uuid4().hex}"
         try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                cur.execute(
-                    """
-                    INSERT INTO event_queue (event_id, event_type, payload)
-                    VALUES (%s, %s, %s)
-                    """,
-                    (event_id, event_type, json.dumps(payload, default=str)),
-                )
-                conn.commit()
-            logger.debug("📥 [DBQueue] Enqueued %s → %s", event_type, event_id)
+            col = self._get_col()
+            await col.insert_one({
+                "event_id":    event_id,
+                "event_type":  event_type,
+                "payload":     json.dumps(payload, default=str),
+                "status":      "pending",
+                "retry_count": 0,
+                "claimed_by":  None,
+                "claimed_at":  None,
+                "processed_at":None,
+                "error_msg":   None,
+                "created_at":  _utcnow(),
+            })
+            logger.debug("📥 [MongoQueue] Enqueued %s → %s", event_type, event_id)
             return event_id
         except Exception as e:
-            logger.error("❌ [DBQueue] Enqueue failed: %s", e)
+            logger.error("❌ [MongoQueue] Enqueue failed: %s", e)
             return ""
 
-    def claim_batch(self, batch_size: int = 10) -> list[dict]:
-        """Atomically claim a batch of pending events."""
-        try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                # Claim with optimistic locking
-                cur.execute(
-                    """
-                    SELECT id, event_id, event_type, payload, retry_count
-                    FROM event_queue
-                    WHERE status = 'pending'
-                      AND retry_count < %s
-                    ORDER BY created_at ASC
-                    LIMIT %s
-                    FOR UPDATE SKIP LOCKED
-                    """,
-                    (MAX_RETRIES, batch_size),
-                )
-                rows = cur.fetchall()
-                if not rows:
-                    return []
+    async def claim_batch(self, batch_size: int = 10) -> list[dict]:
+        """
+        Atomically claim a batch of pending events.
 
-                ids = [r["id"] for r in rows]
-                placeholders = ",".join(["%s"] * len(ids))
-                cur.execute(
-                    f"""
-                    UPDATE event_queue
-                    SET status     = 'processing',
-                        claimed_by = %s,
-                        claimed_at = NOW()
-                    WHERE id IN ({placeholders})
-                    """,
-                    [CONSUMER_NAME] + ids,
-                )
-                conn.commit()
-                return rows
-        except Exception as e:
-            logger.error("❌ [DBQueue] Claim failed: %s", e)
-            return []
+        بدل SQL:
+            SELECT ... FOR UPDATE SKIP LOCKED
+            UPDATE ... SET status='processing'
 
-    def ack(self, row_id: int) -> None:
+        بنستخدم find_one_and_update في loop — كل مرة بنحاول نـ claim واحد.
+        لو فضى pending → نوقف.
+        """
+        col    = self._get_col()
+        claimed = []
+
+        for _ in range(batch_size):
+            try:
+                doc = await col.find_one_and_update(
+                    {
+                        "status":      "pending",
+                        "retry_count": {"$lt": MAX_RETRIES},
+                    },
+                    {
+                        "$set": {
+                            "status":     "processing",
+                            "claimed_by": CONSUMER_NAME,
+                            "claimed_at": _utcnow(),
+                        }
+                    },
+                    sort=[("created_at", 1)],
+                    return_document=True,   # بنرجع الـ doc بعد التعديل
+                )
+                if doc is None:
+                    break   # مفيش pending تاني
+                claimed.append(doc)
+            except Exception as e:
+                logger.error("❌ [MongoQueue] Claim failed: %s", e)
+                break
+
+        return claimed
+
+    async def ack(self, doc_id) -> None:
         """Mark event as successfully processed."""
         try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                cur.execute(
-                    "UPDATE event_queue SET status='done', processed_at=NOW() WHERE id=%s",
-                    (row_id,),
-                )
-                conn.commit()
+            col = self._get_col()
+            await col.update_one(
+                {"_id": doc_id},
+                {"$set": {"status": "done", "processed_at": _utcnow()}},
+            )
         except Exception as e:
-            logger.warning("⚠️ [DBQueue] ACK failed id=%s: %s", row_id, e)
+            logger.warning("⚠️ [MongoQueue] ACK failed id=%s: %s", doc_id, e)
 
-    def nack(self, row_id: int, error: str) -> None:
+    async def nack(self, doc_id, error: str) -> None:
         """Mark event as failed — increment retry counter."""
         try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                cur.execute(
-                    """
-                    UPDATE event_queue
-                    SET retry_count = retry_count + 1,
-                        status      = CASE
-                                        WHEN retry_count + 1 >= %s THEN 'dead'
-                                        ELSE 'pending'
-                                      END,
-                        error_msg   = %s,
-                        claimed_by  = NULL,
-                        claimed_at  = NULL
-                    WHERE id = %s
-                    """,
-                    (MAX_RETRIES, error[:1000], row_id),
-                )
-                conn.commit()
-        except Exception as e:
-            logger.warning("⚠️ [DBQueue] NACK failed id=%s: %s", row_id, e)
+            col = self._get_col()
+            # بنجيب retry_count الحالي عشان نحدد لو وصل الـ max
+            doc = await col.find_one({"_id": doc_id}, {"retry_count": 1})
+            current_retries = int(doc.get("retry_count", 0)) if doc else 0
+            new_retries     = current_retries + 1
+            new_status      = "dead" if new_retries >= MAX_RETRIES else "pending"
 
-    def get_stats(self) -> dict:
+            await col.update_one(
+                {"_id": doc_id},
+                {
+                    "$set": {
+                        "retry_count": new_retries,
+                        "status":      new_status,
+                        "error_msg":   error[:1000],
+                        "claimed_by":  None,
+                        "claimed_at":  None,
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning("⚠️ [MongoQueue] NACK failed id=%s: %s", doc_id, e)
+
+    async def get_stats(self) -> dict:
+        """Aggregation بدل SQL GROUP BY على status."""
         try:
-            from core.db import get_db
-            with get_db() as (_, cur):
-                cur.execute("""
-                    SELECT status, COUNT(*) as cnt
-                    FROM event_queue
-                    GROUP BY status
-                """)
-                rows = cur.fetchall()
-                return {r["status"]: r["cnt"] for r in rows}
+            col      = self._get_col()
+            pipeline = [
+                {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+            ]
+            docs = await col.aggregate(pipeline).to_list(None)
+            return {d["_id"]: d["count"] for d in docs}
         except Exception:
             return {}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 🔴  REDIS STREAMS BACKEND
+# 🔴  REDIS STREAMS BACKEND  (unchanged — لا علاقة بـ MySQL)
 # ═════════════════════════════════════════════════════════════════════════════
 
 class RedisStreamBackend:
     """Redis Streams publisher + consumer group."""
 
     def __init__(self) -> None:
-        self._redis: Any = None
-        self._available = False
-        self._lock = asyncio.Lock()
+        self._redis: Any    = None
+        self._available     = False
+        self._lock          = asyncio.Lock()
 
     async def _get_redis(self):
         if self._redis is None:
@@ -219,17 +228,17 @@ class RedisStreamBackend:
                         import redis.asyncio as aioredis
                         self._redis = aioredis.from_url(
                             REDIS_URL,
-                            encoding    = "utf-8",
-                            decode_responses = True,
+                            encoding             = "utf-8",
+                            decode_responses     = True,
                             socket_connect_timeout = 3,
-                            socket_timeout = 5,
+                            socket_timeout       = 5,
                         )
                         await self._redis.ping()
                         self._available = True
                         logger.info("✅ [Redis] Connected to %s", REDIS_URL)
                     except Exception as e:
                         logger.warning(
-                            "⚠️ [Redis] Unavailable (%s) — falling back to DB queue", e
+                            "⚠️ [Redis] Unavailable (%s) — falling back to MongoDB queue", e
                         )
                         self._redis    = None
                         self._available = False
@@ -250,9 +259,9 @@ class RedisStreamBackend:
                     "event_id":   event_id,
                     "event_type": event_type,
                     "payload":    json.dumps(payload, default=str),
-                    "published":  datetime.utcnow().isoformat(),
+                    "published":  _utcnow().isoformat(),
                 },
-                maxlen   = 50_000,   # keep last 50k events per stream
+                maxlen      = 50_000,
                 approximate = True,
             )
             return True
@@ -275,18 +284,14 @@ class RedisStreamBackend:
                     logger.warning("⚠️ [Redis] Group create warning: %s", e)
 
     async def read_batch(self, event_types: list[str], batch_size: int = 10) -> list[dict]:
-        """Read a batch from all registered streams."""
         r = await self._get_redis()
         if not r:
             return []
         try:
             streams = {self._stream_name(t): ">" for t in event_types}
             results = await r.xreadgroup(
-                CONSUMER_GROUP,
-                CONSUMER_NAME,
-                streams,
-                count  = batch_size,
-                block  = BLOCK_MS,
+                CONSUMER_GROUP, CONSUMER_NAME, streams,
+                count=batch_size, block=BLOCK_MS,
             )
             events = []
             if results:
@@ -328,9 +333,9 @@ class RedisStreamBackend:
                 {
                     "original_event": json.dumps(event, default=str),
                     "error":          error[:500],
-                    "failed_at":      datetime.utcnow().isoformat(),
+                    "failed_at":      _utcnow().isoformat(),
                 },
-                maxlen = 10_000,
+                maxlen=10_000,
             )
         except Exception:
             pass
@@ -356,15 +361,15 @@ class RedisStreamBackend:
 
 class PersistentEventBus:
     """
-    Production-grade event bus with Redis Streams + DB fallback.
+    Production-grade event bus with Redis Streams + MongoDB fallback.
 
     Publish flow:
         1. Try Redis XADD              ← fast, persistent
-        2. Fallback → DB event_queue   ← always works
+        2. Fallback → MongoDB queue    ← always works
 
     Consume flow:
         1. Try Redis XREADGROUP        ← preferred
-        2. Fallback → DB polling       ← when Redis is down
+        2. Fallback → MongoDB polling  ← when Redis is down
 
     Guarantees:
         - At-least-once delivery (ACK after success)
@@ -375,7 +380,7 @@ class PersistentEventBus:
     def __init__(self) -> None:
         self._handlers:  Dict[str, List[Callable]] = {}
         self._redis      = RedisStreamBackend()
-        self._db_queue   = DBEventQueue()
+        self._db_queue   = MongoEventQueue()   # ✅ MongoDB بدل MySQL
         self._running    = False
         self._stats      = {
             "published": 0, "consumed": 0,
@@ -383,7 +388,6 @@ class PersistentEventBus:
         }
 
     def subscribe(self, event_type: str, handler: Callable) -> None:
-        """Register an async handler for an event type."""
         if event_type not in self._handlers:
             self._handlers[event_type] = []
         self._handlers[event_type].append(handler)
@@ -392,19 +396,18 @@ class PersistentEventBus:
     async def publish(self, event_type: str, payload: dict) -> str:
         """
         Publish an event. Returns event_id.
-        Tries Redis first, falls back to DB automatically.
+        Tries Redis first, falls back to MongoDB automatically.
         """
         event_id = f"evt-{uuid.uuid4().hex[:16]}"
         payload  = {**payload, "event_id": event_id, "event_type": event_type}
 
-        # Try Redis first
         published_redis = await self._redis.publish(event_type, event_id, payload)
 
         if not published_redis:
-            # Fallback to DB — NEVER lose the event
-            db_id = self._db_queue.enqueue(event_type, payload)
+            # ✅ Fallback to MongoDB — NEVER lose the event
+            db_id = await self._db_queue.enqueue(event_type, payload)
             logger.info(
-                "📥 [EventBus] Published to DB queue: %s → %s",
+                "📥 [EventBus] Published to MongoDB queue: %s → %s",
                 event_type, db_id,
             )
         else:
@@ -416,19 +419,20 @@ class PersistentEventBus:
     async def start_consuming(self) -> None:
         """
         Start the consumer loop. Run this as a background task.
-
-        Automatically switches between Redis and DB polling.
+        Automatically switches between Redis and MongoDB polling.
         """
         self._running = True
         event_types   = list(self._handlers.keys())
 
-        # Ensure consumer groups exist
         await self._redis.ensure_consumer_group(event_types)
 
         logger.info(
             "🚀 [EventBus] Consumer started — watching: %s",
             ", ".join(event_types),
         )
+
+        # ✅ Ensure MongoDB indexes once at startup
+        await self._db_queue._ensure_indexes()
 
         while self._running:
             try:
@@ -440,13 +444,13 @@ class PersistentEventBus:
                             await self._dispatch_redis(event)
                         continue
 
-                # ── DB Fallback ───────────────────────────────────────────
-                rows = self._db_queue.claim_batch(batch_size=10)
+                # ── MongoDB Fallback ──────────────────────────────────────
+                rows = await self._db_queue.claim_batch(batch_size=10)
                 for row in rows:
                     await self._dispatch_db(row)
 
                 if not rows:
-                    await asyncio.sleep(2)   # idle sleep
+                    await asyncio.sleep(2)
 
             except asyncio.CancelledError:
                 logger.info("🛑 [EventBus] Consumer stopping...")
@@ -456,12 +460,10 @@ class PersistentEventBus:
                 await asyncio.sleep(5)
 
     async def _dispatch_redis(self, event: dict) -> None:
-        """Dispatch a Redis event to its handler. ACK on success, DLQ on failure."""
         event_type = event["event_type"]
         handlers   = self._handlers.get(event_type, [])
 
         if not handlers:
-            # No handler — ACK and ignore
             await self._redis.ack(event["stream"], event["redis_id"])
             return
 
@@ -481,7 +483,6 @@ class PersistentEventBus:
         if success:
             await self._redis.ack(event["stream"], event["redis_id"])
         else:
-            # Check retry count from payload
             retries = int(event["payload"].get("_retry_count", 0)) + 1
             if retries >= MAX_RETRIES:
                 await self._redis.send_to_dlq(event, "Max retries exceeded")
@@ -492,24 +493,27 @@ class PersistentEventBus:
                     retries, event["event_id"],
                 )
             else:
-                # Republish with incremented retry count
                 payload = {**event["payload"], "_retry_count": retries}
                 await self._redis.publish(event_type, event["event_id"], payload)
                 await self._redis.ack(event["stream"], event["redis_id"])
 
     async def _dispatch_db(self, row: dict) -> None:
-        """Dispatch a DB queue event to its handler."""
-        event_type = row["event_type"]
-        row_id     = row["id"]
+        """
+        Dispatch a MongoDB queue event to its handler.
+        بدل _dispatch_db القديم اللي كان بيستخدم dict من MySQL.
+        """
+        event_type = row.get("event_type", "")
+        doc_id     = row.get("_id")   # MongoDB ObjectId
 
         try:
-            payload   = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+            payload_raw = row.get("payload", "{}")
+            payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
         except Exception:
-            payload   = {}
+            payload = {}
 
         handlers = self._handlers.get(event_type, [])
         if not handlers:
-            self._db_queue.ack(row_id)
+            await self._db_queue.ack(doc_id)
             return
 
         success = True
@@ -518,24 +522,24 @@ class PersistentEventBus:
                 await handler({"type": event_type, "payload": payload})
                 self._stats["consumed"] += 1
             except Exception as e:
-                logger.error("❌ [EventBus] DB handler failed: %s", e)
+                logger.error("❌ [EventBus] MongoDB handler failed: %s", e)
                 self._stats["failed"] += 1
                 success = False
 
         if success:
-            self._db_queue.ack(row_id)
+            await self._db_queue.ack(doc_id)
         else:
-            self._db_queue.nack(row_id, "Handler exception")
+            await self._db_queue.nack(doc_id, "Handler exception")
 
     def stop(self) -> None:
         self._running = False
 
-    def get_stats(self) -> dict:
+    async def get_stats(self) -> dict:
         return {
             **self._stats,
-            "handlers":      {k: len(v) for k, v in self._handlers.items()},
+            "handlers":        {k: len(v) for k, v in self._handlers.items()},
             "redis_available": self._redis._available,
-            "db_queue":      self._db_queue.get_stats(),
+            "db_queue":        await self._db_queue.get_stats(),   # ✅ async
         }
 
 
@@ -560,14 +564,8 @@ async def start_event_bus_consumer() -> None:
             asyncio.create_task(start_event_bus_consumer())
     """
     bus = get_event_bus()
-
-    # Re-register all finance handlers
     from core.finance_trigger import register_finance_handlers
-    # Orchestrator import
-    from orchestrator.orchestrator import Orchestrator
-    orchestrator = Orchestrator()
-    register_finance_handlers_to_bus(orchestrator, bus)
-
+    register_finance_handlers_to_bus(None, bus)   # orchestrator injected separately
     await bus.start_consuming()
 
 

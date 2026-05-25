@@ -5,7 +5,7 @@ File: app/api/routes/finance_seed_routes.py
 
 Endpoints:
     POST /finance/seed          — seed if DB is empty
-    POST /finance/seed/reset    — truncate + reseed
+    POST /finance/seed/reset    — drop + reseed
     GET  /finance/seed/status   — check current data counts
     POST /finance/trigger-agent — manually fire the agent on all overdue invoices
 
@@ -17,7 +17,7 @@ Add to main.py:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -33,8 +33,8 @@ finance_seed_router = APIRouter()
 # ═════════════════════════════════════════════════════════════════════════════
 
 class SeedConfig(BaseModel):
-    customer_count: int   = Field(25, ge=5, le=200, description="Number of customers to generate")
-    reset:          bool  = Field(False, description="If true, truncate existing data first")
+    customer_count: int  = Field(25, ge=5, le=200, description="Number of customers to generate")
+    reset:          bool = Field(False, description="If true, drop existing data first")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -48,7 +48,7 @@ class SeedConfig(BaseModel):
     description=(
         "Generates realistic customers + invoices with varied risk profiles. "
         "Safe to call multiple times — skips if data already exists. "
-        "Use reset=true to truncate and reseed."
+        "Use reset=true to drop and reseed."
     ),
 )
 async def seed_finance_data(config: SeedConfig = SeedConfig()):
@@ -64,15 +64,14 @@ async def seed_finance_data(config: SeedConfig = SeedConfig()):
     """
     try:
         from scripts.finance_seed import run_seed
-        result = run_seed(reset=config.reset, customer_count=config.customer_count)
+        result = await run_seed(reset=config.reset, customer_count=config.customer_count)
         return {
             "status":    "success",
             "result":    result,
-            "next_step": "Call POST /trigger/run-now/overdue-invoices to run the AI agent",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "next_step": "Call POST /finance/trigger-agent to run the AI agent",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except ImportError:
-        # Fallback: run inline if scripts/ not in path
         return await _inline_seed(config.customer_count, config.reset)
     except Exception as e:
         logger.error("Seed failed: %s", e, exc_info=True)
@@ -83,23 +82,23 @@ async def seed_finance_data(config: SeedConfig = SeedConfig()):
     "/seed/reset",
     tags=["💰 Finance - Seed"],
     summary="🗑️ Reset + reseed finance data",
-    description="Truncates all finance data and seeds fresh realistic data.",
+    description="Drops all finance collections and seeds fresh realistic data.",
 )
 async def reset_and_seed(
     customer_count: int = Query(25, ge=5, le=200),
 ):
     """
-    🗑️ Full reset — truncates invoices, customers, finance_decisions,
-    finance_audit, finance_collection_log, then reseeds.
+    🗑️ Full reset — drops invoices, customers, finance_decisions,
+    finance_audit, finance_collection_log, legal_cases, then reseeds.
     """
     try:
         from scripts.finance_seed import run_seed
-        result = run_seed(reset=True, customer_count=customer_count)
+        result = await run_seed(reset=True, customer_count=customer_count)
         return {
             "status":    "reset_and_seeded",
             "result":    result,
-            "next_step": "Call POST /trigger/run-now/overdue-invoices to process all overdue invoices",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "next_step": "Call POST /finance/trigger-agent to process all overdue invoices",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except ImportError:
         return await _inline_seed(customer_count, reset=True)
@@ -118,49 +117,51 @@ async def finance_data_status():
     AI decisions made, and outstanding amount.
     """
     try:
-        from core.db import get_db
-        with get_db() as (_, cur):
+        from core.mongo_connect import get_finance_db
+        db = get_finance_db()
 
-            # Customers
-            cur.execute("SELECT COUNT(*) as c FROM customers")
-            r = cur.fetchone()
-            customer_count = r["c"] if isinstance(r, dict) else r[0]
+        # Customer count
+        customer_count = await db.customers.count_documents({})
 
-            # Invoices by status
-            cur.execute("SELECT status, COUNT(*) as c, SUM(amount) as total FROM invoices GROUP BY status")
-            invoice_rows = cur.fetchall()
-            invoices = {}
-            for row in invoice_rows:
-                if isinstance(row, dict):
-                    invoices[row["status"]] = {"count": row["c"], "amount_egp": float(row["total"] or 0)}
-                else:
-                    invoices[row[0]] = {"count": row[1], "amount_egp": float(row[2] or 0)}
+        # Invoices grouped by status
+        pipeline = [
+            {"$group": {
+                "_id":   "$status",
+                "count": {"$sum": 1},
+                "total": {"$sum": "$amount"},
+            }}
+        ]
+        invoice_docs = await db.invoices.aggregate(pipeline).to_list(None)
+        invoices = {
+            d["_id"]: {"count": d["count"], "amount_egp": round(d["total"], 2)}
+            for d in invoice_docs
+        }
 
-            # AI decisions
-            cur.execute("SELECT COUNT(*) as c FROM finance_decisions")
-            r = cur.fetchone()
-            decisions_count = (r["c"] if isinstance(r, dict) else r[0]) if r else 0
+        # AI decisions count
+        decisions_count = await db.decisions.count_documents({})
 
-            # Outstanding
-            cur.execute("""
-                SELECT SUM(amount) as t FROM invoices
-                WHERE status IN ('overdue','legal','suspended','payment_plan')
-            """)
-            r = cur.fetchone()
-            outstanding = float((r["c"] if isinstance(r, dict) else r[0]) or 0) if r else 0
+        # Outstanding amount
+        outstanding_pipeline = [
+            {"$match": {"status": {"$in": ["overdue", "legal", "suspended", "payment_plan"]}}},
+            {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+        ]
+        out_docs = await db.invoices.aggregate(outstanding_pipeline).to_list(1)
+        outstanding = round(out_docs[0]["total"], 2) if out_docs else 0.0
 
-            return {
-                "customers":        customer_count,
-                "invoices":         invoices,
-                "ai_decisions_made": decisions_count,
-                "outstanding_egp":  outstanding,
-                "has_data":         customer_count > 0,
-                "ready_for_agent":  sum(
-                    v["count"] for k, v in invoices.items()
-                    if k in ("overdue", "pending")
-                ) > 0,
-                "timestamp":        datetime.utcnow().isoformat() + "Z",
-            }
+        overdue_pending_count = sum(
+            v["count"] for k, v in invoices.items()
+            if k in ("overdue", "pending")
+        )
+
+        return {
+            "customers":         customer_count,
+            "invoices":          invoices,
+            "ai_decisions_made": decisions_count,
+            "outstanding_egp":   outstanding,
+            "has_data":          customer_count > 0,
+            "ready_for_agent":   overdue_pending_count > 0,
+            "timestamp":         datetime.now(timezone.utc).isoformat(),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -177,7 +178,7 @@ async def finance_data_status():
 async def trigger_finance_agent(background_tasks: BackgroundTasks):
     """
     🤖 Fire the Finance Agent immediately on all overdue invoices.
-    Runs in background — returns immediately with a job ID.
+    Runs in background — returns immediately.
     """
     from core.finance_trigger import job_scan_overdue_invoices, job_scan_new_invoices
 
@@ -192,9 +193,9 @@ async def trigger_finance_agent(background_tasks: BackgroundTasks):
     return {
         "status":    "triggered",
         "message":   "Finance AI agent fired on all overdue invoices",
-        "note":      "Results will appear in /finance/model/info and /finance/seed/status",
+        "note":      "Results will appear in /finance/seed/status",
         "monitor":   "Check server logs for real-time processing",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -209,10 +210,20 @@ async def _inline_seed(customer_count: int = 25, reset: bool = False) -> dict:
     """
     import random
     from datetime import timedelta
-    from core.db import get_db
-    from core.finance_db import init_finance_db
+    from core.mongo_connect import get_finance_db
+    from models.finance_models import build_customer, build_invoice
 
-    init_finance_db()
+    db = get_finance_db()
+
+    if reset:
+        await db.customers.drop()
+        await db.invoices.drop()
+        await db.decisions.drop()
+        await db.audit.drop()
+        await db.clog.drop()
+        await db.legal.drop()
+        await db.init_indexes()
+        logger.info("🗑️ [InlineSeed] All finance collections dropped and re-indexed")
 
     NAMES = [
         "Nile Tech Solutions", "Cairo Digital Hub", "AlexDev Co.",
@@ -221,52 +232,46 @@ async def _inline_seed(customer_count: int = 25, reset: bool = False) -> dict:
         "Aswan Real Estate", "Maadi Financial", "Zamalek Media",
         "October Tech Park", "Nasr City Education", "Shubra Food",
     ]
-    INDUSTRIES = ["technology","retail","manufacturing","construction",
-                  "hospitality","real_estate","transportation","healthcare"]
+    INDUSTRIES = [
+        "technology", "retail", "manufacturing", "construction",
+        "hospitality", "real_estate", "transportation", "healthcare",
+    ]
 
-    with get_db() as (conn, cur):
-        if reset:
-            cur.execute("SET FOREIGN_KEY_CHECKS=0")
-            for tbl in ["finance_collection_log","finance_audit",
-                        "finance_decisions","invoices","customers"]:
-                try:
-                    cur.execute(f"TRUNCATE TABLE {tbl}")
-                except Exception:
-                    pass
-            cur.execute("SET FOREIGN_KEY_CHECKS=1")
-            conn.commit()
+    customer_ids = []
+    for i, name in enumerate(random.sample(NAMES, min(customer_count, len(NAMES)))):
+        doc = build_customer({
+            "name":               name,
+            "email":              f"contact{i}@{name[:8].lower().replace(' ', '')}.com",
+            "industry":           random.choice(INDUSTRIES),
+            "credit_score":       random.randint(300, 850),
+            "account_age_months": random.randint(3, 60),
+            "service_status":     "active",
+        })
+        result = await db.customers.insert_one(doc)
+        customer_ids.append(result.inserted_id)
 
-        customer_ids = []
-        for i, name in enumerate(random.sample(NAMES, min(customer_count, len(NAMES)))):
-            credit = random.randint(300, 850)
-            cur.execute(
-                "INSERT INTO customers (name,email,industry,credit_score,account_age_months) "
-                "VALUES (%s,%s,%s,%s,%s)",
-                (name, f"contact{i}@{name[:8].lower().replace(' ','')}.com",
-                 random.choice(INDUSTRIES), credit, random.randint(3, 60)),
+    invoice_count = 0
+    for cid in customer_ids:
+        for _ in range(random.randint(1, 3)):
+            overdue_days = random.choice([0, 7, 20, 45, 90, 150])
+            status = (
+                "paid"    if random.random() < 0.15
+                else "overdue" if overdue_days > 5
+                else "pending"
             )
-            customer_ids.append(cur.lastrowid)
-        conn.commit()
-
-        invoice_count = 0
-        for cid in customer_ids:
-            for _ in range(random.randint(1, 3)):
-                overdue = random.choice([0, 7, 20, 45, 90, 150])
-                status  = ("paid" if random.random() < 0.15
-                           else "overdue" if overdue > 5 else "pending")
-                due_date = datetime.utcnow() - timedelta(days=overdue)
-                cur.execute(
-                    "INSERT INTO invoices (customer_id,amount,due_date,status,overdue_days) "
-                    "VALUES (%s,%s,%s,%s,%s)",
-                    (cid, random.choice([2500,7500,15000,40000,85000]),
-                     due_date, status, max(0, overdue)),
-                )
-                invoice_count += 1
-        conn.commit()
+            due_date = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=overdue_days)
+            doc = build_invoice({
+                "customer_id": cid,
+                "amount":      random.choice([2500, 7500, 15000, 40000, 85000]),
+                "due_date":    due_date,
+                "status":      status,
+            })
+            await db.invoices.insert_one(doc)
+            invoice_count += 1
 
     return {
-        "seeded":         True,
-        "customers":      len(customer_ids),
+        "seeded":          True,
+        "customers":       len(customer_ids),
         "invoices_approx": invoice_count,
-        "method":         "inline_fallback",
+        "method":          "inline_fallback",
     }

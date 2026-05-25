@@ -20,6 +20,7 @@ class Orchestrator:
         self.logger   = AuditLogger()
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Any event that enters the system enters from here. 
     def handle(self, event: dict) -> dict:
         """
         📥 Main entry: receives any event and routes it.

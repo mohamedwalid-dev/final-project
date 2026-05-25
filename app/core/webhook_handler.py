@@ -23,94 +23,90 @@ import hashlib
 import hmac
 import logging
 import os
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+from bson import ObjectId
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from core.db import create_event, create_ticket, create_lead, create_leave_request, write_audit_log
 
 from core.event_bus import event_bus
+from core.mongo_connect import get_hr_db, get_finance_db, get_shared_mongo_client
 
 logger = logging.getLogger(__name__)
 
-# ─── Webhook Secret (لـ signature verification) ───────────────────────────────
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me-in-production")
-
-async def check_webhook_signature(
-    request: Request,
-    x_webhook_signature: Optional[str] = Header(None, alias="X-Webhook-Signature"),
-    x_webhook_timestamp: Optional[str] = Header(None, alias="X-Webhook-Timestamp"),
-):
-    """Dependency to verify the HMAC signature for all webhooks."""
-    if WEBHOOK_SECRET != "change-me-in-production":
-        raw_body = await request.body()
-        if not verify_signature(raw_body, x_webhook_signature or "", x_webhook_timestamp or ""):
-            logger.warning(f"🔐 [Webhook] Invalid signature/timestamp from {request.client.host}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid webhook signature or timestamp. Check X-Webhook-Signature and X-Webhook-Timestamp headers.",
-            )
-
-from fastapi import Depends
-webhook_router = APIRouter(dependencies=[Depends(check_webhook_signature)])
+# ── MongoDB DB name ────────────────────────────────────────────────────────
+_MONGO_DB = os.getenv("MONGO_DB", "synergy_erp").strip()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 🔐  Signature Verification
 # ═════════════════════════════════════════════════════════════════════════════
 
-import time
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me-in-production")
+
 
 def verify_signature(body: bytes, signature: str, timestamp_str: str) -> bool:
     """
-    تحقق من الـ Signature مع حماية ضد هجمات إعادة الإرسال (Replay Attacks).
-    الـ payload الجديد بيبقى: timestamp + "." + body
+    تحقق من الـ Signature مع حماية ضد Replay Attacks (نافذة 5 دقائق).
+    الـ signed payload: timestamp + "." + body  (نفس طريقة Stripe)
     """
     if not signature or not timestamp_str:
         return False
-        
+
     try:
         timestamp = int(timestamp_str)
     except ValueError:
         return False
 
-    # 1. Replay Attack Prevention (5 دقائق)
-    current_time = int(time.time())
-    if abs(current_time - timestamp) > 300:
-        logger.warning(f"⏰ [Webhook] Signature expired or too far in the future. ts={timestamp}")
+    if abs(int(time.time()) - timestamp) > 300:
+        logger.warning(f"⏰ [Webhook] Signature expired. ts={timestamp}")
         return False
 
-    # 2. بناء النص اللي هيتعمله Hash بنفس طريقة Stripe
     signed_payload = f"{timestamp}.".encode() + body
-
     expected = "sha256=" + hmac.new(
         WEBHOOK_SECRET.encode(),
         signed_payload,
         hashlib.sha256,
     ).hexdigest()
-    
+
     return hmac.compare_digest(expected, signature)
 
 
+async def check_webhook_signature(
+    request: Request,
+    x_webhook_signature: Optional[str] = Header(None, alias="X-Webhook-Signature"),
+    x_webhook_timestamp: Optional[str] = Header(None, alias="X-Webhook-Timestamp"),
+):
+    """Dependency — يتحقق من HMAC signature لكل الـ webhooks."""
+    if WEBHOOK_SECRET != "change-me-in-production":
+        raw_body = await request.body()
+        if not verify_signature(raw_body, x_webhook_signature or "", x_webhook_timestamp or ""):
+            logger.warning(f"🔐 [Webhook] Invalid signature from {request.client.host}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid webhook signature or timestamp.",
+            )
+
+
+webhook_router = APIRouter(dependencies=[Depends(check_webhook_signature)])
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-# 🧠  AI Category Derivation (lightweight heuristic — AI agent يكمّل بعدين)
+# 🧠  Category Derivation
 # ═════════════════════════════════════════════════════════════════════════════
 
 _CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "billing":      ["invoice", "payment", "charge", "refund", "فاتورة", "دفع", "سداد"],
-    "technical":    ["error", "bug", "crash", "slow", "خطأ", "مشكلة", "تعطل"],
-    "account":      ["login", "password", "access", "تسجيل", "حساب", "دخول"],
-    "shipping":     ["delivery", "shipment", "order", "شحن", "توصيل", "طلب"],
-    "general":      [],   # fallback
+    "billing":   ["invoice", "payment", "charge", "refund", "فاتورة", "دفع", "سداد"],
+    "technical": ["error", "bug", "crash", "slow", "خطأ", "مشكلة", "تعطل"],
+    "account":   ["login", "password", "access", "تسجيل", "حساب", "دخول"],
+    "shipping":  ["delivery", "shipment", "order", "شحن", "توصيل", "طلب"],
+    "general":   [],
 }
 
+
 def derive_category(text: str) -> str:
-    """
-    يشتق الـ category من نص الـ message.
-    هيورجع واحدة من: billing / technical / account / shipping / general
-    الـ AI agent بعدين ممكن يعيد التصنيف بدقة أكبر.
-    """
     lower = text.lower()
     for category, keywords in _CATEGORY_KEYWORDS.items():
         if any(kw in lower for kw in keywords):
@@ -119,49 +115,137 @@ def derive_category(text: str) -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 🗄️  MongoDB Helpers  (بيحلوا محل core.db القديمة)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def _save_event(
+    event_type: str,
+    entity: str,
+    entity_id: str,
+    payload: dict,
+) -> str:
+    """يحفظ event في events_queue collection ويرجع string ID."""
+    try:
+        client  = get_shared_mongo_client()
+        col     = client[_MONGO_DB]["events_queue"]
+        result  = await col.insert_one({
+            "event_type": event_type,
+            "entity":     entity,
+            "entity_id":  str(entity_id),
+            "payload":    payload,
+            "status":     "pending",
+            "created_at": _utcnow(),
+        })
+        return str(result.inserted_id)
+    except Exception as e:
+        logger.error(f"[Webhook] _save_event failed: {e}")
+        return "0"
+
+
+async def _save_ticket(data: dict) -> str:
+    """يحفظ support ticket في tickets collection ويرجع string ID."""
+    try:
+        client = get_shared_mongo_client()
+        col    = client[_MONGO_DB]["tickets"]
+        result = await col.insert_one({
+            "customer_id": data.get("customer_id"),
+            "message":     data.get("message", ""),
+            "category":    data.get("category", "general"),
+            "priority":    data.get("priority", "medium"),
+            "status":      "open",
+            "created_at":  _utcnow(),
+            "updated_at":  _utcnow(),
+        })
+        return str(result.inserted_id)
+    except Exception as e:
+        logger.error(f"[Webhook] _save_ticket failed: {e}")
+        return "0"
+
+
+async def _save_lead(data: dict) -> str:
+    """يحفظ CRM lead في leads collection ويرجع string ID."""
+    try:
+        client = get_shared_mongo_client()
+        col    = client[_MONGO_DB]["leads"]
+        result = await col.insert_one({
+            "name":       data.get("name", ""),
+            "email":      data.get("email", ""),
+            "phone":      data.get("phone", ""),
+            "source":     data.get("source", "webhook"),
+            "notes":      data.get("notes", ""),
+            "status":     "new",
+            "score":      None,
+            "created_at": _utcnow(),
+            "updated_at": _utcnow(),
+        })
+        return str(result.inserted_id)
+    except Exception as e:
+        logger.error(f"[Webhook] _save_lead failed: {e}")
+        return "0"
+
+
+async def _save_audit_log(
+    action: str,
+    entity: str,
+    entity_id: str,
+    performed_by: str,
+    details: str = "",
+) -> None:
+    """يكتب audit log entry في audit_log collection."""
+    try:
+        client = get_shared_mongo_client()
+        col    = client[_MONGO_DB]["audit_log"]
+        await col.insert_one({
+            "action":       action,
+            "entity":       entity,
+            "entity_id":    str(entity_id),
+            "performed_by": performed_by,
+            "details":      details,
+            "created_at":   _utcnow(),
+        })
+    except Exception as e:
+        logger.error(f"[Webhook] _save_audit_log failed: {e}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 📦  Request Schemas
 # ═════════════════════════════════════════════════════════════════════════════
 
 class WebhookLeavePayload(BaseModel):
-    employee_id:    str = Field(..., description="ID الموظف")
-    requested_days: int = Field(..., gt=0)
-    leave_type:     str = Field("annual")
-    reason:         str = Field("")
-    leave_balance:  int = Field(0, ge=0)
-    employee_name:  Optional[str] = None
-    department:     Optional[str] = None
+    employee_id:    str            = Field(..., description="ID الموظف")
+    requested_days: int            = Field(..., gt=0)
+    leave_type:     str            = Field("annual")
+    reason:         str            = Field("")
+    leave_balance:  int            = Field(0, ge=0)
+    employee_name:  Optional[str]  = None
+    department:     Optional[str]  = None
 
 
 class WebhookTicketPayload(BaseModel):
-    """
-    ✅ Updated schema — يتطابق مع tickets table:
-        tickets(customer_id, message, category, priority, status)
-
-    subject + description → message (AI يفهم الكل من الـ message)
-    category → derived automatically أو manual override
-    """
-    customer_id:    Optional[int]  = None
-    customer_name:  Optional[str]  = None
-    subject:        str            = Field(..., min_length=5,  description="موضوع التذكرة")
-    description:    str            = Field(..., min_length=10, description="تفاصيل المشكلة")
-    priority:       str            = Field("medium",           description="low|medium|high|critical")
-    # category اختياري — لو مش موجود بيتحسب automatically
-    category:       Optional[str]  = Field(None,              description="billing|technical|account|shipping|general")
+    customer_id:   Optional[int]  = None
+    customer_name: Optional[str]  = None
+    subject:       str            = Field(..., min_length=5)
+    description:   str            = Field(..., min_length=10)
+    priority:      str            = Field("medium")
+    category:      Optional[str]  = Field(None)
 
 
 class WebhookLeadPayload(BaseModel):
     name:   str
     email:  str
     phone:  Optional[str] = None
-    source: str = Field("webhook")
-    notes:  str = Field("")
+    source: str           = Field("webhook")
+    notes:  str           = Field("")
 
 
 class GenericWebhookPayload(BaseModel):
-    """للـ events الـ custom من أنظمة خارجية."""
     event_type: str  = Field(..., description="نوع الـ event")
     payload:    dict = Field(default_factory=dict)
-    source:     str  = Field("external", description="مصدر الـ webhook")
+    source:     str  = Field("external")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -172,65 +256,73 @@ class GenericWebhookPayload(BaseModel):
     "/leave",
     status_code=status.HTTP_202_ACCEPTED,
     summary="🏖️ Trigger: Leave Request",
-    description="Frontend/HR system بيبعت طلب إجازة → Orchestrator يشتغل فورًا",
 )
 async def webhook_leave_request(
     body:             WebhookLeavePayload,
     background_tasks: BackgroundTasks,
 ):
-    payload = body.dict()
-    payload["source"] = "webhook"
+    """
+    Frontend/HR system بيبعت طلب إجازة → HR Agent يشتغل فورًا.
 
-    # ✅ احفظ الـ leave في DB الأول عشان تاخد ID حقيقي
-    leave_db_data = {
-        "employee_id": body.employee_id,
-        "leave_days":  body.requested_days,  # ✅ الاسم الصح للـ DB column
-        "leave_type":  body.leave_type,
-        "reason":      body.reason,
-        # ✅ خلاص — بس الـ 4 دول اللي الـ INSERT محتاجهم
+    ✅ يحفظ في hr_db.leaves (HRDB.create_leave_request)
+    ✅ يحفظ في events_queue كـ backup
+    ✅ يكتب audit log
+    ✅ يبعت event للـ EventBus async
+    """
+    hr_db = get_hr_db()
+
+    # ── 1. حفظ في HR MongoDB (leaves collection) ──────────────────────────
+    leave_data = {
+        "employee_id":   body.employee_id,
+        "employee_name": body.employee_name or "",
+        "department":    body.department or "",
+        "leave_type":    body.leave_type,
+        "leave_days":    body.requested_days,
+        "reason":        body.reason,
+        "leave_balance": body.leave_balance,
+        "status":        "pending",
     }
 
-
     try:
-        leave_id = create_leave_request(leave_db_data)    # ✅ ID حقيقي من DB
+        leave_id = await hr_db.create_leave_request(leave_data)
     except Exception as e:
-        logger.warning(f"⚠️ [Webhook] Could not save leave to DB: {e}. Continuing without DB ID.")
-        leave_id = 0
+        logger.warning(f"⚠️ [Webhook] Could not save leave to DB: {e}")
+        leave_id = "0"
 
-    payload["leave_id"] = leave_id               # ✅ بيتبعت في الـ event
+    # ── 2. Event payload للـ AI Agent ──────────────────────────────────────
+    payload = {
+        **leave_data,
+        "leave_id":  leave_id,
+        "source":    "webhook",
+    }
 
-    # حفظ في event queue كـ backup
-    event_id = create_event(
-        event_type="leave_requested",
-        entity="leaves",
-        entity_id=leave_id,                      # ✅ ID حقيقي بدل 0
-        payload=payload,
+    # ── 3. حفظ في events_queue + audit ────────────────────────────────────
+    event_id = await _save_event("leave_requested", "leaves", leave_id, payload)
+
+    await _save_audit_log(
+        action       = "webhook_leave_received",
+        entity       = "leaves",
+        entity_id    = leave_id,
+        performed_by = f"webhook_employee_{body.employee_id}",
+        details      = f"{body.requested_days} days — {body.leave_type}",
     )
 
+    # ── 4. Publish للـ EventBus في الـ background ──────────────────────────
     background_tasks.add_task(
         event_bus.publish,
         "leave_requested",
         {**payload, "webhook_event_id": event_id},
     )
 
-    background_tasks.add_task(
-        write_audit_log,
-        action="webhook_leave_received",
-        entity="leaves",
-        entity_id=leave_id,                      # ✅ ID حقيقي
-        performed_by=f"webhook_employee_{body.employee_id}",
-        details=f"{body.requested_days} days — {body.leave_type}",
-    )
-
-    logger.info(f"🌐 [Webhook] Leave #{leave_id} request received — employee {body.employee_id}")
+    logger.info(f"🌐 [Webhook] Leave #{leave_id} — employee {body.employee_id}")
 
     return {
         "accepted":   True,
-        "leave_id":   leave_id,                  # ✅ في الـ response كمان
+        "leave_id":   leave_id,
         "event_id":   event_id,
         "event_type": "leave_requested",
         "processing": "async — AI agent will evaluate shortly",
-        "timestamp":  datetime.utcnow().isoformat() + "Z",
+        "timestamp":  _utcnow().isoformat(),
     }
 
 
@@ -238,60 +330,50 @@ async def webhook_leave_request(
     "/ticket",
     status_code=status.HTTP_202_ACCEPTED,
     summary="🎫 Trigger: Support Ticket",
-    description="Customer يفتح ticket من الـ frontend → Support Agent يشتغل فورًا",
 )
 async def webhook_ticket_created(
     body:             WebhookTicketPayload,
     background_tasks: BackgroundTasks,
 ):
     """
-    🌐 Webhook Trigger — ticket جديد من customer.
+    Customer يفتح ticket من الـ frontend → Support Agent يشتغل فورًا.
 
-    ✅ subject + description → message واحدة
-    ✅ category → derived automatically لو مش موجود
-    ✅ AI agent يكمّل التصنيف الدقيق بعدين
+    ✅ يحفظ في tickets collection
+    ✅ category بيتحسب تلقائيًا لو مش موجود
+    ✅ يبعت event للـ EventBus async
     """
-    # ── 1. بناء الـ message من subject + description ──────────────────────────
+    # ── 1. بناء الـ message + category ────────────────────────────────────
     ticket_message = f"{body.subject} - {body.description}"
+    category       = body.category or derive_category(ticket_message)
 
-    # ── 2. category: manual override أو auto-derived ─────────────────────────
-    category = body.category or derive_category(ticket_message)
-
-    # ── 3. حفظ في DB بالـ schema الصح ─────────────────────────────────────────
-    ticket_db_data = {
+    # ── 2. حفظ في MongoDB tickets collection ──────────────────────────────
+    ticket_data = {
         "customer_id": body.customer_id,
-        "message":     ticket_message,   # ✅ message بدل subject/description
-        "category":    category,         # ✅ derived or manual
+        "message":     ticket_message,
+        "category":    category,
         "priority":    body.priority,
-        # status بيبدأ "open" تلقائيًا من الـ DB default
     }
 
     try:
-        ticket_id = create_ticket(ticket_db_data)
+        ticket_id = await _save_ticket(ticket_data)
     except Exception as e:
-        logger.warning(f"⚠️ [Webhook] Could not save ticket to DB: {e}. Continuing without DB ID.")
-        ticket_id = 0
+        logger.warning(f"⚠️ [Webhook] Could not save ticket to DB: {e}")
+        ticket_id = "0"
 
-    # ── 4. Event payload — بيتبعت للـ AI Agent ───────────────────────────────
-    # بنحط subject و description لأن الـ AI ممكن يحتاجهم للفهم الكامل
+    # ── 3. Event payload ───────────────────────────────────────────────────
     payload = {
         "customer_id":   body.customer_id,
         "customer_name": body.customer_name,
         "subject":       body.subject,
         "description":   body.description,
-        "message":       ticket_message,   # الـ combined message
+        "message":       ticket_message,
         "category":      category,
         "priority":      body.priority,
         "ticket_id":     ticket_id,
         "source":        "webhook",
     }
 
-    event_id = create_event(
-        event_type="ticket_created",
-        entity="tickets",
-        entity_id=ticket_id,
-        payload=payload,
-    )
+    event_id = await _save_event("ticket_created", "tickets", ticket_id, payload)
 
     background_tasks.add_task(
         event_bus.publish,
@@ -299,10 +381,7 @@ async def webhook_ticket_created(
         {**payload, "webhook_event_id": event_id},
     )
 
-    logger.info(
-        f"🌐 [Webhook] Ticket #{ticket_id} received — "
-        f"category: {category} | priority: {body.priority}"
-    )
+    logger.info(f"🌐 [Webhook] Ticket #{ticket_id} — category: {category} | priority: {body.priority}")
 
     return {
         "accepted":   True,
@@ -312,7 +391,7 @@ async def webhook_ticket_created(
         "category":   category,
         "priority":   body.priority,
         "processing": "async — support agent notified",
-        "timestamp":  datetime.utcnow().isoformat() + "Z",
+        "timestamp":  _utcnow().isoformat(),
     }
 
 
@@ -320,17 +399,18 @@ async def webhook_ticket_created(
     "/lead",
     status_code=status.HTTP_202_ACCEPTED,
     summary="💼 Trigger: New Lead",
-    description="CRM أو landing page بيبعت lead جديد → CRM Agent يصنفه فورًا",
 )
 async def webhook_lead_added(
     body:             WebhookLeadPayload,
     background_tasks: BackgroundTasks,
 ):
-    """🌐 Webhook Trigger — lead جديد من CRM أو landing page."""
-    payload = body.dict()
-    payload["source"] = "webhook"
+    """
+    CRM أو landing page بيبعت lead جديد → CRM Agent يصنفه فورًا.
 
-    lead_db_data = {
+    ✅ يحفظ في leads collection
+    ✅ يبعت event للـ EventBus async
+    """
+    lead_data = {
         "name":   body.name,
         "email":  body.email,
         "phone":  body.phone or "",
@@ -339,19 +419,14 @@ async def webhook_lead_added(
     }
 
     try:
-        lead_id = create_lead(lead_db_data)
+        lead_id = await _save_lead(lead_data)
     except Exception as e:
-        logger.warning(f"⚠️ [Webhook] Could not save lead to DB: {e}. Continuing without DB ID.")
-        lead_id = 0
+        logger.warning(f"⚠️ [Webhook] Could not save lead to DB: {e}")
+        lead_id = "0"
 
-    payload["lead_id"] = lead_id
+    payload = {**lead_data, "lead_id": lead_id, "source": "webhook"}
 
-    event_id = create_event(
-        event_type="lead_added",
-        entity="leads",
-        entity_id=lead_id,
-        payload=payload,
-    )
+    event_id = await _save_event("lead_added", "leads", lead_id, payload)
 
     background_tasks.add_task(
         event_bus.publish,
@@ -359,7 +434,7 @@ async def webhook_lead_added(
         {**payload, "webhook_event_id": event_id},
     )
 
-    logger.info(f"🌐 [Webhook] Lead #{lead_id} received — {body.name} ({body.email})")
+    logger.info(f"🌐 [Webhook] Lead #{lead_id} — {body.name} ({body.email})")
 
     return {
         "accepted":   True,
@@ -367,7 +442,7 @@ async def webhook_lead_added(
         "event_id":   event_id,
         "event_type": "lead_added",
         "processing": "async — CRM agent will score lead shortly",
-        "timestamp":  datetime.utcnow().isoformat() + "Z",
+        "timestamp":  _utcnow().isoformat(),
     }
 
 
@@ -375,23 +450,16 @@ async def webhook_lead_added(
     "/generic",
     status_code=status.HTTP_202_ACCEPTED,
     summary="⚡ Generic Webhook",
-    description="أي event من أي نظام خارجي (Zapier, Make, N8N, ...)",
 )
 async def webhook_generic(
     body:             GenericWebhookPayload,
     background_tasks: BackgroundTasks,
 ):
     """
-    🌐 Generic Webhook — يقبل أي event من أي مصدر.
+    أي event من أي نظام خارجي (Zapier, Make, N8N, ...).
     """
-    payload = {**body.payload, "source": body.source}
-
-    event_id = create_event(
-        event_type=body.event_type,
-        entity="webhook",
-        entity_id=0,
-        payload=payload,
-    )
+    payload  = {**body.payload, "source": body.source}
+    event_id = await _save_event(body.event_type, "webhook", "0", payload)
 
     background_tasks.add_task(
         event_bus.publish,
@@ -406,20 +474,16 @@ async def webhook_generic(
         "event_id":   event_id,
         "event_type": body.event_type,
         "source":     body.source,
-        "timestamp":  datetime.utcnow().isoformat() + "Z",
+        "timestamp":  _utcnow().isoformat(),
     }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 📊  WEBHOOK STATUS
+# 📊  STATUS & HISTORY
 # ═════════════════════════════════════════════════════════════════════════════
 
-@webhook_router.get(
-    "/status",
-    summary="📊 Webhook System Status",
-)
+@webhook_router.get("/status", summary="📊 Webhook System Status")
 async def webhook_status():
-    """إرجع status الـ Webhook system والـ EventBus stats."""
     return {
         "webhook_system": "active",
         "endpoints": [
@@ -429,17 +493,13 @@ async def webhook_status():
             "POST /webhooks/generic  — Custom event trigger",
         ],
         "signature_verification": WEBHOOK_SECRET != "change-me-in-production",
-        "event_bus_stats": event_bus.get_stats(),
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "event_bus_stats":        event_bus.get_stats(),
+        "timestamp":              _utcnow().isoformat(),
     }
 
 
-@webhook_router.get(    
-    "/history",
-    summary="📜 Recent Events History",
-)
+@webhook_router.get("/history", summary="📜 Recent Events History")
 async def webhook_history(event_type: Optional[str] = None, limit: int = 20):
-    """اجيب آخر الـ events اللي اتبعتت عبر الـ EventBus."""
     history = event_bus.get_history(event_type=event_type, limit=limit)
     return {
         "count":      len(history),

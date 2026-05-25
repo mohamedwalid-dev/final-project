@@ -1,29 +1,21 @@
 """
-trigger.py — Trigger Engine v5.1
-==================================
+trigger.py — Trigger Engine v6.0 (MongoDB/Motor)
+==================================================
 File: app/core/trigger.py
 
-Handles:
-    - APScheduler jobs (scan DB every N seconds)
-    - EventBus handler registration
-    - Orchestrator bridge for all HR domains
+v6.0 Changes (Migration: MySQL → MongoDB):
+    ✅ job_scan_pending_leaves()         ← HRDB.get_pending_leaves()     بدل SQL
+    ✅ job_scan_pending_tickets()        ← FinanceDB / direct Motor query بدل SQL
+    ✅ job_scan_new_leads()              ← direct Motor query             بدل SQL
+    ✅ job_process_event_queue()         ← MongoEventQueue.claim_batch()  بدل SQL
+    ✅ job_scan_pending_salary_reviews() ← HRDB.get_pending_salary_reviews()
+    ✅ job_scan_pending_incentives()     ← HRDB.get_pending_incentive_requests()
+    ✅ job_scan_pending_absences()       ← HRDB.get_pending_absence_events()
+    ✅ start_execution() / finish_execution() → MongoDB "agent_executions" collection
+    ✅ كل import لـ core.db اتشال تماماً
+    ✅ get_finance_db() + get_hr_db() singletons من core.mongo_connect
 
-Domains:
-    ✅ Leaves      — existing
-    ✅ Tickets     — existing
-    ✅ Leads       — existing
-    ✅ Salary Reviews   — v5.1 new
-    ✅ Incentives       — v5.1 new
-    ✅ Absence Events   — v5.1 new
-
-ENV vars for scan intervals:
-    LEAVE_SCAN_INTERVAL_SEC    (default: 30)
-    TICKET_SCAN_INTERVAL_SEC   (defaul.t: 60)
-    LEAD_SCAN_INTERVAL_SEC     (default: 120)
-    SALARY_SCAN_INTERVAL_SEC   (default: 600)
-    INCENTIVE_SCAN_INTERVAL_SEC (default: 600)
-  
-ARCHITECTURE RULE (v5.1+):
+ARCHITECTURE RULE (unchanged):
     Bridge  = routing only   → NO claim here
     Workflow = claim + decide → claim lives inside each Workflow
 """
@@ -31,28 +23,25 @@ ARCHITECTURE RULE (v5.1+):
 from __future__ import annotations
 
 import asyncio
-import importlib
 import logging
 import os
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from core.finance_trigger import (
-    job_scan_overdue_invoices,
-    job_scan_new_invoices,
-    register_finance_handlers,
-    INVOICE_SCAN_SEC,
-    NEW_INVOICE_SCAN_SEC,
-)
-
 
 from core.event_bus import event_bus
 
 logger = logging.getLogger(__name__)
 
-# ── Scan intervals (seconds) — configurable via ENV ──────────────────────────
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# ── Scan intervals (seconds) ──────────────────────────────────────────────────
 LEAVE_SCAN_SEC     = int(os.getenv("LEAVE_SCAN_INTERVAL_SEC",    30))
 TICKET_SCAN_SEC    = int(os.getenv("TICKET_SCAN_INTERVAL_SEC",   60))
 LEAD_SCAN_SEC      = int(os.getenv("LEAD_SCAN_INTERVAL_SEC",    120))
@@ -64,11 +53,60 @@ ABSENCE_SCAN_SEC   = int(os.getenv("ABSENCE_SCAN_INTERVAL_SEC", 300))
 _scheduler: Optional[AsyncIOScheduler] = None
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# 🛠  EXECUTION TRACKING (MongoDB بدل MySQL)
+# ════════════════════════════════════════════════════════════════════════════
+
+async def _start_execution(job_name: str, triggered_by: str, entity_id: int = 0) -> str:
+    """
+    بدل start_execution() من core.db (MySQL):
+    بنعمل insert في "agent_executions" collection.
+    بيرجع exec_id (string).
+    """
+    exec_id = f"exec-{uuid.uuid4().hex[:12]}"
+    try:
+        from core.mongo_connect import get_finance_db
+        db = get_finance_db()
+        await db.db["agent_executions"].insert_one({
+            "exec_id":      exec_id,
+            "job_name":     job_name,
+            "triggered_by": triggered_by,
+            "entity_id":    entity_id,
+            "status":       "running",
+            "started_at":   _utcnow(),
+            "finished_at":  None,
+            "error":        None,
+        })
+    except Exception as e:
+        logger.debug("_start_execution failed (non-critical): %s", e)
+    return exec_id
 
 
-# ════════════════════════════════════════════════════════
+async def _finish_execution(exec_id: str, status: str, error: str = "") -> None:
+    """
+    بدل finish_execution() من core.db:
+    update_one على "agent_executions".
+    """
+    try:
+        from core.mongo_connect import get_finance_db
+        db = get_finance_db()
+        await db.db["agent_executions"].update_one(
+            {"exec_id": exec_id},
+            {
+                "$set": {
+                    "status":      status,
+                    "finished_at": _utcnow(),
+                    "error":       error[:500] if error else None,
+                }
+            },
+        )
+    except Exception as e:
+        logger.debug("_finish_execution failed (non-critical): %s", e)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  SCHEDULER CONTROL
-# ════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 
 async def start_trigger_engine(orchestrator) -> None:
     """Start APScheduler + register all EventBus handlers."""
@@ -87,95 +125,32 @@ async def start_trigger_engine(orchestrator) -> None:
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
 
-    _scheduler.add_job(
-        job_scan_pending_leaves,
-        trigger=IntervalTrigger(seconds=LEAVE_SCAN_SEC),
-        id="scan_leaves",
-        name="[HR] Scan pending leaves",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=60,
-    )
-    _scheduler.add_job(
-        job_scan_pending_tickets,
-        trigger=IntervalTrigger(seconds=TICKET_SCAN_SEC),
-        id="scan_tickets",
-        name="[Support] Scan pending tickets",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=60,
-    )
-    _scheduler.add_job(
-        job_scan_new_leads,
-        trigger=IntervalTrigger(seconds=LEAD_SCAN_SEC),
-        id="scan_leads",
-        name="[CRM] Scan new leads",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
-    )
-    _scheduler.add_job(
-        job_process_event_queue,
-        trigger=IntervalTrigger(seconds=EVENT_QUEUE_SEC),
-        id="process_event_queue",
-        name="[System] Process event queue",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=30,
-    )
-    _scheduler.add_job(
-        job_scan_pending_salary_reviews,
-        trigger=IntervalTrigger(seconds=SALARY_SCAN_SEC),
-        id="scan_salary_reviews",
-        name="[HR] Scan pending salary reviews",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
-    )
-    _scheduler.add_job(
-        job_scan_pending_incentives,
-        trigger=IntervalTrigger(seconds=INCENTIVE_SCAN_SEC),
-        id="scan_incentives",
-        name="[HR] Scan pending incentive requests",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
-    )
-    _scheduler.add_job(
-        job_scan_pending_absences,
-        trigger=IntervalTrigger(seconds=ABSENCE_SCAN_SEC),
-        id="scan_absences",
-        name="[HR] Scan pending absence events",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=60,
-    )
+    jobs = [
+        (job_scan_pending_leaves,        LEAVE_SCAN_SEC,     "scan_leaves",          "[HR] Scan pending leaves",             60),
+        (job_scan_pending_tickets,       TICKET_SCAN_SEC,    "scan_tickets",         "[Support] Scan pending tickets",       60),
+        (job_scan_new_leads,             LEAD_SCAN_SEC,      "scan_leads",           "[CRM] Scan new leads",                120),
+        (job_process_event_queue,        EVENT_QUEUE_SEC,    "process_event_queue",  "[System] Process event queue",         30),
+        (job_scan_pending_salary_reviews,SALARY_SCAN_SEC,    "scan_salary_reviews",  "[HR] Scan pending salary reviews",    120),
+        (job_scan_pending_incentives,    INCENTIVE_SCAN_SEC, "scan_incentives",      "[HR] Scan pending incentive requests",120),
+        (job_scan_pending_absences,      ABSENCE_SCAN_SEC,   "scan_absences",        "[HR] Scan pending absence events",     60),
+        (job_scan_overdue_invoices,      INVOICE_SCAN_SEC,   "scan_overdue_invoices","[Finance] Scan overdue invoices",     120),
+        (job_scan_new_invoices,          NEW_INVOICE_SCAN_SEC,"scan_new_invoices",   "[Finance] Scan new invoices",         120),
+    ]
 
-    _scheduler.add_job(
-        job_scan_overdue_invoices,
-        trigger=IntervalTrigger(seconds=INVOICE_SCAN_SEC),
-        id="scan_overdue_invoices",
-        name="[Finance] Scan overdue invoices",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
-    )
-    _scheduler.add_job(
-        job_scan_new_invoices,
-        trigger=IntervalTrigger(seconds=NEW_INVOICE_SCAN_SEC),
-        id="scan_new_invoices",
-        name="[Finance] Scan new invoices",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
-    )
-
-
-    
+    for func, interval, job_id, name, grace in jobs:
+        _scheduler.add_job(
+            func,
+            trigger            = IntervalTrigger(seconds=interval),
+            id                 = job_id,
+            name               = name,
+            max_instances      = 1,
+            coalesce           = True,
+            misfire_grace_time = grace,
+        )
 
     _scheduler.start()
     logger.info(
-        "✅ Trigger Engine started — %d jobs scheduled",
+        "✅ Trigger Engine v6.0 started — %d jobs scheduled",
         len(_scheduler.get_jobs()),
     )
 
@@ -204,19 +179,14 @@ def get_scheduler_status() -> dict:
     }
 
 
-# ════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  EVENT BUS HANDLER REGISTRATION
-# ════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 
 def register_orchestrator_handlers(orchestrator) -> None:
-    """Subscribe all domain handlers to the EventBus."""
-
-    # ── Existing domains ─────────────────────────────────────────────────────
-    event_bus.subscribe("leave_requested", _build_leave_handler(orchestrator))
-    event_bus.subscribe("ticket_created",  _build_ticket_handler(orchestrator))
-    event_bus.subscribe("lead_added",      _build_lead_handler(orchestrator))
-
-    # ── HR Domain v5.1 ───────────────────────────────────────────────────────
+    event_bus.subscribe("leave_requested",   _build_leave_handler(orchestrator))
+    event_bus.subscribe("ticket_created",    _build_ticket_handler(orchestrator))
+    event_bus.subscribe("lead_added",        _build_lead_handler(orchestrator))
     event_bus.subscribe("salary_review",     _build_salary_handler(orchestrator))
     event_bus.subscribe("incentive_request", _build_incentive_handler(orchestrator))
     event_bus.subscribe("absence_event",     _build_absence_handler(orchestrator))
@@ -227,62 +197,31 @@ def register_orchestrator_handlers(orchestrator) -> None:
     )
 
 
-# ════════════════════════════════════════════════════════
-#  ATOMIC CLAIM HELPER
-#  ⚠️  Use ONLY inside Workflows — NOT in Bridge handlers
-# ════════════════════════════════════════════════════════
-
-async def _claim_entity(
-    table: str,
-    entity_id: int,
-    from_status: str = "pending",
-    to_status: str = "in_progress",
-) -> bool:
-    """
-    Atomic claim — marks an entity as in_progress to prevent duplicate processing.
-    Returns True if claim succeeded, False if already claimed by another worker.
-
-    ⚠️  ARCHITECTURE RULE: Call this inside the Workflow, NOT in the Bridge handler.
-        Bridge = routing only. Workflow = claim + decision.
-    """
-    try:
-        db_module = importlib.import_module("core.db")
-        with db_module.get_db() as (conn, cur):
-            cur.execute(
-                f"UPDATE {table} SET status = %s WHERE id = %s AND status = %s",
-                (to_status, entity_id, from_status),
-            )
-            conn.commit()
-            return cur.rowcount == 1
-    except Exception as e:
-        logger.warning(
-            "⚠️ [Claim] Failed to claim %s #%s: %s — allowing through",
-            table, entity_id, e,
-        )
-        return True  # on unexpected DB error, allow through (non-fatal)
-
-
-# ════════════════════════════════════════════════════════
-#  SCHEDULER JOBS — Existing
-# ════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# ⏰  SCHEDULER JOBS — MONGODB VERSIONS
+# ════════════════════════════════════════════════════════════════════════════
 
 async def job_scan_pending_leaves() -> None:
-    """⏰ Scan leave_requests with status=pending → publish to EventBus."""
-    from core.db import get_pending_leaves, start_execution, finish_execution
-
+    """
+    بدل: from core.db import get_pending_leaves
+    دلوقتي: HRDB.get_pending_leaves() (Motor async)
+    """
     logger.info("⏰ [Scheduler] Scanning pending leaves...")
-    exec_id = start_execution("leave_scan", "scheduler", 0)
+    exec_id = await _start_execution("leave_scan", "scheduler", 0)
     try:
-        leaves = get_pending_leaves()
+        from core.mongo_connect import get_hr_db
+        hr_db  = get_hr_db()
+        leaves = await hr_db.get_pending_leaves()
+
         if not leaves:
             logger.info("   ✅ No pending leaves.")
-            finish_execution(exec_id, "completed")
+            await _finish_execution(exec_id, "completed")
             return
 
         logger.info("   📋 Found %d pending leave(s)", len(leaves))
         for leave in leaves:
             result = await event_bus.publish("leave_requested", {
-                "leave_id":      leave.get("id"),
+                "leave_id":      str(leave.get("_id", leave.get("id", ""))),
                 "employee_id":   str(leave.get("employee_id", "")),
                 "employee_name": leave.get("employee_name", ""),
                 "leave_days":    leave.get("leave_days", 1),
@@ -292,31 +231,36 @@ async def job_scan_pending_leaves() -> None:
                 "source":        "scheduler",
             })
             if result == -1:
-                logger.info("   ⏭️ Leave #%s already processing — skipped", leave.get("id"))
+                logger.info("   ⏭️ Leave already processing — skipped")
 
-        finish_execution(exec_id, "completed")
+        await _finish_execution(exec_id, "completed")
     except Exception as e:
         logger.error("❌ [Scheduler] Leave scan failed: %s", e, exc_info=True)
-        finish_execution(exec_id, "failed", str(e))
+        await _finish_execution(exec_id, "failed", str(e))
 
 
 async def job_scan_pending_tickets() -> None:
-    """⏰ Scan tickets with status=open → publish to EventBus."""
-    from core.db import get_pending_tickets, start_execution, finish_execution
-
+    """
+    بدل: from core.db import get_pending_tickets
+    دلوقتي: Motor query على "support_tickets" collection مباشرةً.
+    """
     logger.info("⏰ [Scheduler] Scanning pending tickets...")
-    exec_id = start_execution("ticket_scan", "scheduler", 0)
+    exec_id = await _start_execution("ticket_scan", "scheduler", 0)
     try:
-        tickets = get_pending_tickets()
+        from core.mongo_connect import get_finance_db
+        db      = get_finance_db()
+        cursor  = db.db["support_tickets"].find({"status": "open"}).sort("created_at", 1).limit(200)
+        tickets = await cursor.to_list(None)
+
         if not tickets:
-            finish_execution(exec_id, "completed")
+            await _finish_execution(exec_id, "completed")
             return
 
         logger.info("   🎫 Found %d pending ticket(s)", len(tickets))
         for ticket in tickets:
             await event_bus.publish("ticket_created", {
-                "ticket_id":     ticket.get("id"),
-                "customer_id":   ticket.get("customer_id"),
+                "ticket_id":     str(ticket.get("_id")),
+                "customer_id":   str(ticket.get("customer_id", "")),
                 "customer_name": ticket.get("customer_name", ""),
                 "priority":      ticket.get("priority", "medium"),
                 "category":      ticket.get("category", "general"),
@@ -324,96 +268,103 @@ async def job_scan_pending_tickets() -> None:
                 "source":        "scheduler",
             })
 
-        finish_execution(exec_id, "completed")
+        await _finish_execution(exec_id, "completed")
     except Exception as e:
         logger.error("❌ [Scheduler] Ticket scan failed: %s", e, exc_info=True)
-        finish_execution(exec_id, "failed", str(e))
+        await _finish_execution(exec_id, "failed", str(e))
 
 
 async def job_scan_new_leads() -> None:
-    """⏰ Scan leads with status=new → publish to EventBus."""
-    from core.db import get_new_leads, start_execution, finish_execution
-
+    """
+    بدل: from core.db import get_new_leads
+    دلوقتي: Motor query على "leads" collection.
+    """
     logger.info("⏰ [Scheduler] Scanning new leads...")
-    exec_id = start_execution("lead_scan", "scheduler", 0)
+    exec_id = await _start_execution("lead_scan", "scheduler", 0)
     try:
-        leads = get_new_leads()
+        from core.mongo_connect import get_finance_db
+        db     = get_finance_db()
+        cursor = db.db["leads"].find({"status": "new"}).sort("created_at", 1).limit(200)
+        leads  = await cursor.to_list(None)
+
         if not leads:
-            finish_execution(exec_id, "completed")
+            await _finish_execution(exec_id, "completed")
             return
 
         logger.info("   💼 Found %d new lead(s)", len(leads))
         for lead in leads:
             await event_bus.publish("lead_added", {
-                "lead_id": lead.get("id"),
+                "lead_id": str(lead.get("_id")),
                 "name":    lead.get("name", ""),
                 "email":   lead.get("email", ""),
                 "source":  lead.get("source", "unknown"),
                 "notes":   lead.get("notes", ""),
             })
 
-        finish_execution(exec_id, "completed")
+        await _finish_execution(exec_id, "completed")
     except Exception as e:
         logger.error("❌ [Scheduler] Lead scan failed: %s", e, exc_info=True)
-        finish_execution(exec_id, "failed", str(e))
+        await _finish_execution(exec_id, "failed", str(e))
 
 
 async def job_process_event_queue() -> None:
-    """⏰ Process events table with status=pending → publish each to EventBus."""
-    import json
-    from core.db import get_pending_events, mark_event_done
-
+    """
+    بدل: from core.db import get_pending_events, mark_event_done
+    دلوقتي: MongoEventQueue.claim_batch() + ack()
+    """
     logger.debug("⏰ [Scheduler] Processing event queue...")
     try:
-        events = get_pending_events()
-        if not events:
+        from core.event_bus_persistent import MongoEventQueue
+        queue  = MongoEventQueue()
+        rows   = await queue.claim_batch(batch_size=20)
+
+        if not rows:
             return
 
-        logger.info("   📥 Processing %d event(s) from queue", len(events))
-        for event in events:
-            event_type = event.get("event_type", "")
-            entity_id  = event.get("entity_id", 0)
-            raw_payload = event.get("payload", "{}")
+        import json
+        logger.info("   📥 Processing %d event(s) from queue", len(rows))
+        for row in rows:
+            event_type  = row.get("event_type", "")
+            doc_id      = row.get("_id")
+            raw_payload = row.get("payload", "{}")
 
             try:
                 payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
             except Exception:
                 payload = {}
 
-            payload["event_id"] = event.get("id")
-
             result = await event_bus.publish(event_type, payload)
             if result == -1:
-                logger.debug("   ⏭️ Event #%s (%s) already in cache — skipped", event.get("id"), event_type)
+                logger.debug("   ⏭️ Event (%s) already in cache — skipped", event_type)
             else:
-                logger.info("   📤 Event #%s (%s) entity=%s → published", event.get("id"), event_type, entity_id)
-                mark_event_done(event.get("id"), "published")
+                logger.info("   📤 Event (%s) → published", event_type)
+                await queue.ack(doc_id)
 
     except Exception as e:
         logger.error("❌ [Scheduler] Event queue processing failed: %s", e, exc_info=True)
 
 
-# ════════════════════════════════════════════════════════
-#  SCHEDULER JOBS — HR Domain v5.1
-# ════════════════════════════════════════════════════════
-
 async def job_scan_pending_salary_reviews() -> None:
-    """⏰ Scan salary_reviews with status=pending → publish to EventBus."""
-    from core.db import get_pending_salary_reviews, start_execution, finish_execution
-
+    """
+    بدل: from core.db import get_pending_salary_reviews
+    دلوقتي: HRDB.get_pending_salary_reviews()
+    """
     logger.info("⏰ [Scheduler] Scanning pending salary reviews...")
-    exec_id = start_execution("salary_review_scan", "scheduler", 0)
+    exec_id = await _start_execution("salary_review_scan", "scheduler", 0)
     try:
-        reviews = get_pending_salary_reviews()
+        from core.mongo_connect import get_hr_db
+        hr_db   = get_hr_db()
+        reviews = await hr_db.get_pending_salary_reviews()
+
         if not reviews:
             logger.info("   ✅ No pending salary reviews.")
-            finish_execution(exec_id, "completed")
+            await _finish_execution(exec_id, "completed")
             return
 
         logger.info("   💰 Found %d pending salary review(s)", len(reviews))
         for review in reviews:
             result = await event_bus.publish("salary_review", {
-                "review_id":                   review.get("id"),
+                "review_id":                   str(review.get("_id", "")),
                 "employee_id":                 str(review.get("employee_id", "")),
                 "employee_name":               review.get("employee_name", ""),
                 "current_salary_egp":          float(review.get("current_salary_egp", 0)),
@@ -435,34 +386,37 @@ async def job_scan_pending_salary_reviews() -> None:
                 "source":                      "scheduler",
             })
             if result == -1:
-                logger.info("   ⏭️ Review #%s already processing — skipped", review.get("id"))
+                logger.info("   ⏭️ Review already processing — skipped")
             else:
-                logger.info("   📤 Event fired → salary_review #%s", review.get("id"))
+                logger.info("   📤 Event fired → salary_review %s", review.get("_id"))
 
-        finish_execution(exec_id, "completed")
+        await _finish_execution(exec_id, "completed")
     except Exception as e:
         logger.error("❌ [Scheduler] Salary review scan failed: %s", e, exc_info=True)
-        finish_execution(exec_id, "failed", str(e))
+        await _finish_execution(exec_id, "failed", str(e))
 
 
 async def job_scan_pending_incentives() -> None:
-    """⏰ Scan incentive_requests with status=pending → publish to EventBus.
-    Sorts overtime_compensation first (statutory right — shortest SLA).
     """
-    from core.db import get_pending_incentive_requests, start_execution, finish_execution
-
+    بدل: from core.db import get_pending_incentive_requests
+    دلوقتي: HRDB.get_pending_incentive_requests()
+    overtime_compensation يجي أول (statutory right).
+    """
     logger.info("⏰ [Scheduler] Scanning pending incentive requests...")
-    exec_id = start_execution("incentive_scan", "scheduler", 0)
+    exec_id = await _start_execution("incentive_scan", "scheduler", 0)
     try:
-        requests = get_pending_incentive_requests()
+        from core.mongo_connect import get_hr_db
+        hr_db    = get_hr_db()
+        requests = await hr_db.get_pending_incentive_requests()
+
         if not requests:
             logger.info("   ✅ No pending incentive requests.")
-            finish_execution(exec_id, "completed")
+            await _finish_execution(exec_id, "completed")
             return
 
         logger.info("   🏆 Found %d pending incentive request(s)", len(requests))
 
-        # overtime_compensation first (statutory right)
+        # overtime_compensation first
         sorted_requests = sorted(
             requests,
             key=lambda r: (0 if r.get("incentive_type") == "overtime_compensation" else 1),
@@ -470,59 +424,60 @@ async def job_scan_pending_incentives() -> None:
 
         for req in sorted_requests:
             result = await event_bus.publish("incentive_request", {
-                "incentive_id":                 req.get("id"),
-                "employee_id":                  str(req.get("employee_id", "")),
-                "employee_name":                req.get("employee_name", ""),
-                "incentive_type":               req.get("incentive_type", "performance_bonus"),
-                "requested_amount_egp":         float(req.get("requested_amount_egp", 0)),
-                "kpi_achievement":              float(req.get("kpi_achievement", 0.80)),
-                "performance_score":            float(req.get("performance_score", 0.75)),
-                "monthly_salary_egp":           float(req.get("monthly_salary_egp", 0)),
-                "tenure_months":                int(req.get("tenure_months", 0)),
-                "is_on_pip":                    bool(req.get("is_on_pip", False)),
-                "is_critical_talent":           bool(req.get("is_critical_talent", False)),
-                "incentive_budget_remaining_egp":
-                    float(req.get("incentive_budget_remaining_egp", 0)),
-                "perf_trend":                   req.get("perf_trend", "stable"),
-                "reason":                       req.get("reason", ""),
-                "job_level":                    req.get("job_level", "junior"),
-                "salary_grade":                 req.get("salary_grade", "C"),
-                "department":                   req.get("department", "General"),
-                "source":                       "scheduler",
+                "incentive_id":                  str(req.get("_id", "")),
+                "employee_id":                   str(req.get("employee_id", "")),
+                "employee_name":                 req.get("employee_name", ""),
+                "incentive_type":                req.get("incentive_type", "performance_bonus"),
+                "requested_amount_egp":          float(req.get("requested_amount_egp", 0)),
+                "kpi_achievement":               float(req.get("kpi_achievement", 0.80)),
+                "performance_score":             float(req.get("performance_score", 0.75)),
+                "monthly_salary_egp":            float(req.get("monthly_salary_egp", 0)),
+                "tenure_months":                 int(req.get("tenure_months", 0)),
+                "is_on_pip":                     bool(req.get("is_on_pip", False)),
+                "is_critical_talent":            bool(req.get("is_critical_talent", False)),
+                "incentive_budget_remaining_egp": float(req.get("incentive_budget_remaining_egp", 0)),
+                "perf_trend":                    req.get("perf_trend", "stable"),
+                "reason":                        req.get("reason", ""),
+                "job_level":                     req.get("job_level", "junior"),
+                "salary_grade":                  req.get("salary_grade", "C"),
+                "department":                    req.get("department", "General"),
+                "source":                        "scheduler",
             })
             if result == -1:
-                logger.info("   ⏭️ Incentive #%s already processing — skipped", req.get("id"))
+                logger.info("   ⏭️ Incentive already processing — skipped")
             else:
                 logger.info(
-                    "   📤 Event fired → incentive_request #%s (%s)",
-                    req.get("id"), req.get("incentive_type"),
+                    "   📤 Event fired → incentive_request %s (%s)",
+                    req.get("_id"), req.get("incentive_type"),
                 )
 
-        finish_execution(exec_id, "completed")
+        await _finish_execution(exec_id, "completed")
     except Exception as e:
         logger.error("❌ [Scheduler] Incentive scan failed: %s", e, exc_info=True)
-        finish_execution(exec_id, "failed", str(e))
+        await _finish_execution(exec_id, "failed", str(e))
 
 
 async def job_scan_pending_absences() -> None:
-    """⏰ Scan absence_events with status=pending → publish to EventBus.
-    Higher unexcused_count_90d = higher priority.
     """
-    from core.db import get_pending_absence_events, start_execution, finish_execution
-
+    بدل: from core.db import get_pending_absence_events
+    دلوقتي: HRDB.get_pending_absence_events()
+    """
     logger.info("⏰ [Scheduler] Scanning pending absence events...")
-    exec_id = start_execution("absence_scan", "scheduler", 0)
+    exec_id = await _start_execution("absence_scan", "scheduler", 0)
     try:
-        events = get_pending_absence_events()  # already ordered by unexcused_count DESC
+        from core.mongo_connect import get_hr_db
+        hr_db  = get_hr_db()
+        events = await hr_db.get_pending_absence_events()
+
         if not events:
             logger.info("   ✅ No pending absence events.")
-            finish_execution(exec_id, "completed")
+            await _finish_execution(exec_id, "completed")
             return
 
         logger.info("   🚫 Found %d pending absence event(s)", len(events))
         for event in events:
             result = await event_bus.publish("absence_event", {
-                "absence_id":                   event.get("id"),
+                "absence_id":                   str(event.get("_id", "")),
                 "employee_id":                  str(event.get("employee_id", "")),
                 "employee_name":                event.get("employee_name", ""),
                 "absence_date":                 str(event.get("absence_date", "")),
@@ -536,48 +491,37 @@ async def job_scan_pending_absences() -> None:
                 "late_arrivals_90d":            int(event.get("late_arrivals_90d", 0)),
                 "previous_warnings":            event.get("previous_warnings", "none"),
                 "performance_score":            float(event.get("performance_score") or 0.75),
-                "is_on_pip":                    False,
+                "is_on_pip":                    bool(event.get("is_on_pip", False)),
                 "job_level":                    event.get("job_level", "junior"),
                 "salary_grade":                 event.get("salary_grade", "C"),
                 "department":                   event.get("department", "General"),
                 "source":                       "scheduler",
             })
             if result == -1:
-                logger.info("   ⏭️ Absence #%s already processing — skipped", event.get("id"))
+                logger.info("   ⏭️ Absence already processing — skipped")
             else:
                 logger.info(
-                    "   📤 Event fired → absence_event #%s (employee=%s, type=%s)",
-                    event.get("id"), event.get("employee_id"),
+                    "   📤 Event fired → absence_event %s (employee=%s, type=%s)",
+                    event.get("_id"), event.get("employee_id"),
                     event.get("absence_type_claimed"),
                 )
 
-        finish_execution(exec_id, "completed")
+        await _finish_execution(exec_id, "completed")
     except Exception as e:
         logger.error("❌ [Scheduler] Absence scan failed: %s", e, exc_info=True)
-        finish_execution(exec_id, "failed", str(e))
+        await _finish_execution(exec_id, "failed", str(e))
 
 
-# ════════════════════════════════════════════════════════
-#  HANDLER FACTORIES — Existing Domains
-#
-#  ✅ FIXED v5.1: Claim removed from ALL Bridge handlers.
-#     Claim now belongs exclusively inside each Workflow.
-#     Bridge responsibility = routing only.
-# ════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+#  HANDLER FACTORIES
+#  ✅ Bridge handlers: routing only — NO claim, NO core.db imports
+#  ✅ DB persistence ← HRDB / FinanceDB Motor methods بدل SQL functions
+# ════════════════════════════════════════════════════════════════════════════
 
 def _build_leave_handler(orchestrator):
     async def _handle_leave(event: dict) -> None:
-        from core.db import (
-            update_leave_and_balance,
-            write_decision_audit,
-            write_audit_log,
-            save_decision,
-            log_action,
-        )
-
-        payload    = event["payload"]
-        leave_id   = payload.get("leave_id")
-        event_id   = payload.get("event_id")
+        payload         = event["payload"]
+        leave_id        = payload.get("leave_id")
         employee_id_raw = payload.get("employee_id", "?")
 
         logger.info(
@@ -585,153 +529,149 @@ def _build_leave_handler(orchestrator):
             leave_id, employee_id_raw,
         )
 
-        # ✅ NO claim here — claim happens inside LeaveApprovalWorkflow
         ai_event = {"type": "leave_requested", "payload": payload}
         result   = await orchestrator.async_handle(ai_event)
 
-        decision    = result.get("decision", "escalated")
-        confidence  = float(result.get("confidence", 0.5))
-        reasoning   = result.get("reason", result.get("reasoning", ""))
-        leave_days  = int(payload.get("leave_days", 0))
-        request_id  = result.get("request_id", "")
+        decision   = result.get("decision", "escalated")
+        confidence = float(result.get("confidence", 0.5))
+        reasoning  = result.get("reason", result.get("reasoning", ""))
+        leave_days = int(payload.get("leave_days", 0))
+        request_id = result.get("request_id", "")
 
-        logger.info(
-            "   ✅ leave #%s → %s | conf=%.0f%%",
-            leave_id, decision, confidence * 100,
-        )
+        logger.info("   ✅ leave #%s → %s | conf=%.0f%%", leave_id, decision, confidence * 100)
 
         if leave_id:
             try:
-                employee_id = int(employee_id_raw) if str(employee_id_raw).isdigit() else 0
-                balance_result = update_leave_and_balance(
-                    leave_id    = leave_id,
-                    employee_id = employee_id,
-                    status      = decision,
-                    notes       = reasoning[:500],
-                    leave_days  = leave_days if decision == "approved" else 0,
-                    performed_by = "leave_agent_v5.1",
-                )
-                write_decision_audit(
+                from core.mongo_connect import get_hr_db
+                hr_db = get_hr_db()
+
+                # Update leave status ← HRDB.update_leave_status()
+                await hr_db.update_leave_status(
                     leave_id        = leave_id,
-                    employee_id     = employee_id,
+                    status          = decision,
+                    ai_decision     = decision,
+                    confidence      = confidence,
+                    reason          = reasoning[:1000],
+                    decision_source = result.get("model_source", "llm"),
+                    tier            = result.get("tier", 2),
+                    llm_used        = bool(result.get("llm_used", True)),
+                    request_id      = request_id[:100],
+                    notes           = reasoning[:500],
+                )
+
+                # Write HR audit ← HRDB.write_hr_domain_audit()
+                await hr_db.write_hr_domain_audit(
+                    domain          = "leave",
+                    entity_id       = leave_id,
+                    employee_id     = employee_id_raw,
                     decision        = decision,
                     confidence      = confidence,
                     decision_source = result.get("model_source", "llm"),
-                    old_balance     = balance_result.get("old_balance", 0),
-                    new_balance     = balance_result.get("new_balance", 0),
-                    model_version   = result.get("model_version", "unknown"),
-                    tier            = result.get("tier", 2),
-                    llm_used        = bool(result.get("llm_used", True)),
                     override_rule   = result.get("override_rule", ""),
+                    llm_used        = bool(result.get("llm_used", True)),
+                    execution_ms    = result.get("execution_ms", 0),
                     request_id      = request_id,
                     flags           = result.get("ai_flags", []),
                 )
+
+                # Balance audit if approved
+                if decision == "approved" and leave_days > 0:
+                    old_balance = int(payload.get("leave_balance", 0))
+                    new_balance = max(0, old_balance - leave_days)
+                    await hr_db.write_balance_audit_log(
+                        employee_id    = employee_id_raw,
+                        old_balance    = old_balance,
+                        new_balance    = new_balance,
+                        change_reason  = f"leave_approved leave_id={leave_id}",
+                        leave_id       = leave_id,
+                        performed_by   = "leave_agent_v6.0",
+                    )
+
             except Exception as e:
                 logger.error("❌ [Bridge] leave persist failed: %s", e)
-
-        write_audit_log(
-            action       = f"leave_{decision}",
-            entity       = "leaves",
-            entity_id    = int(leave_id) if leave_id else 0,
-            performed_by = "leave_agent_v5.1",
-            details      = f"[request_id={request_id}] conf={confidence:.0%} | {reasoning[:150]}",
-        )
 
     return _handle_leave
 
 
 def _build_ticket_handler(orchestrator):
     async def _handle_ticket(event: dict) -> None:
-        from core.db import update_ticket_status, write_audit_log, save_decision
-
         payload   = event["payload"]
         ticket_id = payload.get("ticket_id")
 
         logger.info("🤖 [Bridge] Routing ticket_created #%s → Orchestrator", ticket_id)
 
-        # ✅ NO claim here — claim happens inside TicketWorkflow
         ai_event = {"type": "ticket_created", "payload": payload}
         result   = await orchestrator.async_handle(ai_event)
 
-        decision   = result.get("decision", "escalate")
-        confidence = float(result.get("confidence", 0.5))
-        reasoning  = result.get("reason", result.get("reasoning", ""))
+        decision  = result.get("decision", "escalate")
+        reasoning = result.get("reason", result.get("reasoning", ""))
 
         logger.info("   ✅ ticket #%s → %s", ticket_id, decision)
 
         if ticket_id:
             try:
-                update_ticket_status(ticket_id, decision, reasoning[:500])
+                from core.mongo_connect import get_finance_db
+                db = get_finance_db()
+                from bson import ObjectId
+                await db.db["support_tickets"].update_one(
+                    {"_id": ObjectId(str(ticket_id))},
+                    {
+                        "$set": {
+                            "status":      decision,
+                            "ai_decision": decision,
+                            "ai_reason":   reasoning[:500],
+                            "updated_at":  _utcnow(),
+                        }
+                    },
+                )
             except Exception as e:
                 logger.error("❌ [Bridge] ticket persist failed: %s", e)
-
-        write_audit_log(
-            action       = f"ticket_{decision}",
-            entity       = "tickets",
-            entity_id    = int(ticket_id) if ticket_id else 0,
-            performed_by = "support_agent_v5.1",
-            details      = reasoning[:300],
-        )
 
     return _handle_ticket
 
 
 def _build_lead_handler(orchestrator):
     async def _handle_lead(event: dict) -> None:
-        from core.db import update_lead_status, write_audit_log, save_decision
-
         payload = event["payload"]
         lead_id = payload.get("lead_id")
 
         logger.info("🤖 [Bridge] Routing lead_added #%s → Orchestrator", lead_id)
 
-        # ✅ NO claim here — claim happens inside LeadWorkflow
         ai_event = {"type": "lead_added", "payload": payload}
         result   = await orchestrator.async_handle(ai_event)
 
-        decision   = result.get("decision", "follow_up")
-        confidence = float(result.get("confidence", 0.5))
-        reasoning  = result.get("reason", result.get("reasoning", ""))
-        score      = int(result.get("score", 50))
+        decision  = result.get("decision", "follow_up")
+        reasoning = result.get("reason", result.get("reasoning", ""))
+        score     = int(result.get("score", 50))
 
         logger.info("   ✅ lead #%s → %s (score=%d)", lead_id, decision, score)
 
         if lead_id:
             try:
-                update_lead_status(lead_id, decision, score, reasoning[:500])
+                from core.mongo_connect import get_finance_db
+                db = get_finance_db()
+                from bson import ObjectId
+                await db.db["leads"].update_one(
+                    {"_id": ObjectId(str(lead_id))},
+                    {
+                        "$set": {
+                            "status":      decision,
+                            "ai_score":    score,
+                            "ai_reason":   reasoning[:500],
+                            "updated_at":  _utcnow(),
+                        }
+                    },
+                )
             except Exception as e:
                 logger.error("❌ [Bridge] lead persist failed: %s", e)
-
-        write_audit_log(
-            action       = f"lead_{decision}",
-            entity       = "leads",
-            entity_id    = int(lead_id) if lead_id else 0,
-            performed_by = "crm_agent_v5.1",
-            details      = reasoning[:300],
-        )
 
     return _handle_lead
 
 
-# ════════════════════════════════════════════════════════
-#  HANDLER FACTORIES — HR Domain v5.1
-# ════════════════════════════════════════════════════════
-
 def _build_salary_handler(orchestrator):
-    """Factory → async handler for salary_review events."""
-
     async def _handle_salary(event: dict) -> None:
-        from core.db import (
-            update_salary_review_status,
-            write_hr_domain_audit,
-            write_audit_log,
-            save_decision,
-            log_action,
-        )
-
         payload         = event["payload"]
         review_id       = payload.get("review_id")
-        event_id        = payload.get("event_id")
         employee_id_raw = payload.get("employee_id", "?")
 
         logger.info(
@@ -739,21 +679,18 @@ def _build_salary_handler(orchestrator):
             review_id, employee_id_raw,
         )
 
-        # ✅ NO claim here — claim happens inside SalaryReviewWorkflow
         ai_event = {"type": "salary_review", "payload": payload}
         result   = await orchestrator.async_handle(ai_event)
 
-        decision    = result.get("decision", "escalate_to_director")
-        confidence  = float(result.get("confidence", 0.5))
-        reasoning   = result.get("reason", result.get("reasoning", ""))
-        llm_used    = bool(result.get("llm_used", True))
-        source      = result.get("model_source", "llm")
-        request_id  = result.get("request_id", payload.get("request_id", ""))
-        rec_pct     = result.get("recommended_increment_pct")
+        decision   = result.get("decision", "escalate_to_director")
+        confidence = float(result.get("confidence", 0.5))
+        reasoning  = result.get("reason", result.get("reasoning", ""))
+        request_id = result.get("request_id", payload.get("request_id", ""))
+        rec_pct    = result.get("recommended_increment_pct")
 
         logger.info(
-            "   ✅ salary_review #%s → %s | conf=%.0f%% | source=%s",
-            review_id, decision, confidence * 100, source,
+            "   ✅ salary_review #%s → %s | conf=%.0f%%",
+            review_id, decision, confidence * 100,
         )
 
         if not review_id:
@@ -764,80 +701,44 @@ def _build_salary_handler(orchestrator):
             "escalate_to_director": "escalated",
             "defer":                "deferred",
         }
-        new_status = status_map.get(decision, "escalated")
 
         try:
-            update_salary_review_status(
+            from core.mongo_connect import get_hr_db
+            hr_db = get_hr_db()
+
+            await hr_db.update_salary_review_status(
                 review_id       = review_id,
-                status          = new_status,
+                status          = status_map.get(decision, "escalated"),
                 ai_decision     = decision,
                 confidence      = confidence,
                 reason          = reasoning[:1000],
                 recommended_pct = rec_pct,
                 request_id      = request_id,
             )
-        except Exception as e:
-            logger.error("❌ [Bridge] update_salary_review_status failed: %s", e)
 
-        try:
-            write_hr_domain_audit(
+            await hr_db.write_hr_domain_audit(
                 domain          = "salary",
                 entity_id       = review_id,
-                employee_id     = int(employee_id_raw) if str(employee_id_raw).isdigit() else 0,
+                employee_id     = employee_id_raw,
                 decision        = decision,
                 confidence      = confidence,
-                decision_source = source,
+                decision_source = result.get("model_source", "llm"),
                 override_rule   = result.get("override_rule", ""),
-                llm_used        = llm_used,
+                llm_used        = bool(result.get("llm_used", True)),
                 request_id      = request_id,
                 flags           = result.get("flags", result.get("ai_flags", [])),
                 extra_data      = {"recommended_pct": rec_pct},
             )
         except Exception as e:
-            logger.warning("   ⚠️ write_hr_domain_audit (salary) failed: %s", e)
-
-        try:
-            save_decision({
-                "agent_type":   "salary_agent_v5.1",
-                "entity":       "salary_reviews",
-                "entity_id":    int(review_id),
-                "event_id":     event_id,
-                "decision":     decision,
-                "confidence":   confidence,
-                "reasoning":    reasoning[:500],
-                "raw_response": str(result)[:1000],
-            })
-        except Exception as e:
-            logger.warning("   ⚠️ save_decision (salary) failed: %s", e)
-
-        write_audit_log(
-            action       = f"salary_{decision}",
-            entity       = "salary_reviews",
-            entity_id    = int(review_id),
-            performed_by = "salary_agent_v5.1",
-            details      = (
-                f"[request_id={request_id}] source={source} | "
-                f"conf={confidence:.0%} | rec_pct={rec_pct} | {reasoning[:150]}"
-            ),
-        )
+            logger.error("❌ [Bridge] salary persist failed: %s", e)
 
     return _handle_salary
 
 
 def _build_incentive_handler(orchestrator):
-    """Factory → async handler for incentive_request events."""
-
     async def _handle_incentive(event: dict) -> None:
-        from core.db import (
-            update_incentive_status,
-            write_hr_domain_audit,
-            write_audit_log,
-            save_decision,
-        )
-
         payload         = event["payload"]
         incentive_id    = payload.get("incentive_id")
-        event_id        = payload.get("event_id")
         employee_id_raw = payload.get("employee_id", "?")
         incentive_type  = payload.get("incentive_type", "performance_bonus")
 
@@ -846,17 +747,14 @@ def _build_incentive_handler(orchestrator):
             incentive_id, incentive_type, employee_id_raw,
         )
 
-        # ✅ NO claim here — claim happens inside IncentiveWorkflow
         ai_event = {"type": "incentive_request", "payload": payload}
         result   = await orchestrator.async_handle(ai_event)
 
-        decision      = result.get("decision", "deny_bonus")
-        confidence    = float(result.get("confidence", 0.5))
-        reasoning     = result.get("reason", result.get("reasoning", ""))
-        llm_used      = bool(result.get("llm_used", True))
-        source        = result.get("model_source", "llm")
-        request_id    = result.get("request_id", payload.get("request_id", ""))
-        approved_amt  = result.get("approved_amount_egp")
+        decision     = result.get("decision", "deny_bonus")
+        confidence   = float(result.get("confidence", 0.5))
+        reasoning    = result.get("reason", result.get("reasoning", ""))
+        request_id   = result.get("request_id", payload.get("request_id", ""))
+        approved_amt = result.get("approved_amount_egp")
 
         logger.info(
             "   ✅ incentive #%s (%s) → %s | conf=%.0f%%",
@@ -873,31 +771,30 @@ def _build_incentive_handler(orchestrator):
             "escalate_to_director": "escalated",
             "escalate_to_ceo":      "escalated_ceo",
         }
-        new_status = status_map.get(decision, "escalated")
 
         try:
-            update_incentive_status(
-                request_id_int  = incentive_id,
-                status          = new_status,
+            from core.mongo_connect import get_hr_db
+            hr_db = get_hr_db()
+
+            await hr_db.update_incentive_status(
+                request_id      = incentive_id,
+                status          = status_map.get(decision, "escalated"),
                 ai_decision     = decision,
                 confidence      = confidence,
                 reason          = reasoning[:1000],
                 approved_amount = approved_amt,
-                request_id      = request_id,
+                req_id_str      = request_id,
             )
-        except Exception as e:
-            logger.error("❌ [Bridge] update_incentive_status failed: %s", e)
 
-        try:
-            write_hr_domain_audit(
+            await hr_db.write_hr_domain_audit(
                 domain          = "incentive",
                 entity_id       = incentive_id,
-                employee_id     = int(employee_id_raw) if str(employee_id_raw).isdigit() else 0,
+                employee_id     = employee_id_raw,
                 decision        = decision,
                 confidence      = confidence,
-                decision_source = source,
+                decision_source = result.get("model_source", "llm"),
                 override_rule   = result.get("override_rule", ""),
-                llm_used        = llm_used,
+                llm_used        = bool(result.get("llm_used", True)),
                 request_id      = request_id,
                 flags           = result.get("flags", result.get("ai_flags", [])),
                 extra_data      = {
@@ -906,51 +803,15 @@ def _build_incentive_handler(orchestrator):
                 },
             )
         except Exception as e:
-            logger.warning("   ⚠️ write_hr_domain_audit (incentive) failed: %s", e)
-
-        try:
-            save_decision({
-                "agent_type":   "incentive_agent_v5.1",
-                "entity":       "incentive_requests",
-                "entity_id":    int(incentive_id),
-                "event_id":     event_id,
-                "decision":     decision,
-                "confidence":   confidence,
-                "reasoning":    reasoning[:500],
-                "raw_response": str(result)[:1000],
-            })
-        except Exception as e:
-            logger.warning("   ⚠️ save_decision (incentive) failed: %s", e)
-
-        write_audit_log(
-            action       = f"incentive_{decision}",
-            entity       = "incentive_requests",
-            entity_id    = int(incentive_id),
-            performed_by = "incentive_agent_v5.1",
-            details      = (
-                f"[request_id={request_id}] type={incentive_type} | "
-                f"conf={confidence:.0%} | approved={approved_amt} | {reasoning[:150]}"
-            ),
-        )
+            logger.error("❌ [Bridge] incentive persist failed: %s", e)
 
     return _handle_incentive
 
 
 def _build_absence_handler(orchestrator):
-    """Factory → async handler for absence_event events."""
-
     async def _handle_absence(event: dict) -> None:
-        from core.db import (
-            update_absence_event_status,
-            write_hr_domain_audit,
-            write_audit_log,
-            save_decision,
-            log_action,
-        )
-
         payload         = event["payload"]
         absence_id      = payload.get("absence_id")
-        event_id        = payload.get("event_id")
         employee_id_raw = payload.get("employee_id", "?")
         absence_type    = payload.get("absence_type_claimed", "unexcused")
 
@@ -959,7 +820,6 @@ def _build_absence_handler(orchestrator):
             absence_id, absence_type, employee_id_raw,
         )
 
-        # ✅ NO claim here — claim happens inside AbsenceWorkflow
         ai_event = {"type": "absence_event", "payload": payload}
         result   = await orchestrator.async_handle(ai_event)
 
@@ -967,8 +827,6 @@ def _build_absence_handler(orchestrator):
         classification      = result.get("classification", absence_type)
         confidence          = float(result.get("confidence", 0.5))
         reasoning           = result.get("reason", result.get("reasoning", ""))
-        llm_used            = bool(result.get("llm_used", True))
-        source              = result.get("model_source", "llm")
         request_id          = result.get("request_id", payload.get("request_id", ""))
         payroll_deduct      = float(result.get("payroll_deduction_days", 0))
         escalation_required = bool(result.get("escalation_required", False))
@@ -991,12 +849,14 @@ def _build_absence_handler(orchestrator):
             "suspension_review":       "suspension_review",
             "termination_review":      "termination_review",
         }
-        new_status = status_map.get(decision, "recorded")
 
         try:
-            update_absence_event_status(
+            from core.mongo_connect import get_hr_db
+            hr_db = get_hr_db()
+
+            await hr_db.update_absence_event_status(
                 event_id               = absence_id,
-                status                 = new_status,
+                status                 = status_map.get(decision, "recorded"),
                 ai_decision            = decision,
                 ai_classification      = classification,
                 confidence             = confidence,
@@ -1005,19 +865,16 @@ def _build_absence_handler(orchestrator):
                 escalation_required    = escalation_required,
                 request_id             = request_id,
             )
-        except Exception as e:
-            logger.error("❌ [Bridge] update_absence_event_status failed: %s", e)
 
-        try:
-            write_hr_domain_audit(
+            await hr_db.write_hr_domain_audit(
                 domain          = "absence",
                 entity_id       = absence_id,
-                employee_id     = int(employee_id_raw) if str(employee_id_raw).isdigit() else 0,
+                employee_id     = employee_id_raw,
                 decision        = decision,
                 confidence      = confidence,
-                decision_source = source,
+                decision_source = result.get("model_source", "llm"),
                 override_rule   = result.get("override_rule", ""),
-                llm_used        = llm_used,
+                llm_used        = bool(result.get("llm_used", True)),
                 request_id      = request_id,
                 flags           = result.get("flags", result.get("ai_flags", [])),
                 extra_data      = {
@@ -1028,44 +885,6 @@ def _build_absence_handler(orchestrator):
                 },
             )
         except Exception as e:
-            logger.warning("   ⚠️ write_hr_domain_audit (absence) failed: %s", e)
-
-        try:
-            save_decision({
-                "agent_type":   "absence_agent_v5.1",
-                "entity":       "absence_events",
-                "entity_id":    int(absence_id),
-                "event_id":     event_id,
-                "decision":     decision,
-                "confidence":   confidence,
-                "reasoning":    reasoning[:500],
-                "raw_response": str(result)[:1000],
-            })
-        except Exception as e:
-            logger.warning("   ⚠️ save_decision (absence) failed: %s", e)
-
-        try:
-            log_action({
-                "action_type":  f"absence_{decision}",
-                "entity":       "absence_events",
-                "entity_id":    int(absence_id),
-                "performed_by": "absence_agent_v5.1",
-                "result":       decision,
-                "details":      reasoning[:300],
-            })
-        except Exception as e:
-            logger.warning("   ⚠️ log_action (absence) failed: %s", e)
-
-        write_audit_log(
-            action       = f"absence_{decision}",
-            entity       = "absence_events",
-            entity_id    = int(absence_id),
-            performed_by = "absence_agent_v5.1",
-            details      = (
-                f"[request_id={request_id}] class={classification} | "
-                f"conf={confidence:.0%} | deduct={payroll_deduct}d | "
-                f"escalate={escalation_required} | {reasoning[:150]}"
-            ),
-        )
+            logger.error("❌ [Bridge] absence persist failed: %s", e)
 
     return _handle_absence

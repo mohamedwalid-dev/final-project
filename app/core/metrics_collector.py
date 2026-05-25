@@ -1,23 +1,23 @@
 """
-📊 Metrics Collector — v2.2 Production
-========================================
+📊 Metrics Collector — v3.0 Production (MongoDB/Motor)
+========================================================
 File: app/core/metrics_collector.py
 
-v2.2 Changes (over v2.1):
-    ✅ FIX: ai_decisions_made يعد فقط الـ decisions الحقيقية (مش skipped/duplicate)
-    ✅ FIX: decisions_today نفس الـ filter — يستثني skipped و duplicate و already_claimed
-    ✅ EXCLUDED_DECISIONS list واضحة وسهل تعدل عليها
-    ✅ avg_confidence / avg_risk_score / avg_decision_ms تتحسب من decisions حقيقية
+v3.0 Changes (Migration: MySQL → MongoDB):
+    ✅ MetricsStorage        → Motor async (بدل pymysql sync)
+    ✅ metrics_events table  → MongoDB collection "metrics_events"
+    ✅ metrics_snapshots     → MongoDB collection "metrics_snapshots"
+    ✅ _build_snapshot()     → Motor aggregation pipelines بدل raw SQL
+    ✅ كل import لـ core.db اتشال تماماً
+    ✅ get_finance_db() singleton من core.mongo_connect
+    ✅ كل SQL queries اتحولت لـ Motor aggregation
 
-v2.1 Changes (unchanged):
-    ✅ FIX: ai_decisions_made يعد من finance_decisions (24h window)
-    ✅ FIX: _build_snapshot() يعد من invoices.ai_decision كـ fallback لو finance_decisions فاضية
-    ✅ FIX: decisions_today = COUNT من finance_decisions + COUNT من invoices اللي اتحدثت النهاردة
-    ✅ actions_executed يعد من finance_collection_log بدقة
-    ✅ _snap_ttl مخفّض من 2s → 1s (استجابة أسرع)
-    ✅ force=True يتجاهل TTL تمامًا (للـ bridge)
-    ✅ broadcast_snapshot() بعد كل force rebuild
-    ✅ FIX: True async-safe singleton (double-checked locking)
+v2.2 logic (unchanged):
+    ✅ EXCLUDED_DECISIONS — real decisions only (no skipped/duplicate)
+    ✅ avg_confidence / avg_risk_score / avg_decision_ms — real decisions فقط
+    ✅ decisions_today = real decisions today only
+    ✅ actions_executed من finance_collection_log (MongoDB clog collection)
+    ✅ True async-safe singleton (double-checked locking)
 """
 
 from __future__ import annotations
@@ -28,22 +28,36 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+
+from pymongo import ASCENDING, DESCENDING, IndexModel
 
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ✅ v2.2: Decisions to EXCLUDE from counts — these are NOT real AI decisions
+# ✅ Decisions to EXCLUDE from counts — NOT real AI decisions
 # ══════════════════════════════════════════════════════════════════════════════
-EXCLUDED_DECISIONS = (
+EXCLUDED_DECISIONS = [
     "skipped",
     "duplicate",
     "already_claimed",
     "already_processing",
     "idempotency_skip",
     "no_action",
-)
+]
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# ── DB helper ─────────────────────────────────────────────────────────────────
+
+def _get_db():
+    from core.mongo_connect import get_finance_db
+    return get_finance_db()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 📐  METRIC TYPES
@@ -56,11 +70,11 @@ class MetricEvent:
     value:        float
     unit:         str            = "count"
     tags:         Dict[str, Any] = field(default_factory=dict)
-    entity_id:    Optional[int]  = None
+    entity_id:    Optional[str]  = None   # ✅ str بدل int (MongoDB ObjectId as string)
     entity_type:  str            = ""
     request_id:   str            = ""
     event_id:     str            = field(default_factory=lambda: f"m-{uuid.uuid4().hex[:12]}")
-    ts:           str            = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    ts:           str            = field(default_factory=lambda: _utcnow().isoformat() + "Z")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -69,7 +83,7 @@ class MetricEvent:
 @dataclass
 class MetricsSnapshot:
     window:              str
-    generated_at:        str   = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    generated_at:        str   = field(default_factory=lambda: _utcnow().isoformat() + "Z")
 
     # Finance KPIs
     total_invoices:      int   = 0
@@ -91,10 +105,10 @@ class MetricsSnapshot:
     write_offs:          int   = 0
     calls_scheduled:     int   = 0
 
-    # ✅ AI Performance — real decisions only (no skipped/duplicate)
-    ai_decisions_made:   int   = 0   # real AI decisions in last 24h
-    decisions_today:     int   = 0   # real AI decisions today only
-    actions_executed:    int   = 0   # from finance_collection_log (today)
+    # AI Performance — real decisions only
+    ai_decisions_made:   int   = 0
+    decisions_today:     int   = 0
+    actions_executed:    int   = 0
     avg_confidence:      float = 0.0
     avg_risk_score:      float = 0.0
     avg_decision_ms:     float = 0.0
@@ -119,100 +133,100 @@ class MetricsSnapshot:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 💾  METRICS STORAGE
+# 💾  METRICS STORAGE — Motor async
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MetricsStorage:
 
-    def _ensure_table(self) -> None:
+    async def _ensure_indexes(self) -> None:
+        """
+        بدل CREATE TABLE IF NOT EXISTS — نعمل indexes على الـ collections.
+        """
         try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS metrics_events (
-                        id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        event_id     VARCHAR(64)  NOT NULL UNIQUE,
-                        metric_type  VARCHAR(100) NOT NULL,
-                        category     VARCHAR(50)  NOT NULL,
-                        value        DOUBLE       NOT NULL DEFAULT 0,
-                        unit         VARCHAR(20)  DEFAULT 'count',
-                        tags         JSON,
-                        entity_id    INT          DEFAULT NULL,
-                        entity_type  VARCHAR(50)  DEFAULT '',
-                        request_id   VARCHAR(100) DEFAULT '',
-                        ts           DATETIME     DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_type     (metric_type),
-                        INDEX idx_cat      (category),
-                        INDEX idx_ts       (ts),
-                        INDEX idx_entity   (entity_type, entity_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS metrics_snapshots (
-                        id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        window_type  VARCHAR(20)  NOT NULL,
-                        snapshot     JSON         NOT NULL,
-                        created_at   DATETIME     DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_window (window_type),
-                        INDEX idx_ts     (created_at)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                conn.commit()
-        except Exception as e:
-            logger.warning("⚠️ MetricsStorage table init failed: %s", e)
+            db = _get_db()
 
-    def store_event(self, event: MetricEvent) -> None:
+            await db.db["metrics_events"].create_indexes([
+                IndexModel([("event_id", ASCENDING)], unique=True),
+                IndexModel([("metric_type", ASCENDING)]),
+                IndexModel([("category", ASCENDING)]),
+                IndexModel([("ts", DESCENDING)]),
+                IndexModel([("entity_type", ASCENDING), ("entity_id", ASCENDING)]),
+                # TTL: حذف events قديمة بعد 30 يوم
+                IndexModel(
+                    [("ts", ASCENDING)],
+                    expireAfterSeconds=30 * 86400,
+                    name="ttl_events",
+                ),
+            ])
+
+            await db.db["metrics_snapshots"].create_indexes([
+                IndexModel([("window_type", ASCENDING)]),
+                IndexModel([("created_at", DESCENDING)]),
+                # TTL: حذف snapshots قديمة بعد 7 أيام
+                IndexModel(
+                    [("created_at", ASCENDING)],
+                    expireAfterSeconds=7 * 86400,
+                    name="ttl_snapshots",
+                ),
+            ])
+        except Exception as e:
+            logger.warning("⚠️ MetricsStorage index init failed: %s", e)
+
+    async def store_event(self, event: MetricEvent) -> None:
+        """
+        بدل INSERT IGNORE INTO metrics_events:
+        upsert=True + event_id كـ unique key.
+        """
         try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                cur.execute("""
-                    INSERT IGNORE INTO metrics_events
-                        (event_id, metric_type, category, value, unit,
-                         tags, entity_id, entity_type, request_id, ts)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    event.event_id, event.metric_type, event.category,
-                    event.value, event.unit,
-                    json.dumps(event.tags), event.entity_id,
-                    event.entity_type, event.request_id, event.ts,
-                ))
-                conn.commit()
+            db  = _get_db()
+            doc = event.to_dict()
+            # نحول ts من string لـ datetime للـ TTL index
+            doc["ts_dt"] = _utcnow()
+
+            await db.db["metrics_events"].update_one(
+                {"event_id": event.event_id},
+                {"$setOnInsert": doc},
+                upsert=True,
+            )
         except Exception as e:
             logger.debug("MetricsStorage store_event failed: %s", e)
 
-    def store_snapshot(self, snapshot: MetricsSnapshot) -> None:
+    async def store_snapshot(self, snapshot: MetricsSnapshot) -> None:
+        """
+        بدل INSERT INTO metrics_snapshots:
+        insert_one مع datetime field للـ TTL.
+        """
         try:
-            from core.db import get_db
-            with get_db() as (conn, cur):
-                cur.execute("""
-                    INSERT INTO metrics_snapshots (window_type, snapshot)
-                    VALUES (%s, %s)
-                """, (snapshot.window, json.dumps(snapshot.to_dict())))
-                conn.commit()
+            db  = _get_db()
+            doc = snapshot.to_dict()
+            doc["window_type"] = snapshot.window
+            doc["created_at"]  = _utcnow()
+
+            await db.db["metrics_snapshots"].insert_one(doc)
         except Exception as e:
             logger.debug("MetricsStorage store_snapshot failed: %s", e)
 
-    def get_latest_snapshot(self, window: str = "realtime") -> Optional[dict]:
+    async def get_latest_snapshot(self, window: str = "realtime") -> Optional[dict]:
+        """
+        بدل SELECT snapshot FROM metrics_snapshots ORDER BY created_at DESC LIMIT 1:
+        Motor find_one مع sort.
+        """
         try:
-            from core.db import get_db
-            with get_db() as (_, cur):
-                cur.execute("""
-                    SELECT snapshot FROM metrics_snapshots
-                    WHERE window_type = %s
-                    ORDER BY created_at DESC LIMIT 1
-                """, (window,))
-                row = cur.fetchone()
-                if row:
-                    snap = row.get("snapshot") if isinstance(row, dict) else row[0]
-                    return json.loads(snap) if isinstance(snap, str) else snap
-                return None
+            db  = _get_db()
+            doc = await db.db["metrics_snapshots"].find_one(
+                {"window_type": window},
+                sort=[("created_at", DESCENDING)],
+            )
+            if doc:
+                doc.pop("_id", None)
+            return doc
         except Exception as e:
             logger.debug("get_latest_snapshot failed: %s", e)
             return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 📡  WEBSOCKET BROADCASTER
+# 📡  WEBSOCKET BROADCASTER  (unchanged — لا علاقة بـ DB)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class WebSocketBroadcaster:
@@ -270,7 +284,7 @@ class WebSocketBroadcaster:
                 "title":   title,
                 "message": message,
                 "data":    data or {},
-                "ts":      datetime.utcnow().isoformat() + "Z",
+                "ts":      _utcnow().isoformat() + "Z",
             },
         })
 
@@ -282,16 +296,16 @@ class WebSocketBroadcaster:
 class MetricsCollector:
 
     def __init__(self):
-        self.storage      = MetricsStorage()
-        self.broadcaster  = WebSocketBroadcaster()
-        self._queue:       asyncio.Queue = asyncio.Queue(maxsize=10_000)
-        self._running:     bool          = False
-        self._snapshot:    Optional[MetricsSnapshot] = None
-        self._last_snap:   float         = 0.0
-        self._snap_ttl:    float         = 1.0
-        self._event_count: int           = 0
-        self._error_count: int           = 0
-        self._window_start: float        = time.time()
+        self.storage       = MetricsStorage()
+        self.broadcaster   = WebSocketBroadcaster()
+        self._queue:        asyncio.Queue = asyncio.Queue(maxsize=10_000)
+        self._running:      bool          = False
+        self._snapshot:     Optional[MetricsSnapshot] = None
+        self._last_snap:    float         = 0.0
+        self._snap_ttl:     float         = 1.0
+        self._event_count:  int           = 0
+        self._error_count:  int           = 0
+        self._window_start: float         = time.time()
 
         logger.warning(
             "🧠 MetricsCollector instance created | id=%s "
@@ -302,11 +316,11 @@ class MetricsCollector:
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        self.storage._ensure_table()
+        await self.storage._ensure_indexes()
         self._running = True
         asyncio.create_task(self._process_loop())
         asyncio.create_task(self._snapshot_loop())
-        logger.info("✅ MetricsCollector v2.2 started (snap_ttl=%.1fs) | id=%s",
+        logger.info("✅ MetricsCollector v3.0 started (snap_ttl=%.1fs) | id=%s",
                     self._snap_ttl, id(self))
 
     def stop(self) -> None:
@@ -323,12 +337,12 @@ class MetricsCollector:
     async def emit_action(
         self,
         action:      str,
-        category:    str    = "finance",
-        value:       float  = 1,
-        unit:        str    = "count",
-        entity_id:   Optional[int] = None,
-        entity_type: str    = "",
-        request_id:  str    = "",
+        category:    str   = "finance",
+        value:       float = 1,
+        unit:        str   = "count",
+        entity_id:   Optional[str] = None,
+        entity_type: str   = "",
+        request_id:  str   = "",
         **tags,
     ) -> None:
         await self.emit(MetricEvent(
@@ -337,7 +351,7 @@ class MetricsCollector:
             value        = value,
             unit         = unit,
             tags         = tags,
-            entity_id    = entity_id,
+            entity_id    = str(entity_id) if entity_id else None,
             entity_type  = entity_type,
             request_id   = request_id,
         ))
@@ -349,25 +363,15 @@ class MetricsCollector:
         if force or (now - self._last_snap > self._snap_ttl) or self._snapshot is None:
             self._snapshot  = await self._build_snapshot()
             self._last_snap = now
-            asyncio.create_task(self._async_store_snapshot(self._snapshot))
+            asyncio.create_task(self.storage.store_snapshot(self._snapshot))
             await self.broadcaster.broadcast_snapshot(self._snapshot)
         return self._snapshot
 
-    async def _async_store_snapshot(self, snapshot: MetricsSnapshot) -> None:
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.storage.store_snapshot, snapshot)
-        except Exception as e:
-            logger.debug("_async_store_snapshot failed: %s", e)
-
     async def _build_snapshot(self) -> MetricsSnapshot:
         """
-        ✅ v2.2: AI decision counts exclude skipped/duplicate entries.
-
-        The WHERE clause filters EXCLUDED_DECISIONS so only real AI decisions
-        (soft_follow_up, hard_follow_up, legal_escalation, payment_plan,
-        suspend_service, write_off, safe_to_collect, invoice_registered, …)
-        are counted.
+        ✅ v3.0 (MongoDB):
+        كل الـ SQL queries اتحولت لـ Motor aggregation pipelines.
+        EXCLUDED_DECISIONS بتتفلتر في الـ $match بدل SQL NOT IN.
         """
         snap = MetricsSnapshot(window="realtime")
         snap.active_ws_clients = self.broadcaster.client_count
@@ -375,8 +379,8 @@ class MetricsCollector:
         elapsed = max(time.time() - self._window_start, 1)
         snap.events_per_minute = round(self._event_count / elapsed * 60, 1)
         if elapsed > 300:
-            self._event_count   = 0
-            self._window_start  = time.time()
+            self._event_count  = 0
+            self._window_start = time.time()
 
         snap.error_rate_pct = round(
             self._error_count / max(self._event_count, 1) * 100, 2
@@ -384,10 +388,36 @@ class MetricsCollector:
 
         # ── Finance Stats ─────────────────────────────────────────────────────
         try:
-            from core.finance_db import get_finance_dashboard_stats
-            stats = get_finance_dashboard_stats()
-            inv   = stats.get("invoices", {})
-            risk  = stats.get("risk", {})
+            db = _get_db()
+
+            inv_pipeline = [
+                {
+                    "$group": {
+                        "_id":               None,
+                        "total_invoices":    {"$sum": 1},
+                        "overdue":           {"$sum": {"$cond": [{"$eq": ["$status", "overdue"]},      1, 0]}},
+                        "legal":             {"$sum": {"$cond": [{"$eq": ["$status", "legal"]},        1, 0]}},
+                        "paid":              {"$sum": {"$cond": [{"$eq": ["$status", "paid"]},         1, 0]}},
+                        "outstanding_amount":{"$sum": {
+                            "$cond": [
+                                {"$in": ["$status", ["overdue", "legal", "suspended"]]},
+                                "$amount", 0,
+                            ]
+                        }},
+                        "collected_amount":  {"$sum": {"$cond": [{"$eq": ["$status", "paid"]}, "$amount", 0]}},
+                        # avg overdue days للـ overdue فقط
+                        "avg_overdue_ms":    {"$avg": {
+                            "$cond": [
+                                {"$eq": ["$status", "overdue"]},
+                                {"$subtract": [_utcnow(), "$due_date"]},
+                                None,
+                            ]
+                        }},
+                    }
+                },
+            ]
+            inv_docs = await db.invoices.aggregate(inv_pipeline).to_list(1)
+            inv      = inv_docs[0] if inv_docs else {}
 
             snap.total_invoices   = int(inv.get("total_invoices") or 0)
             snap.overdue_invoices = int(inv.get("overdue") or 0)
@@ -395,22 +425,44 @@ class MetricsCollector:
             snap.paid_invoices    = int(inv.get("paid") or 0)
             snap.outstanding_egp  = float(inv.get("outstanding_amount") or 0)
             snap.collected_egp    = float(inv.get("collected_amount") or 0)
-            snap.avg_overdue_days = float(inv.get("avg_overdue_days") or 0)
-            snap.high_risk_count  = int(risk.get("high_risk_count") or 0)
+            snap.avg_overdue_days = round(
+                float(inv.get("avg_overdue_ms") or 0) / 86_400_000, 1
+            )
 
             total_rev = snap.outstanding_egp + snap.collected_egp
             snap.collection_rate_pct = round(
                 snap.collected_egp / total_rev * 100, 1
             ) if total_rev > 0 else 0.0
 
+            # High-risk count
+            snap.high_risk_count = await db.invoices.count_documents({
+                "ai_risk_score": {"$gte": 0.70},
+                "status":        {"$nin": ["paid", "written_off"]},
+            })
+
         except Exception as e:
             logger.debug("Snapshot finance stats failed: %s", e)
 
-        # ── Action Stats ──────────────────────────────────────────────────────
+        # ── Action Stats (last 24h) ───────────────────────────────────────────
         try:
-            from core.finance_db import get_collection_action_stats
-            action_stats = get_collection_action_stats(days=1)
-            summary      = action_stats.get("summary", {})
+            db      = _get_db()
+            since1d = _utcnow() - timedelta(days=1)
+
+            action_pipeline = [
+                {"$match": {"sent_at": {"$gte": since1d}}},
+                {
+                    "$group": {
+                        "_id":                 None,
+                        "emails_sent":         {"$sum": {"$cond": [{"$eq": ["$action_type", "email"]},                1, 0]}},
+                        "legal_escalations":   {"$sum": {"$cond": [{"$eq": ["$action_type", "legal_escalation"]},    1, 0]}},
+                        "calls_scheduled":     {"$sum": {"$cond": [{"$eq": ["$action_type", "call_scheduled"]},      1, 0]}},
+                        "system_actions":      {"$sum": {"$cond": [{"$eq": ["$action_type", "system"]},              1, 0]}},
+                        "total":               {"$sum": 1},
+                    }
+                },
+            ]
+            action_docs = await db.clog.aggregate(action_pipeline).to_list(1)
+            summary     = action_docs[0] if action_docs else {}
 
             snap.emails_sent      = int(summary.get("emails_sent") or 0)
             snap.escalations      = int(summary.get("legal_escalations") or 0)
@@ -421,82 +473,92 @@ class MetricsCollector:
         except Exception as e:
             logger.debug("Snapshot action stats failed: %s", e)
 
-        # ── ✅ v2.2: AI Decision Stats — real decisions only ──────────────────
+        # ── AI Decision Stats — real decisions only ───────────────────────────
         #
-        # EXCLUDED: skipped / duplicate / already_claimed / already_processing
-        # INCLUDED: soft_follow_up / hard_follow_up / legal_escalation /
-        #           payment_plan / suspend_service / write_off /
-        #           safe_to_collect / invoice_registered / payment_complete / …
+        # EXCLUDED: skipped / duplicate / already_claimed / …
+        # INCLUDED: soft_follow_up / hard_follow_up / legal_escalation / …
         #
         try:
-            from core.db import get_db
+            db = _get_db()
 
-            # Build NOT IN clause from EXCLUDED_DECISIONS
-            placeholders = ", ".join(["%s"] * len(EXCLUDED_DECISIONS))
+            since24h   = _utcnow() - timedelta(hours=24)
+            today_start = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
-            with get_db() as (_, cur):
+            # ── 24h real decisions ────────────────────────────────────────────
+            pipeline_24h = [
+                {
+                    "$match": {
+                        "created_at": {"$gte": since24h},
+                        "decision":   {"$nin": EXCLUDED_DECISIONS},
+                    }
+                },
+                {
+                    "$group": {
+                        "_id":        None,
+                        "total_24h":  {"$sum": 1},
+                        "avg_conf":   {"$avg": "$confidence"},
+                        "avg_risk":   {"$avg": "$risk_score"},
+                        "avg_ms":     {"$avg": "$execution_ms"},
+                    }
+                },
+            ]
+            docs_24h  = await db.decisions.aggregate(pipeline_24h).to_list(1)
+            row_24h   = docs_24h[0] if docs_24h else {}
 
-                # ── 24h real decisions ────────────────────────────────────────
-                cur.execute(f"""
-                    SELECT
-                        COUNT(*)          AS total_24h,
-                        AVG(confidence)   AS avg_conf,
-                        AVG(risk_score)   AS avg_risk,
-                        AVG(execution_ms) AS avg_ms
-                    FROM finance_decisions
-                    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-                      AND decision NOT IN ({placeholders})
-                """, EXCLUDED_DECISIONS)
-                row_24h   = cur.fetchone() or {}
-                total_24h = int(row_24h.get("total_24h") or 0)
+            # ── Today's real decisions ────────────────────────────────────────
+            pipeline_today = [
+                {
+                    "$match": {
+                        "created_at": {"$gte": today_start},
+                        "decision":   {"$nin": EXCLUDED_DECISIONS},
+                    }
+                },
+                {"$count": "today_count"},
+            ]
+            docs_today      = await db.decisions.aggregate(pipeline_today).to_list(1)
+            decisions_today = int(docs_today[0]["today_count"]) if docs_today else 0
 
-                # ── Today's real decisions ────────────────────────────────────
-                cur.execute(f"""
-                    SELECT COUNT(*) AS today_count
-                    FROM finance_decisions
-                    WHERE DATE(created_at) = CURDATE()
-                      AND decision NOT IN ({placeholders})
-                """, EXCLUDED_DECISIONS)
-                row_today         = cur.fetchone() or {}
-                decisions_today   = int(row_today.get("today_count") or 0)
+            # ── Decision breakdown (today) ────────────────────────────────────
+            pipeline_breakdown = [
+                {
+                    "$match": {
+                        "created_at": {"$gte": today_start},
+                        "decision":   {"$nin": EXCLUDED_DECISIONS},
+                    }
+                },
+                {
+                    "$group": {
+                        "_id":   "$decision",
+                        "count": {"$sum": 1},
+                    }
+                },
+            ]
+            breakdown_rows = await db.decisions.aggregate(pipeline_breakdown).to_list(None)
 
-                # ── Decision breakdown (today) ─────────────────────────────────
-                cur.execute(f"""
-                    SELECT
-                        decision,
-                        COUNT(*) AS cnt
-                    FROM finance_decisions
-                    WHERE DATE(created_at) = CURDATE()
-                      AND decision NOT IN ({placeholders})
-                    GROUP BY decision
-                """, EXCLUDED_DECISIONS)
-                breakdown_rows = cur.fetchall() or []
-
-            snap.ai_decisions_made = total_24h
+            snap.ai_decisions_made = int(row_24h.get("total_24h") or 0)
             snap.decisions_today   = decisions_today
             snap.avg_confidence    = round(float(row_24h.get("avg_conf") or 0), 3)
             snap.avg_risk_score    = round(float(row_24h.get("avg_risk") or 0), 3)
             snap.avg_decision_ms   = round(float(row_24h.get("avg_ms") or 0), 1)
 
-            # Map breakdown rows to snapshot fields
             _decision_map = {
-                "safe_to_collect":   "decisions_approve",
-                "approve":           "decisions_approve",
-                "invoice_registered":"decisions_approve",
-                "manual_review":     "decisions_review",
-                "payment_plan":      "decisions_plan",
-                "soft_follow_up":    "decisions_soft",
-                "hard_follow_up":    "decisions_hard",
-                "suspend_service":   "decisions_suspend",
-                "legal_escalation":  "decisions_escalate",
-                "write_off":         "decisions_reject",
-                "reject":            "decisions_reject",
-                "payment_complete":  "decisions_approve",
-                "partial_payment":   "decisions_review",
+                "safe_to_collect":    "decisions_approve",
+                "approve":            "decisions_approve",
+                "invoice_registered": "decisions_approve",
+                "manual_review":      "decisions_review",
+                "payment_plan":       "decisions_plan",
+                "soft_follow_up":     "decisions_soft",
+                "hard_follow_up":     "decisions_hard",
+                "suspend_service":    "decisions_suspend",
+                "legal_escalation":   "decisions_escalate",
+                "write_off":          "decisions_reject",
+                "reject":             "decisions_reject",
+                "payment_complete":   "decisions_approve",
+                "partial_payment":    "decisions_review",
             }
             for row in breakdown_rows:
-                dec = str(row.get("decision") or "")
-                cnt = int(row.get("cnt") or 0)
+                dec        = str(row.get("_id") or "")
+                cnt        = int(row.get("count") or 0)
                 field_name = _decision_map.get(dec)
                 if field_name and hasattr(snap, field_name):
                     setattr(snap, field_name, getattr(snap, field_name) + cnt)
@@ -522,8 +584,8 @@ class MetricsCollector:
             try:
                 event = await asyncio.wait_for(self._queue.get(), timeout=2.0)
                 self._event_count += 1
-                loop = asyncio.get_event_loop()
-                loop.run_in_executor(None, self.storage.store_event, event)
+                # ✅ store_event async مباشرة (Motor) بدل run_in_executor
+                asyncio.create_task(self.storage.store_event(event))
                 await self.broadcaster.broadcast_metric(event)
             except asyncio.TimeoutError:
                 continue
@@ -594,4 +656,4 @@ async def start_metrics_collector() -> None:
         logger.warning("⚠️ start_metrics_collector() اتنادى أكتر من مرة — ignored.")
         return
     await collector.start()
-    logger.info("✅ MetricsCollector v2.2 ready | id=%s", id(collector))
+    logger.info("✅ MetricsCollector v3.0 ready | id=%s", id(collector))

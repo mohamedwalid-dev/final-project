@@ -18,12 +18,13 @@ Run:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import sys
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -105,12 +106,7 @@ COST_ESCALATE_FN   = 30
 THRESHOLD_APPROVE  = 0.72
 THRESHOLD_ESCALATE = 0.42
 
-# ── FIX: Sanity gate — رفض موديل بـ AUC > 0.99 على synthetic فقط ─────────────
 SANITY_MAX_AUC_SYNTHETIC = 0.97
-"""
-لو الـ AUC > 0.97 على بيانات synthetic = علامة leakage قوية.
-على real data ممكن يوصل لـ 0.95+ لكن مش 0.99+.
-"""
 
 
 def days_to_fy_end(ref_date: pd.Timestamp) -> int:
@@ -130,43 +126,72 @@ def load_from_csv(csv_path: str) -> pd.DataFrame:
     return df
 
 
-def load_from_db() -> pd.DataFrame:
-    load_dotenv(ROOT_DIR / ".env")
-    import mysql.connector
-
-    conn = mysql.connector.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", 3306)),
-        database=os.getenv("DB_NAME", "ai_erp"),
-        user=os.getenv("DB_USER", "root"),
-        password=os.getenv("DB_PASSWORD", ""),
-        charset="utf8mb4",
-    )
-
-    query = """
-        SELECT
-            l.leave_days,
-            COALESCE(e.leave_balance, 15)               AS leave_balance,
-            COALESCE(e.performance_score, 0.75)         AS performance_score,
-            COALESCE(l.absence_count,
-                (SELECT COUNT(*) FROM leaves l2
-                 WHERE l2.employee_id = l.employee_id
-                   AND l2.status = 'rejected'
-                   AND l2.id < l.id), 0)                AS absence_count,
-            COALESCE(e.job_level, 'junior')             AS job_level,
-            COALESCE(e.years_of_experience, 1)          AS years_of_experience,
-            COALESCE(e.salary_grade, 'C')               AS salary_grade,
-            COALESCE(e.overtime_hours, 0)               AS overtime_hours,
-            l.created_at,
-            CASE WHEN l.status = 'approved' THEN 1 ELSE 0 END AS approved
-        FROM leaves l
-        JOIN employees e ON e.id = l.employee_id
-        WHERE l.status IN ('approved', 'rejected')
-        ORDER BY l.created_at ASC
+async def _fetch_leaves_from_mongo() -> list[dict]:
     """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    logger.info("✅ Loaded %d records from DB", len(df))
+    Pull historical approved/rejected leaves from MongoDB HRDB.
+    Maps Mongo document fields → training column names.
+    """
+    load_dotenv(ROOT_DIR / ".env")
+    sys.path.insert(0, str(APP_DIR))
+
+    from core.mongo_connect import ensure_mongo_ready, get_hr_db
+
+    await ensure_mongo_ready()
+    db = get_hr_db()
+
+    cursor = db.leaves.find(
+        {"status": {"$in": ["approved", "rejected"]}},
+        {
+            "leave_days":          1,
+            "leave_balance":       1,
+            "confidence_score":    1,   # used as proxy for performance_score if needed
+            "leave_type":          1,
+            "department":          1,
+            "created_at":          1,
+            "status":              1,
+            # employee context fields (set at request time)
+            "performance_score":   1,
+            "absence_count":       1,
+            "job_level":           1,
+            "years_of_experience": 1,
+            "salary_grade":        1,
+            "overtime_hours":      1,
+        },
+    ).sort("created_at", 1)
+
+    docs = await cursor.to_list(None)
+    return docs
+
+
+def load_from_db() -> pd.DataFrame:
+    """
+    Load historical leave data from MongoDB for training.
+    Runs the async fetch synchronously via asyncio.run().
+    """
+    docs = asyncio.run(_fetch_leaves_from_mongo())
+
+    if not docs:
+        raise ValueError("No approved/rejected leaves found in MongoDB")
+
+    rows = []
+    for d in docs:
+        rows.append({
+            "leave_days":          d.get("leave_days",          1),
+            "leave_balance":       d.get("leave_balance",       15),
+            "performance_score":   d.get("performance_score",
+                                         d.get("confidence_score", 0.75)),
+            "absence_count":       d.get("absence_count",       0),
+            "job_level":           d.get("job_level",           "junior"),
+            "years_of_experience": d.get("years_of_experience", 1),
+            "salary_grade":        d.get("salary_grade",        "C"),
+            "overtime_hours":      d.get("overtime_hours",      0),
+            "created_at":          d.get("created_at"),
+            # Target: 1 = approved, 0 = rejected
+            "approved":            1 if d.get("status") == "approved" else 0,
+        })
+
+    df = pd.DataFrame(rows)
+    logger.info("✅ Loaded %d records from MongoDB HRDB (leaves collection)", len(df))
     return df
 
 
@@ -212,32 +237,21 @@ def generate_synthetic_data(n: int = 1500, seed: int = 42) -> pd.DataFrame:
             + min(overtime / 80, 1.0)           * 0.05
         )
 
-        # ── Hard Rules — لا negotiation ──────────────────────────────────────
+        # ── Hard Rules ────────────────────────────────────────────────────────
         if leave_balance == 0 or leave_days > leave_balance * 1.5:
             approved = 0
-
         elif perf < 0.3 and absence > 10:
             approved = 0
-
-        # ── FIX v3.1: Probabilistic labels بدل deterministic ────────────────
-        # High confidence approve — مع noise بسيط (5%)
         elif score >= 0.75:
             approved = int(rng.choice([1, 0], p=[0.95, 0.05]))
-
-        # Solid approve — noise 10%
         elif score >= 0.60:
             approved = int(rng.choice([1, 0], p=[0.90, 0.10]))
-
-        # True gray zone — genuine uncertainty (interpolated probability)
         elif score >= 0.45:
             p_approve = 0.40 + (score - 0.45) / (0.60 - 0.45) * 0.25
             p_approve = float(np.clip(p_approve, 0.05, 0.95))
             approved  = int(rng.choice([1, 0], p=[p_approve, 1 - p_approve]))
-
-        # Low zone — mainly reject مع noise 15%
         elif score >= 0.30:
             approved = int(rng.choice([0, 1], p=[0.85, 0.15]))
-
         else:
             approved = 0
 
@@ -268,9 +282,6 @@ def generate_synthetic_data(n: int = 1500, seed: int = 42) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def validate_no_leakage(df: pd.DataFrame, feature_cols: list, target: str = TARGET) -> dict:
-    """
-    🔍 Feature Leakage Validator — checks 3 types of leakage.
-    """
     logger.info("\n" + "═" * 60)
     logger.info("  🔍 FEATURE LEAKAGE VALIDATION")
     logger.info("═" * 60)
@@ -346,19 +357,6 @@ def validate_no_leakage(df: pd.DataFrame, feature_cols: list, target: str = TARG
     warning_count  = sum(1 for s in suspicious if s["severity"] == "WARNING")
     passed         = critical_count == 0
 
-    report_lines = [
-        f"Feature Leakage Validation — {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-        f"Features checked : {len(feature_cols)}",
-        f"Critical issues  : {critical_count}",
-        f"Warnings         : {warning_count}",
-        f"Status           : {'✅ PASSED' if passed else '❌ FAILED'}",
-    ]
-    if suspicious:
-        report_lines.append("\nSuspicious Features:")
-        for s in suspicious:
-            report_lines.append(f"  [{s['severity']}] {s['feature']} | {s['type']} | {s['detail']}")
-
-    report = "\n".join(report_lines)
     logger.info("  Summary: critical=%d | warnings=%d | %s",
                 critical_count, warning_count, "✅ PASSED" if passed else "❌ FAILED")
     logger.info("═" * 60)
@@ -371,12 +369,11 @@ def validate_no_leakage(df: pd.DataFrame, feature_cols: list, target: str = TARG
         "critical_count": critical_count,
         "warning_count":  warning_count,
         "suspicious":     suspicious,
-        "report":         report,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# POST-TRAIN CONFIDENCE SANITY CHECK (FIX v3.1)
+# POST-TRAIN CONFIDENCE SANITY CHECK
 # ══════════════════════════════════════════════════════════════════════════════
 
 def check_confidence_distribution(
@@ -386,38 +383,28 @@ def check_confidence_distribution(
     data_source: str,
     auc:         float,
 ) -> dict:
-    """
-    🔍 FIX v3.1: Post-train confidence distribution check.
-
-    يكتشف:
-        - Collapsed predictions (كل حاجة قريبة من 0 أو 1)
-        - Overconfident model (mean > 0.90 على synthetic)
-        - AUC فوق الـ sanity cap للـ synthetic data
-    """
     logger.info("\n" + "═" * 60)
     logger.info("  🔍 POST-TRAIN CONFIDENCE SANITY CHECK")
     logger.info("═" * 60)
 
     proba = model.predict_proba(X_test)[:, 1]
 
-    mean_conf     = float(proba.mean())
-    std_conf      = float(proba.std())
-    pct_above_95  = float((proba > 0.95).mean())
-    pct_above_99  = float((proba > 0.99).mean())
-    pct_below_05  = float((proba < 0.05).mean())
+    mean_conf    = float(proba.mean())
+    std_conf     = float(proba.std())
+    pct_above_95 = float((proba > 0.95).mean())
+    pct_above_99 = float((proba > 0.99).mean())
+    pct_below_05 = float((proba < 0.05).mean())
 
     issues   = []
     warnings = []
     passed   = True
 
-    # ── Check 1: Collapsed std ────────────────────────────────────────────────
     if std_conf < 0.05:
         issues.append(f"🚨 COLLAPSED PREDICTIONS: std={std_conf:.4f} < 0.05")
         passed = False
     elif std_conf < 0.10:
         warnings.append(f"⚠️ Low variance: std={std_conf:.4f}")
 
-    # ── Check 2: Too many extreme predictions ─────────────────────────────────
     if pct_above_99 > 0.10:
         issues.append(
             f"🚨 OVERCONFIDENT: {pct_above_99:.0%} of test predictions > 0.99 — "
@@ -427,35 +414,27 @@ def check_confidence_distribution(
     elif pct_above_95 > 0.40:
         warnings.append(f"⚠️ {pct_above_95:.0%} of predictions > 0.95 — high bias toward approve")
 
-    # ── Check 3: AUC sanity cap على synthetic ────────────────────────────────
     is_synthetic = "synthetic" in data_source
     if is_synthetic and auc > SANITY_MAX_AUC_SYNTHETIC:
         issues.append(
             f"🚨 AUC={auc:.4f} > {SANITY_MAX_AUC_SYNTHETIC} on synthetic data — "
-            "model is memorizing generated labels, not learning patterns. "
-            "Re-run generate_synthetic_data() with more noise."
+            "model is memorizing generated labels."
         )
         passed = False
 
-    # ── Report ────────────────────────────────────────────────────────────────
     logger.info("  📊 Confidence Stats on Test Set:")
     logger.info("     mean = %.4f | std = %.4f", mean_conf, std_conf)
-    logger.info("     pct > 0.95 = %.0f%% | pct > 0.99 = %.0f%%", pct_above_95 * 100, pct_above_99 * 100)
+    logger.info("     pct > 0.95 = %.0f%% | pct > 0.99 = %.0f%%",
+                pct_above_95 * 100, pct_above_99 * 100)
     logger.info("     pct < 0.05 = %.0f%%", pct_below_05 * 100)
-    logger.info("     AUC = %.4f%s", auc,
-                f" ⚠️ > {SANITY_MAX_AUC_SYNTHETIC} SANITY CAP on synthetic!" if is_synthetic and auc > SANITY_MAX_AUC_SYNTHETIC else "")
 
     if issues:
         for issue in issues:
             logger.error("  %s", issue)
-        logger.error(
-            "  ❌ SANITY CHECK FAILED — model is overfit/memorizing. "
-            "Retrain with more noise or real data."
-        )
+        logger.warning("  ⚠️ Continuing despite sanity failure — review before production use.")
     elif warnings:
         for w in warnings:
             logger.warning("  %s", w)
-        logger.warning("  ⚠️ Sanity check passed with warnings.")
     else:
         logger.info("  ✅ Confidence distribution looks realistic.")
 
@@ -750,8 +729,8 @@ def simulate_business_costs(
         esc_fp = np.sum((decisions == "escalate") & (y_true == 0))
         esc_fn = np.sum((decisions == "escalate") & (y_true == 1))
 
-        cost_fp  = fp    * cost_false_approve
-        cost_fn  = fn    * cost_false_reject
+        cost_fp  = fp     * cost_false_approve
+        cost_fn  = fn     * cost_false_reject
         cost_esc = esc_fp * COST_ESCALATE_FP + esc_fn * COST_ESCALATE_FN
         total    = cost_fp + cost_fn + cost_esc
 
@@ -768,8 +747,8 @@ def simulate_business_costs(
             "cost_per_request":   float(total / max(len(y_true), 1)),
         }
 
-    current     = compute_costs(y_proba, y_test, t_approve, t_escalate)
-    scale       = n_requests_monthly / max(n_test, 1)
+    current      = compute_costs(y_proba, y_test, t_approve, t_escalate)
+    scale        = n_requests_monthly / max(n_test, 1)
     monthly_cost = current["total_cost_test"] * scale
     annual_cost  = monthly_cost * 12
 
@@ -797,7 +776,7 @@ def simulate_business_costs(
                 })
                 if mo < best_cost:
                     best_cost      = mo
-                    best_threshold = {"approve": round(float(t_app), 2),
+                    best_threshold = {"approve":  round(float(t_app), 2),
                                       "escalate": round(float(t_esc), 2)}
 
         if best_threshold:
@@ -808,15 +787,15 @@ def simulate_business_costs(
     logger.info("═" * 60)
 
     return {
-        "current_thresholds": {"approve": t_approve, "escalate": t_escalate},
-        "test_set_metrics":   current,
-        "monthly_cost_egp":   round(monthly_cost, 2),
-        "annual_cost_egp":    round(annual_cost, 2),
-        "cost_per_request":   round(current["cost_per_request"], 2),
-        "optimal_thresholds": best_threshold,
+        "current_thresholds":   {"approve": t_approve, "escalate": t_escalate},
+        "test_set_metrics":     current,
+        "monthly_cost_egp":     round(monthly_cost, 2),
+        "annual_cost_egp":      round(annual_cost, 2),
+        "cost_per_request":     round(current["cost_per_request"], 2),
+        "optimal_thresholds":   best_threshold,
         "optimal_monthly_cost": round(best_cost, 2) if best_threshold else None,
-        "monthly_saving_egp": round(monthly_cost - best_cost, 2) if best_threshold else 0,
-        "sweep_results":      sweep_results[:20],
+        "monthly_saving_egp":   round(monthly_cost - best_cost, 2) if best_threshold else 0,
+        "sweep_results":        sweep_results[:20],
     }
 
 
@@ -937,10 +916,10 @@ def evaluate(model, X_test, y_test, feature_cols, X_train=None, y_train=None) ->
     escalate_rate = ((y_proba >= THRESHOLD_ESCALATE) & (y_proba < THRESHOLD_APPROVE)).mean()
     reject_rate   = (y_proba < THRESHOLD_ESCALATE).mean()
     logger.info("\n  📌 Decision Distribution:")
-    logger.info("  Auto-Approve  (>=%.0f%%): %.1f%%", THRESHOLD_APPROVE * 100, approve_rate * 100)
+    logger.info("  Auto-Approve  (>=%.0f%%): %.1f%%", THRESHOLD_APPROVE  * 100, approve_rate  * 100)
     logger.info("  Escalate      (%.0f%%–%.0f%%): %.1f%%",
                 THRESHOLD_ESCALATE * 100, THRESHOLD_APPROVE * 100, escalate_rate * 100)
-    logger.info("  Auto-Reject   (<%.0f%%): %.1f%%", THRESHOLD_ESCALATE * 100, reject_rate * 100)
+    logger.info("  Auto-Reject   (<%.0f%%): %.1f%%",  THRESHOLD_ESCALATE * 100, reject_rate   * 100)
     logger.info("%s", "═" * 55)
 
     return {
@@ -951,9 +930,9 @@ def evaluate(model, X_test, y_test, feature_cols, X_train=None, y_train=None) ->
         "cv_auc_std":       round(float(np.std(cv_scores)),  4) if cv_scores else None,
         "confusion_matrix": cm,
         "decision_distribution": {
-            "auto_approve": round(float(approve_rate), 3),
+            "auto_approve": round(float(approve_rate),  3),
             "escalate":     round(float(escalate_rate), 3),
-            "auto_reject":  round(float(reject_rate), 3),
+            "auto_reject":  round(float(reject_rate),   3),
         },
     }
 
@@ -962,9 +941,11 @@ def evaluate(model, X_test, y_test, feature_cols, X_train=None, y_train=None) ->
 # 5. SAVE ARTIFACTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def save_artifacts(model, scaler, encoders, feature_cols, eval_metrics, data_source, n_samples,
-                   leakage_report=None, edge_case_results=None, cost_simulation=None,
-                   optimal_thresholds=None, confidence_sanity=None):
+def save_artifacts(
+    model, scaler, encoders, feature_cols, eval_metrics, data_source, n_samples,
+    leakage_report=None, edge_case_results=None, cost_simulation=None,
+    optimal_thresholds=None, confidence_sanity=None,
+):
     joblib.dump(model,  MODEL_PATH)
     joblib.dump(scaler, SCALER_PATH)
     joblib.dump({"encoders": encoders, "feature_cols": feature_cols}, ENCODER_PATH)
@@ -982,7 +963,7 @@ def save_artifacts(model, scaler, encoders, feature_cols, eval_metrics, data_sou
             )
 
     metadata = {
-        "trained_at":           datetime.utcnow().isoformat() + "Z",
+        "trained_at":           datetime.now(timezone.utc).isoformat(),
         "model_type":           "CalibratedEnsemble(RF+GB+LR)",
         "data_source":          data_source,
         "n_training_samples":   n_samples,
@@ -990,9 +971,9 @@ def save_artifacts(model, scaler, encoders, feature_cols, eval_metrics, data_sou
         "numeric_features":     NUMERIC_FEATURES,
         "categorical_features": CATEGORICAL_FEATURES,
         "thresholds": {
-            "approve":   t_approve,
-            "escalate":  t_escalate,
-            "reject":    0.0,
+            "approve":     t_approve,
+            "escalate":    t_escalate,
+            "reject":      0.0,
             "description": (
                 f">={t_approve} → auto approve | "
                 f"{t_escalate}–{t_approve} → escalate | "
@@ -1009,11 +990,11 @@ def save_artifacts(model, scaler, encoders, feature_cols, eval_metrics, data_sou
             "warning_count":  leakage_report.get("warning_count")  if leakage_report else None,
         } if leakage_report else None,
         "edge_case_testing": {
-            "total":          edge_case_results.get("total")         if edge_case_results else None,
-            "strict_passed":  edge_case_results.get("strict_passed") if edge_case_results else None,
-            "strict_rate":    edge_case_results.get("strict_rate")   if edge_case_results else None,
-            "loose_rate":     edge_case_results.get("loose_rate")    if edge_case_results else None,
-            "critical_fails": edge_case_results.get("critical_fails")if edge_case_results else None,
+            "total":          edge_case_results.get("total")          if edge_case_results else None,
+            "strict_passed":  edge_case_results.get("strict_passed")  if edge_case_results else None,
+            "strict_rate":    edge_case_results.get("strict_rate")    if edge_case_results else None,
+            "loose_rate":     edge_case_results.get("loose_rate")     if edge_case_results else None,
+            "critical_fails": edge_case_results.get("critical_fails") if edge_case_results else None,
         } if edge_case_results else None,
         "business_costs": {
             "monthly_cost_egp":   cost_simulation.get("monthly_cost_egp")   if cost_simulation else None,
@@ -1022,13 +1003,12 @@ def save_artifacts(model, scaler, encoders, feature_cols, eval_metrics, data_sou
             "optimal_thresholds": cost_simulation.get("optimal_thresholds")  if cost_simulation else None,
             "monthly_saving_egp": cost_simulation.get("monthly_saving_egp")  if cost_simulation else None,
         } if cost_simulation else None,
-        # FIX v3.1: confidence sanity results
         "confidence_sanity": {
-            "passed":       confidence_sanity.get("passed")      if confidence_sanity else None,
-            "mean_conf":    confidence_sanity.get("mean_conf")   if confidence_sanity else None,
-            "std_conf":     confidence_sanity.get("std_conf")    if confidence_sanity else None,
-            "pct_above_99": confidence_sanity.get("pct_above_99")if confidence_sanity else None,
-            "issues":       confidence_sanity.get("issues")      if confidence_sanity else [],
+            "passed":       confidence_sanity.get("passed")       if confidence_sanity else None,
+            "mean_conf":    confidence_sanity.get("mean_conf")    if confidence_sanity else None,
+            "std_conf":     confidence_sanity.get("std_conf")     if confidence_sanity else None,
+            "pct_above_99": confidence_sanity.get("pct_above_99") if confidence_sanity else None,
+            "issues":       confidence_sanity.get("issues")       if confidence_sanity else [],
         } if confidence_sanity else None,
     }
 
@@ -1048,17 +1028,16 @@ def save_artifacts(model, scaler, encoders, feature_cols, eval_metrics, data_sou
 
 def main():
     parser = argparse.ArgumentParser(description="HR Leave Approval — Training Pipeline v3.1")
-    parser.add_argument("--min-samples",         type=int,   default=50)
-    parser.add_argument("--dry-run",             action="store_true")
-    parser.add_argument("--csv",                 type=str,   default=None)
-    parser.add_argument("--skip-leakage-check",  action="store_true")
-    parser.add_argument("--skip-edge-tests",     action="store_true")
-    parser.add_argument("--skip-cost-sim",       action="store_true")
-    parser.add_argument("--skip-sanity-check",   action="store_true",
-                        help="تخطي post-train confidence sanity check (غير موصى به)")
-    parser.add_argument("--monthly-requests",    type=int,   default=200)
-    parser.add_argument("--cost-false-approve",  type=float, default=COST_FALSE_APPROVE)
-    parser.add_argument("--cost-false-reject",   type=float, default=COST_FALSE_REJECT)
+    parser.add_argument("--min-samples",        type=int,  default=50)
+    parser.add_argument("--dry-run",            action="store_true")
+    parser.add_argument("--csv",                type=str,  default=None)
+    parser.add_argument("--skip-leakage-check", action="store_true")
+    parser.add_argument("--skip-edge-tests",    action="store_true")
+    parser.add_argument("--skip-cost-sim",      action="store_true")
+    parser.add_argument("--skip-sanity-check",  action="store_true")
+    parser.add_argument("--monthly-requests",   type=int,  default=200)
+    parser.add_argument("--cost-false-approve", type=float, default=COST_FALSE_APPROVE)
+    parser.add_argument("--cost-false-reject",  type=float, default=COST_FALSE_REJECT)
     args = parser.parse_args()
 
     logger.info("🚀 HR Leave Approval Training Pipeline v3.1 starting...")
@@ -1077,23 +1056,26 @@ def main():
         except Exception as e:
             logger.error("❌ CSV load failed: %s", e)
             sys.exit(1)
+
     elif not args.dry_run:
         try:
             df = load_from_db()
             if len(df) < args.min_samples:
-                logger.warning("⚠️ Only %d real rows — augmenting with synthetic", len(df))
+                logger.warning(
+                    "⚠️ Only %d real rows — augmenting with synthetic", len(df)
+                )
                 df_synth    = generate_synthetic_data(n=max(300, args.min_samples * 4))
                 df          = pd.concat([df, df_synth], ignore_index=True)
-                data_source = "db+synthetic"
+                data_source = "mongo+synthetic"
         except Exception as e:
-            logger.warning("⚠️ DB load failed: %s — using synthetic", e)
+            logger.warning("⚠️ MongoDB load failed: %s — using synthetic", e)
             df = None
 
     if df is None or args.dry_run:
         df          = generate_synthetic_data(n=1500)
         data_source = "synthetic"
 
-    # ── 2. Sanity check ───────────────────────────────────────────────────────
+    # ── 2. Target column ──────────────────────────────────────────────────────
     if TARGET not in df.columns:
         if "status" in df.columns:
             df[TARGET] = (df["status"] == "approved").astype(int)
@@ -1125,7 +1107,7 @@ def main():
             logger.error("❌ Training ABORTED — feature leakage detected.")
             sys.exit(1)
     else:
-        logger.warning("⚠️ Leakage check skipped (--skip-leakage-check)")
+        logger.warning("⚠️ Leakage check skipped")
 
     # ── 5. Train/Test Split ───────────────────────────────────────────────────
     X_train, X_test, y_train, y_test = train_test_split(
@@ -1146,25 +1128,14 @@ def main():
     logger.info("\n📊 Evaluating on holdout test set...")
     eval_metrics = evaluate(model, X_test, y_test, feature_cols, X_train, y_train)
 
-    # ── 9. FIX v3.1: Post-Train Confidence Sanity Check ──────────────────────
+    # ── 9. Post-Train Confidence Sanity ───────────────────────────────────────
     confidence_sanity = None
     if not args.skip_sanity_check:
         confidence_sanity = check_confidence_distribution(
             model, X_test, y_test, data_source, eval_metrics["roc_auc"]
         )
-        if not confidence_sanity["passed"]:
-            logger.error(
-                "❌ POST-TRAIN SANITY CHECK FAILED — "
-                "model is overconfident/memorizing.\n"
-                "   Fix: The synthetic data labels are too deterministic.\n"
-                "   Solution: generate_synthetic_data() now uses probabilistic labels.\n"
-                "   If you have real DB data, run without --dry-run for better results.\n"
-                "   To skip this check: --skip-sanity-check"
-            )
-            # نحذر بس مش نوقف — على الأقل نخلي الـ user يقرر
-            logger.warning("⚠️ Continuing despite sanity failure — review the model before production use.")
     else:
-        logger.warning("⚠️ Post-train sanity check skipped (--skip-sanity-check)")
+        logger.warning("⚠️ Post-train sanity check skipped")
 
     # ── 10. Cost Simulation ───────────────────────────────────────────────────
     cost_simulation    = None
@@ -1181,7 +1152,7 @@ def main():
         )
         optimal_thresholds = cost_simulation.get("optimal_thresholds")
     else:
-        logger.warning("⚠️ Cost simulation skipped (--skip-cost-sim)")
+        logger.warning("⚠️ Cost simulation skipped")
 
     # ── 11. Edge Case Testing ─────────────────────────────────────────────────
     edge_case_results = None
@@ -1199,12 +1170,12 @@ def main():
                     "escalate": THRESHOLD_ESCALATE,
                 }
             }
-            temp_handler._loaded = True
-            edge_case_results    = run_edge_case_tests(temp_handler, verbose=True)
+            temp_handler._loaded  = True
+            edge_case_results     = run_edge_case_tests(temp_handler, verbose=True)
         except ImportError:
             logger.warning("⚠️ LeaveModelHandler not found — skipping edge cases")
     else:
-        logger.warning("⚠️ Edge case tests skipped (--skip-edge-tests)")
+        logger.warning("⚠️ Edge case tests skipped")
 
     # ── 12. Quality Gate ──────────────────────────────────────────────────────
     quality_issues = []
@@ -1213,7 +1184,7 @@ def main():
     if edge_case_results and edge_case_results["loose_rate"] < 0.70:
         quality_issues.append(f"Edge case pass rate={edge_case_results['loose_rate']:.0%} < 70%")
     if confidence_sanity and not confidence_sanity["passed"]:
-        quality_issues.append("Post-train confidence sanity FAILED — possible memorization")
+        quality_issues.append("Post-train confidence sanity FAILED")
 
     if quality_issues:
         logger.warning("⚠️ Quality gate WARNINGS: %s", " | ".join(quality_issues))
@@ -1235,22 +1206,17 @@ def main():
     print(f"   Accuracy : {eval_metrics['accuracy']:.2%}")
     print(f"   ROC-AUC  : {eval_metrics['roc_auc']:.4f}")
     print(f"   F1 Score : {eval_metrics['f1_score']:.4f}")
-
     if leakage_report:
-        status = "✅ PASSED" if leakage_report["passed"] else "❌ FAILED"
-        print(f"   Leakage  : {status} (critical={leakage_report['critical_count']})")
-
+        print(f"   Leakage  : {'✅ PASSED' if leakage_report['passed'] else '❌ FAILED'} "
+              f"(critical={leakage_report['critical_count']})")
     if confidence_sanity:
-        cs_status = "✅ OK" if confidence_sanity["passed"] else "❌ OVERFIT WARNING"
-        print(f"   Sanity   : {cs_status} (mean={confidence_sanity['mean_conf']:.3f}, std={confidence_sanity['std_conf']:.3f})")
-
+        print(f"   Sanity   : {'✅ OK' if confidence_sanity['passed'] else '❌ OVERFIT WARNING'} "
+              f"(mean={confidence_sanity['mean_conf']:.3f}, std={confidence_sanity['std_conf']:.3f})")
     if edge_case_results:
         print(f"   Edge Cases: {edge_case_results['strict_passed']}/{edge_case_results['total']} strict | "
               f"{edge_case_results['loose_rate']:.0%} acceptable")
-
     if cost_simulation:
         print(f"   Monthly Cost: {cost_simulation['monthly_cost_egp']:,.0f} EGP/month")
-
     print(f"\n   Next → POST /model/reload to load the new model")
     print(f"   Then → GET  /model/diagnose to verify confidence distribution\n")
 

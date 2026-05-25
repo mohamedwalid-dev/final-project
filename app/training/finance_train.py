@@ -14,6 +14,10 @@ traing\finance_train.py
   ✅ FP cost penalty مرتفع في threshold optimization
   ✅ UI-ready reasons & explanations
 
+🔧 BUG FIX v8.1.1:
+  ✅ _to_features(): numpy array input → shape guard يضمن (1, N) مش (1, 1, N)
+  ✅ _to_features(): dict input مع leakage guard محسّن
+
 CSV Columns المتوقعة (schema ثابت):
   customer_id, invoice_id, age, gender, location, industry,
   business_type, years_with_company, income_revenue, credit_score,
@@ -40,9 +44,15 @@ import uuid
 import warnings
 from datetime import datetime
 from typing import Optional
-
+import joblib
 import numpy as np
 import pandas as pd
+try:
+    import joblib
+except ImportError:
+    joblib = None
+
+    
 
 warnings.filterwarnings("ignore")
 
@@ -66,6 +76,7 @@ METADATA_PATH = os.path.join(MODEL_DIR, "metadata_v8.json")
 REPORT_PATH   = os.path.join(MODEL_DIR, "report_v8.txt")
 DECISION_LOG  = os.path.join(LOG_DIR,   "decisions.jsonl")
 OVERRIDE_LOG  = os.path.join(LOG_DIR,   "overrides.jsonl")
+FEATURE_COLUMNS_PATH = os.path.join(MODEL_DIR, "finance_feature_columns.pkl")  # ← هنا
 
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
@@ -92,30 +103,20 @@ BUSINESS_TYPE_RISK = {
 # ══════════════════════════════════════════════════════════════════════════════
 # 🔥 v8.1 — IMPROVED DECISION MODES (3-tier thresholds)
 # ══════════════════════════════════════════════════════════════════════════════
-# كل mode عنده: reject_threshold, review_high, review_low
-# approve  : score < review_low
-# review   : review_low <= score < reject_threshold
-# reject   : score >= reject_threshold
-#
-# الـ FP القديم كان 26.8% لأن reject_threshold كان 0.14 (منخفض جداً)
-# دلوقتي رفعناه 0.40+ في كل الـ modes — ده يقلل FP بشكل كبير
 DECISION_MODES = {
     "safe": {
-        # Finance / Collections — يحمي من الخسايرالكبيرة، يقبل بعض FP
         "reject":      0.45,
         "review_high": 0.35,
         "review_low":  0.20,
         "description": "حماية مالية — للإدارة المالية والائتمان",
     },
     "balanced": {
-        # Default ERP mode — توازن بين FP و FN
         "reject":      0.50,
         "review_high": 0.38,
         "review_low":  0.22,
         "description": "متوازن — الوضع الافتراضي للـ ERP",
     },
     "aggressive": {
-        # Sales — يوافق على أكبر عدد ممكن، يقبل بعض FN
         "reject":      0.60,
         "review_high": 0.45,
         "review_low":  0.28,
@@ -259,16 +260,41 @@ def load_and_prepare_csv(csv_path: str) -> tuple:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], dayfirst=False, errors="coerce")
 
-    df = df.sort_values(["customer_id", "invoice_date"], kind="stable").reset_index(drop=True)
-    df["invoice_seq"] = df.groupby("customer_id").cumcount()
+    # ── Handle missing customer_id ─────────────────────────────────────────────
+    if "customer_id" not in df.columns:
+        log.warning("   ⚠️  customer_id missing — creating synthetic IDs")
+        df["customer_id"] = [f"CUST-{str(i // 10).zfill(6)}" for i in range(len(df))]
 
+    # ── Handle missing invoice_date ────────────────────────────────────────────
+    if "invoice_date" not in df.columns:
+        log.warning("   ⚠️  invoice_date missing — using invoice_month to approximate")
+        if "invoice_month" in df.columns:
+            df["invoice_date"] = pd.to_datetime(
+                df["invoice_month"].apply(lambda m: f"2023-{int(m):02d}-01"),
+                errors="coerce"
+            )
+        else:
+            df["invoice_date"] = pd.Timestamp("2023-06-01")
+
+    # ── Sort and sequence ──────────────────────────────────────────────────────
+    sort_cols = ["customer_id"]
+    if "invoice_date" in df.columns:
+        sort_cols.append("invoice_date")
+    df = df.sort_values(sort_cols, kind="stable").reset_index(drop=True)
+    df["invoice_seq"] = df.groupby("customer_id").cumcount()
     if "payment_date" in df.columns and "due_date" in df.columns:
         df["payment_delay"] = (df["payment_date"] - df["due_date"]).dt.days.fillna(0)
+    elif "is_bad_payer" in df.columns:
+        log.info("   ✅ is_bad_payer column found directly in CSV — using as-is")
+        df["payment_delay"] = df["is_bad_payer"].apply(lambda x: 31 if x == 1 else 0)
     else:
         log.warning("   ⚠️  payment_date/due_date missing — payment_delay = 0")
         df["payment_delay"] = 0
 
-    df["is_bad_payer"] = (df["payment_delay"] > 30).astype(int)
+    if "is_bad_payer" not in df.columns:
+        df["is_bad_payer"] = (df["payment_delay"] > 30).astype(int)
+    else:
+        df["is_bad_payer"] = df["is_bad_payer"].astype(int)
 
     df["_is_late_hist"]    = (df["payment_delay"] > 0).astype(float)
     df["_delay_norm_hist"] = (df["payment_delay"].clip(lower=0) / 90).clip(0, 1)
@@ -898,20 +924,13 @@ def ensemble_predict_proba(ensemble, X):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 11. 🔥 IMPROVED THRESHOLD OPTIMIZATION — يعاقب FP بشدة
-#       FP penalty رُفع من cost_fp=100 → يمكن ضبطه من CLI
-#       الـ fp_penalty_multiplier يضاعف تأثير كل FP في حساب الـ threshold
+# 11. THRESHOLD OPTIMIZATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def optimize_threshold(y_val, y_proba_val, y_test, y_proba_test,
                        cost_fn=1000.0, cost_fp=100.0,
                        beta=2.0, fp_penalty_multiplier=5.0,
                        max_fp_rate=0.12):
-    """
-    يحسب الـ threshold الأمثل مع:
-    - fp_penalty_multiplier: يضاعف تكلفة FP (افتراضي=5 → cost_fp_effective = 500)
-    - max_fp_rate: الحد الأقصى لنسبة FP المقبولة (افتراضي=12%)
-    """
     from sklearn.metrics import confusion_matrix, fbeta_score
 
     cost_fp_effective = cost_fp * fp_penalty_multiplier
@@ -924,15 +943,11 @@ def optimize_threshold(y_val, y_proba_val, y_test, y_proba_test,
         cost  = fn * cost_fn + fp * cost_fp_effective
         fbeta = fbeta_score(y_val, yp, beta=beta, zero_division=0)
         fp_r  = fp / max(tn + fp, 1)
-
-        # FP rate penalty: فوق max_fp_rate → يتعاقب بشدة
         fp_penalty = max(0, (fp_r - max_fp_rate) * 10)
-
         score = fbeta - (cost / (cost_fn * max(y_val.sum(), 1))) * 0.3 - fp_penalty
         if score > best_score:
             best_score, best_thresh = score, t
 
-    # ضمان إضافي: لو FP-rate فوق max_fp_rate، ارفع الـ threshold
     for t in np.arange(best_thresh, 0.91, 0.01):
         yp  = (y_proba_val >= t).astype(int)
         tn, fp, fn, tp = confusion_matrix(y_val, yp).ravel()
@@ -992,25 +1007,10 @@ def run_cross_validation(model, X, y, n_folds=5):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 13. 🔥 IMPROVED DECISION ENGINE — 3-tier + sub-tiers
+# 13. DECISION ENGINE — 3-tier + sub-tiers
 # ══════════════════════════════════════════════════════════════════════════════
 
 class DecisionEngine:
-    """
-    3-tier Decision Engine:
-      approve       → score < review_low
-      review_low    → score in [review_low, review_high)   : Monitor closely
-      review_high   → score in [review_high, reject)       : Escalate to manager
-      reject        → score >= reject
-
-    كل decision جاي بـ:
-      - decision_tier: approve / review / reject
-      - review_level:  None / monitor / escalate (للـ review فقط)
-      - risk_band:     low / medium / high / critical
-      - confidence:    مدى ثقة الموديل
-      - reasons:       قائمة أسباب للـ UI
-      - recommended_action: نص قابل للعرض في ERP
-    """
     MODES = DECISION_MODES
 
     def __init__(self, reject_threshold=0.50, review_high=0.38,
@@ -1097,7 +1097,6 @@ class DecisionEngine:
 
     def explain(self, result: dict, shap_values: dict,
                 lang: str = "ar") -> dict:
-        """يضيف أسباب للقرار للعرض في ERP UI"""
         sorted_f = sorted(shap_values.items(), key=lambda x: abs(x[1]), reverse=True)
         reasons  = []
         for f, v in sorted_f[:5]:
@@ -1115,7 +1114,6 @@ class DecisionEngine:
             {"feature": "general", "impact": 0, "reason_ar": "تقييم مخاطر عام",
              "reason_en": "General risk assessment", "direction": "neutral"}
         ]
-        # للتوافق مع v8.0 code قديم
         result["reasons_text"] = [r["reason_ar"] for r in result["reasons"]]
         return result
 
@@ -1127,10 +1125,10 @@ class DecisionEngine:
             "review_low":        self.review_low,
             "available_modes":   self.MODES,
             "decision_tiers":    {
-                "approve":       f"score < {self.review_low}",
-                "review_monitor":f"score in [{self.review_low}, {self.review_high})",
+                "approve":        f"score < {self.review_low}",
+                "review_monitor": f"score in [{self.review_low}, {self.review_high})",
                 "review_escalate":f"score in [{self.review_high}, {self.reject_threshold})",
-                "reject":        f"score >= {self.reject_threshold}",
+                "reject":         f"score >= {self.reject_threshold}",
             },
         }
 
@@ -1227,18 +1225,10 @@ def compute_drift_baseline(X, feature_names):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 18. 🔥 DECISION LOGGER — يخزن كل prediction وـ overrides
+# 18. DECISION LOGGER
 # ══════════════════════════════════════════════════════════════════════════════
 
 class DecisionLogger:
-    """
-    يخزن predictions وـ human overrides في JSONL files.
-    ده بيساعد:
-    1. تتبع القرارات الفعلية vs الـ model decisions
-    2. قياس accuracy الموديل في الواقع
-    3. تحسين الموديل بناءً على الـ outcomes الحقيقية
-    """
-
     def __init__(self, decision_log_path=DECISION_LOG, override_log_path=OVERRIDE_LOG):
         self.decision_log_path = decision_log_path
         self.override_log_path = override_log_path
@@ -1247,7 +1237,6 @@ class DecisionLogger:
     def log_prediction(self, prediction_id: str, customer_id: str,
                        invoice_id: str, result: dict,
                        input_features: Optional[dict] = None) -> str:
-        """يخزن كل prediction"""
         record = {
             "prediction_id":  prediction_id,
             "timestamp":      datetime.utcnow().isoformat() + "Z",
@@ -1260,8 +1249,8 @@ class DecisionLogger:
             "confidence":     result.get("confidence"),
             "mode":           result.get("mode"),
             "reasons":        result.get("reasons_text", []),
-            "actual_outcome": None,    # يتملى لاحقاً
-            "final_decision": None,    # قد يتغير لو في override
+            "actual_outcome": None,
+            "final_decision": None,
             "overridden":     False,
         }
         if input_features:
@@ -1271,16 +1260,11 @@ class DecisionLogger:
 
         with open(self.decision_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
         return prediction_id
 
     def log_override(self, prediction_id: str, original_decision: str,
                      override_decision: str, override_reason: str,
                      user_id: str, user_role: str = "finance_manager") -> dict:
-        """
-        يخزن Human Override مع audit trail كامل.
-        Returns: override record
-        """
         record = {
             "override_id":       str(uuid.uuid4()),
             "prediction_id":     prediction_id,
@@ -1292,9 +1276,8 @@ class DecisionLogger:
             "user_role":         user_role,
             "valid_decisions":   ["approve", "review", "reject"],
         }
-
         if override_decision not in ["approve", "review", "reject"]:
-            raise ValueError(f"override_decision must be one of: approve, review, reject")
+            raise ValueError("override_decision must be one of: approve, review, reject")
 
         with open(self.override_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -1305,10 +1288,6 @@ class DecisionLogger:
 
     def record_outcome(self, prediction_id: str, actual_outcome: str,
                        payment_delay_days: Optional[int] = None) -> bool:
-        """
-        يسجل النتيجة الفعلية بعد السداد (أو عدمه).
-        actual_outcome: 'paid_on_time' | 'paid_late' | 'defaulted' | 'partial'
-        """
         records = self._read_all()
         updated = False
         for r in records:
@@ -1318,7 +1297,6 @@ class DecisionLogger:
                 r["outcome_recorded_at"] = datetime.utcnow().isoformat() + "Z"
                 updated = True
                 break
-
         if updated:
             self._write_all(records)
             log.info("   ✅ Outcome recorded for prediction %s: %s (delay=%s days)",
@@ -1326,18 +1304,12 @@ class DecisionLogger:
         return updated
 
     def get_model_accuracy(self) -> dict:
-        """يحسب accuracy الموديل من الـ outcomes المسجلة"""
         records = self._read_all()
         completed = [r for r in records if r.get("actual_outcome") is not None]
-
         if not completed:
             return {"error": "No completed predictions with outcomes yet"}
 
-        correct   = 0
-        fp_cases  = 0
-        fn_cases  = 0
-        overrides = 0
-
+        correct = fp_cases = fn_cases = overrides = 0
         for r in completed:
             actual_bad   = r["actual_outcome"] in ["paid_late", "defaulted"]
             model_reject = r["model_decision"] == "reject"
@@ -1352,12 +1324,12 @@ class DecisionLogger:
 
         total = len(completed)
         return {
-            "total_predictions":   total,
-            "accuracy":            round(correct / total, 4),
-            "fp_rate":             round(fp_cases / total, 4),
-            "fn_rate":             round(fn_cases / total, 4),
-            "override_rate":       round(overrides / total, 4),
-            "outcome_breakdown":   {
+            "total_predictions": total,
+            "accuracy":          round(correct / total, 4),
+            "fp_rate":           round(fp_cases / total, 4),
+            "fn_rate":           round(fn_cases / total, 4),
+            "override_rate":     round(overrides / total, 4),
+            "outcome_breakdown": {
                 o: sum(1 for r in completed if r.get("actual_outcome") == o)
                 for o in ["paid_on_time", "paid_late", "defaulted", "partial"]
             },
@@ -1391,18 +1363,10 @@ class FinanceRiskPredictorV8:
     """
     Production predictor v8.1 — Zero Leakage + 3-tier decisions + Logging.
 
-    predict(data, customer_id, invoice_id, log_decision) → decision
-    override(prediction_id, new_decision, reason, user_id)
-    record_outcome(prediction_id, outcome, payment_delay_days)
-    get_accuracy_stats()
-
-    Input fields (all known at invoice issuance time):
-      customer_id, age, industry, business_type, years_with_company,
-      income_revenue, credit_score, credit_limit, outstanding_balance,
-      debt_ratio, invoice_amount, invoice_month, days_to_due,
-      hist_* (optional — defaults applied if missing)
-
-    ❌ Do NOT pass: payment_date, overdue_days, payment_delay
+    🔧 BUG FIX v8.1.1: _to_features() — shape guard يضمن output (1, N) دايماً:
+      - لو data جاي dict → يتحول لـ DataFrame صح
+      - لو data جاي numpy array بأي shape → يتعمله reshape صريح لـ (1, N)
+      - safe_preprocess بتشتغل على 2D array فقط
     """
 
     def __init__(self, ensemble, decision_engine, feature_names,
@@ -1417,15 +1381,52 @@ class FinanceRiskPredictorV8:
     def set_mode(self, mode: str):
         self.decision_engine.set_mode(mode)
 
-    def _to_features(self, data: dict) -> np.ndarray:
-        for lf in LEAKY_FEATURES:
-            if lf in data:
-                raise ValueError(
-                    f"Field '{lf}' is future information — leakage guard rejected it. "
-                    "Remove from input."
-                )
+    def _to_features(self, data) -> np.ndarray:
+        """
+        ✅ BUG FIX: يقبل dict أو numpy array ويضمن output shape (1, N) دايماً.
 
-        df = pd.DataFrame([data])
+        المشكلة القديمة:
+          pd.DataFrame([numpy_array]) → DataFrame بـ shape (1, 1) مش (1, N)
+          → build_feature_matrix تنتج (1, N) مدفونة جوا array object
+          → safe_preprocess تتعامل مع (1, 1, N) بدل (1, N)
+
+        الحل:
+          1. لو data numpy array → نعمل reshape مباشر ونرجع بدون DataFrame
+          2. لو data dict → نعمله DataFrame صح (مش wrap في list لو فيه arrays)
+        """
+        # ── Guard: numpy array input ──────────────────────────────────────
+        if isinstance(data, np.ndarray):
+            arr = data.copy().astype(np.float64)
+            # flatten أي extra dimensions: (1,1,N) أو (N,) → (1,N)
+            arr = arr.reshape(1, -1) if arr.ndim != 2 else arr
+            if arr.shape[0] != 1:
+                # batch input — خد أول صف فقط
+                arr = arr[:1, :]
+            return safe_preprocess(arr)
+
+        # ── Leakage guard (dict only) ─────────────────────────────────────
+        if isinstance(data, dict):
+            for lf in LEAKY_FEATURES:
+                if lf in data:
+                    raise ValueError(
+                        f"Field '{lf}' is future information — leakage guard rejected it. "
+                        "Remove from input."
+                    )
+
+        # ── Convert dict → DataFrame safely ──────────────────────────────
+        # نتأكد إن كل value scalar أو list (مش numpy array) عشان pd.DataFrame ميعملش wrap غلط
+        if isinstance(data, dict):
+            safe_data = {}
+            for k, v in data.items():
+                if isinstance(v, np.ndarray):
+                    # scalar extraction: (1,) → float, (1,1) → float
+                    v_flat = v.flatten()
+                    safe_data[k] = [float(v_flat[0])] if len(v_flat) > 0 else [0.0]
+                else:
+                    safe_data[k] = [v]
+            df = pd.DataFrame(safe_data)
+        else:
+            df = pd.DataFrame([data])
 
         if "invoice_month" not in df.columns and "invoice_date" in df.columns:
             df["invoice_month"] = pd.to_datetime(df["invoice_date"]).dt.month
@@ -1448,20 +1449,21 @@ class FinanceRiskPredictorV8:
             df["days_since_last_payment"] = 30.0
 
         X, _ = build_feature_matrix(df)
+
+        # ── Final shape guard ─────────────────────────────────────────────
+        # build_feature_matrix بترجع (n_rows, n_features) — نضمن 2D
+        if X.ndim != 2:
+            X = X.reshape(1, -1)
+        elif X.shape[0] == 0:
+            raise ValueError("_to_features: empty feature matrix produced from input data")
+
         return safe_preprocess(X)
 
-    def predict(self, data: dict,
+    def predict(self, data,
                 customer_id: str = "unknown",
                 invoice_id:  str = "unknown",
                 log_decision: bool = True,
                 lang: str = "ar") -> dict:
-        """
-        يعمل prediction ويرجع 3-tier decision مع reasons.
-
-        Returns dict with:
-          prediction_id, decision, review_level, risk_score, risk_band,
-          confidence, mode, recommended_action, reasons, reasons_text
-        """
         X    = self._to_features(data)
         prob = float(ensemble_predict_proba(self.ensemble, X)[0])
         res  = self.decision_engine.decide(prob)
@@ -1470,7 +1472,7 @@ class FinanceRiskPredictorV8:
         pred_id = str(uuid.uuid4())
         res["prediction_id"] = pred_id
 
-        if log_decision:
+        if log_decision and isinstance(data, dict):
             self.logger.log_prediction(
                 prediction_id=pred_id,
                 customer_id=str(customer_id),
@@ -1486,15 +1488,10 @@ class FinanceRiskPredictorV8:
                  reason: str,
                  user_id: str,
                  user_role: str = "finance_manager") -> dict:
-        """
-        Human Override مع audit trail.
-        يسمح للـ users بتعديل قرار الموديل مع تسجيل السبب.
-        """
         records = self.logger._read_all()
         original = next((r for r in records if r.get("prediction_id") == prediction_id), None)
         if not original:
             raise ValueError(f"Prediction {prediction_id} not found in logs")
-
         return self.logger.log_override(
             prediction_id=prediction_id,
             original_decision=original["model_decision"],
@@ -1507,10 +1504,6 @@ class FinanceRiskPredictorV8:
     def record_outcome(self, prediction_id: str,
                        actual_outcome: str,
                        payment_delay_days: Optional[int] = None) -> bool:
-        """
-        يسجل النتيجة الفعلية بعد ما يتم السداد.
-        actual_outcome: 'paid_on_time' | 'paid_late' | 'defaulted' | 'partial'
-        """
         return self.logger.record_outcome(
             prediction_id=prediction_id,
             actual_outcome=actual_outcome,
@@ -1518,7 +1511,6 @@ class FinanceRiskPredictorV8:
         )
 
     def get_accuracy_stats(self) -> dict:
-        """إحصائيات دقة الموديل من الـ outcomes الحقيقية"""
         return self.logger.get_model_accuracy()
 
     def predict_raw(self, X: np.ndarray) -> np.ndarray:
@@ -1539,7 +1531,7 @@ class FinanceRiskPredictorV8:
 
     def get_info(self) -> dict:
         return {
-            "version":         "8.1",
+            "version":         "8.1.1",
             "feature_count":   len(self.feature_names),
             "feature_names":   self.feature_names,
             "decision_engine": self.decision_engine.to_dict(),
@@ -1549,11 +1541,8 @@ class FinanceRiskPredictorV8:
             "leakage_guard":   "enabled — rejects overdue_days/payment_delay at inference",
             "decision_tiers":  "3-tier: approve / review (monitor|escalate) / reject",
             "logging":         f"decisions → {DECISION_LOG} | overrides → {OVERRIDE_LOG}",
-            "fp_improvements": {
-                "threshold_raised":   "from ~0.14 → 0.50 (balanced mode)",
-                "fp_penalty":         "x5 multiplier in threshold optimization",
-                "max_fp_rate_target": "12%",
-                "review_tier":        "حالات وسط لا تُرفض مباشرة",
+            "bug_fixes": {
+                "v8.1.1": "_to_features shape guard: numpy array input → reshape(1,-1) before safe_preprocess",
             },
         }
 
@@ -1565,7 +1554,8 @@ class FinanceRiskPredictorV8:
 def train(X_raw, y, months, feature_names, best_params,
           n_folds=5, cost_fn=1000.0, cost_fp=100.0,
           fp_penalty_multiplier=5.0, max_fp_rate=0.12,
-          decision_mode="balanced", dry_run=False):
+          decision_mode="balanced", dry_run=False,
+          max_leakage_auc=0.85):
     from sklearn.metrics import (
         roc_auc_score, average_precision_score, brier_score_loss,
         precision_score, recall_score, f1_score, accuracy_score,
@@ -1573,7 +1563,7 @@ def train(X_raw, y, months, feature_names, best_params,
     )
 
     log.info("\n%s", "=" * 65)
-    log.info("  🏋️  Finance Risk Model v8.1 | %d samples | %d features",
+    log.info("  🏋️  Finance Risk Model v8.1.1 | %d samples | %d features",
              len(X_raw), X_raw.shape[1])
     log.info("  ✅ Leakage-free | 3-tier decisions | FP penalty x%.1f",
              fp_penalty_multiplier)
@@ -1584,7 +1574,7 @@ def train(X_raw, y, months, feature_names, best_params,
         log.info("🔵 Dry run — pipeline OK")
         return {}
 
-    validate_no_leakage(X, y, feature_names, max_auc=0.85)
+    validate_no_leakage(X, y, feature_names, max_auc=max_leakage_auc)
 
     log.info("\n⏱️  3-way time split...")
     X_tr, X_va, X_te, y_tr, y_va, y_te = time_based_split(X, y, months=months)
@@ -1594,6 +1584,18 @@ def train(X_raw, y, months, feature_names, best_params,
 
     log.info("\n📦 Building ensemble (XGB + LGBM + LR)...")
     ensemble = build_ensemble(X_tr_r, y_tr_r, best_params)
+
+    # ── v8.2: Save feature columns for inference alignment ───────────────
+    try:
+        import pickle as _pickle
+        _fc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "models", "finance", "finance_feature_columns.pkl")
+        os.makedirs(os.path.dirname(_fc_path), exist_ok=True)
+        with open(_fc_path, "wb") as _fc_f:
+            _pickle.dump(feature_names, _fc_f)
+        log.info("✅ [v8.2] Feature columns saved: %d → %s", len(feature_names), _fc_path)
+    except Exception as _fc_err:
+        log.error("❌ [v8.2] Failed to save feature columns: %s", _fc_err)
 
     cv_results = run_cross_validation(ensemble["xgb"], X_tr_r, y_tr_r, n_folds)
 
@@ -1641,7 +1643,6 @@ def train(X_raw, y, months, feature_names, best_params,
              ct, prec_ct, rec_ct, f1_ct, fb_ct, fp_rate * 100)
     log.info("   CM: TN=%d FP=%d FN=%d TP=%d", cm[0,0], cm[0,1], cm[1,0], cm[1,1])
 
-    # ── 3-tier decision analysis on test set
     decision_engine = DecisionEngine.from_mode(decision_mode)
     tiers = {"approve": 0, "review_monitor": 0, "review_escalate": 0, "reject": 0}
     for p in y_proba_te:
@@ -1660,12 +1661,16 @@ def train(X_raw, y, months, feature_names, best_params,
 
     report_lines = [
         "=" * 65,
-        "  Finance Risk Model v8.1 — Production Training Report",
+        "  Finance Risk Model v8.1.1 — Production Training Report",
         f"  Generated: {datetime.utcnow().isoformat()} UTC",
         "=" * 65,
         f"Samples:     {len(X_raw):,}  |  Features: {X_raw.shape[1]}",
         f"Bad rate:    {y.mean():.1%}",
         f"Split:       3-way time-based | Ensemble: XGB+LGBM+LR",
+        "",
+        "── v8.1.1 Bug Fixes ─────────────────────────────────────",
+        "  ✅ _to_features shape guard: numpy(1,1,N) → reshape(1,N)",
+        "  ✅ dict values with ndarray → scalar extraction before DataFrame",
         "",
         "── v8.1 FP Improvements ─────────────────────────────────",
         f"  Threshold raised:  ~0.14 (v8.0) → {ct:.2f} (v8.1)",
@@ -1710,11 +1715,24 @@ def train(X_raw, y, months, feature_names, best_params,
     report_text = "\n".join(report_lines)
     log.info("\n" + report_text)
 
+    # ── v8.2: Save feature columns for alignment ──────────────────────────
+    try:
+        with open(FEATURE_COLUMNS_PATH, "wb") as f:
+            pickle.dump(feature_names, f)
+        log.info("✅ Feature columns saved: %d cols → %s",
+                 len(feature_names), FEATURE_COLUMNS_PATH)
+    except Exception as e:
+        log.error("❌ Failed to save feature columns: %s", e)
+
     return {
-        "ensemble": ensemble, "decision_engine": decision_engine,
-        "cost_result": cost_result, "cv_results": cv_results,
-        "shap_importance": shap_imp, "calibration": cal_stats,
-        "error_analysis": err_analysis, "tier_breakdown": tiers,
+        "ensemble":        ensemble,
+        "decision_engine": decision_engine,
+        "cost_result":     cost_result,
+        "cv_results":      cv_results,
+        "shap_importance": shap_imp,
+        "calibration":     cal_stats,
+        "error_analysis":  err_analysis,
+        "tier_breakdown":  tiers,
         "metrics": {
             "roc_auc":        round(roc_auc, 4),
             "pr_auc":         round(pr_auc, 4),
@@ -1731,6 +1749,21 @@ def train(X_raw, y, months, feature_names, best_params,
         },
         "report_text": report_text,
     }
+    # ← بعد الـ return مفيش حاجة — احذف كل الكود القديم اللي كان هنا
+
+    # ← احذف كل اللي بعد return القديم
+
+#    if joblib is not None:
+#        joblib.dump(feature_names, FEATURE_COLUMNS_PATH)
+#    else:
+#        with open(FEATURE_COLUMNS_PATH, "wb") as f:
+#            pickle.dump(feature_names, f)
+
+#    log.info("Feature columns saved: %s", FEATURE_COLUMNS_PATH)
+
+#    api_feature_columns_path = os.path.join(API_MODEL_DIR, "finance_feature_columns.pkl")
+#    shutil.copy2(FEATURE_COLUMNS_PATH, api_feature_columns_path)
+#    log.info("Feature columns copied to API dir: %s", os.path.abspath(api_feature_columns_path))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1739,7 +1772,7 @@ def train(X_raw, y, months, feature_names, best_params,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Finance Risk Model Training v8.1 — Low FP, 3-tier, Logging",
+        description="Finance Risk Model Training v8.1.1 — Low FP, 3-tier, Logging",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("--csv",            type=str,   default=None)
@@ -1750,25 +1783,25 @@ def main():
     parser.add_argument("--folds",          type=int,   default=5)
     parser.add_argument("--cost-fn",        type=float, default=1000.0)
     parser.add_argument("--cost-fp",        type=float, default=100.0)
-    parser.add_argument("--fp-penalty",     type=float, default=5.0,
-                        help="FP penalty multiplier in threshold opt (default=5 → cost_fp*5)")
-    parser.add_argument("--max-fp-rate",    type=float, default=0.12,
-                        help="Max acceptable FP rate (default=0.12 = 12%%)")
+    parser.add_argument("--fp-penalty",     type=float, default=5.0)
+    parser.add_argument("--max-fp-rate",    type=float, default=0.12)
+    parser.add_argument("--max-auc",        type=float, default=0.85)
     parser.add_argument("--no-smote",       action="store_true")
     parser.add_argument("--mode",           choices=["safe", "balanced", "aggressive"],
                         default="balanced")
     parser.add_argument("--bad-days",       type=int,   default=30)
     args = parser.parse_args()
 
-    global MODEL_PATH, METADATA_PATH, REPORT_PATH
+    global MODEL_PATH, METADATA_PATH, REPORT_PATH, FEATURE_COLUMNS_PATH
     if args.output:
         MODEL_PATH    = args.output
         METADATA_PATH = args.output.replace(".pkl", "_metadata.json")
         REPORT_PATH   = args.output.replace(".pkl", "_report.txt")
         os.makedirs(os.path.dirname(os.path.abspath(MODEL_PATH)), exist_ok=True)
+        FEATURE_COLUMNS_PATH = args.output.replace(".pkl", "_feature_columns.pkl")
 
     print("=" * 65)
-    print("  💰 Finance Risk Model v8.1 — Low FP | 3-tier | Logging")
+    print("  💰 Finance Risk Model v8.1.1 — Low FP | 3-tier | Logging")
     print("=" * 65)
     print(f"  CSV:          {args.csv or 'synthetic fallback'}")
     print(f"  Mode:         {args.mode}  [{DECISION_MODES[args.mode]['description']}]")
@@ -1811,6 +1844,7 @@ def main():
         fp_penalty_multiplier=args.fp_penalty,
         max_fp_rate=args.max_fp_rate,
         decision_mode=args.mode, dry_run=args.dry_run,
+        max_leakage_auc=args.max_auc,
     )
 
     if args.dry_run or not result:
@@ -1820,7 +1854,7 @@ def main():
     logger = DecisionLogger()
 
     metadata = {
-        "version":             "8.1",
+        "version":             "8.1.1",
         "trained_at":          datetime.utcnow().isoformat() + "Z",
         "n_samples":           len(X),
         "feature_count":       len(feature_names),
@@ -1840,6 +1874,9 @@ def main():
             "three_tier_decisions":  True,
             "decision_logging":      True,
             "human_override":        True,
+        },
+        "bug_fixes": {
+            "v8.1.1": "_to_features shape guard — numpy input reshape(1,-1) + dict ndarray scalar extraction",
         },
         "schema": {
             "csv_input_columns": [
@@ -1885,9 +1922,21 @@ def main():
         logger=logger,
     )
 
-    with open(MODEL_PATH, "wb") as f:
-        pickle.dump({"predictor": predictor, "ensemble": result["ensemble"],
-                     "metadata": metadata}, f)
+    save_data = {
+        "predictor": predictor,
+        "ensemble":  result["ensemble"],
+        "metadata":  metadata,
+    }
+    try:
+        import cloudpickle
+        with open(MODEL_PATH, "wb") as f:
+            cloudpickle.dump(save_data, f)
+        log.info("✅ Model saved with cloudpickle (recommended)")
+    except ImportError:
+        import pickle
+        with open(MODEL_PATH, "wb") as f:
+            pickle.dump(save_data, f)
+        log.info("✅ Model saved with pickle (install cloudpickle for better compatibility)")
     with open(METADATA_PATH, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, default=str, ensure_ascii=False)
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
@@ -1895,7 +1944,6 @@ def main():
 
     log.info("✅ Model saved to training dir: %s", MODEL_PATH)
 
-    # ── Also save to API canonical path so FastAPI loads it on startup ─────
     API_MODEL_DIR = os.path.join(BASE_DIR, "..", "models", "finance")
     os.makedirs(API_MODEL_DIR, exist_ok=True)
     api_model_path    = os.path.join(API_MODEL_DIR, "payment_risk_v8.pkl")
@@ -1908,7 +1956,6 @@ def main():
     log.info("✅ Metadata copied to API dir:   %s", os.path.abspath(api_metadata_path))
     print("\n✅ Model saved successfully — restart FastAPI to auto-load.")
 
-    # ── Demo prediction ✅ بدون leaky fields
     log.info("\n🔌 Demo prediction (mode=%s):", args.mode)
     demo_input = {
         "age": 35, "years_with_company": 9,
@@ -1924,7 +1971,6 @@ def main():
                              invoice_id="INV-001", log_decision=True)
     log.info("   %s", json.dumps(demo, indent=4, ensure_ascii=False))
 
-    # ── Demo override
     log.info("\n🖊️  Demo override (finance manager override):")
     if demo.get("decision") == "reject":
         try:
@@ -1938,6 +1984,13 @@ def main():
             log.info("   Override recorded: %s", override_rec["override_id"])
         except Exception as e:
             log.warning("   Override demo failed: %s", e)
+
+    # ── v8.2: Copy feature columns to API dir ────────────────────────────
+    _fc_src = os.path.join(MODEL_DIR, "finance_feature_columns.pkl")
+    _fc_dst = os.path.join(API_MODEL_DIR, "finance_feature_columns.pkl")
+    if os.path.exists(_fc_src):
+        shutil.copy2(_fc_src, _fc_dst)
+        log.info("✅ Feature columns copied to API dir: %s", _fc_dst)
 
     m  = result["metrics"]
     de = result["decision_engine"]

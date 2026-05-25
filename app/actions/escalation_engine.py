@@ -1,6 +1,6 @@
 """
-📈 Escalation Engine — v1.0 Production
-========================================
+📈 Escalation Engine — v2.0 Production (MongoDB)
+=================================================
 File: app/actions/escalation_engine.py
 
 Multi-tier escalation ladder for invoice collection.
@@ -18,7 +18,7 @@ Tiers:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -79,17 +79,19 @@ STATUS_TO_TIER = {
 class EscalationEngine:
     """
     Manages the escalation ladder for overdue invoices.
+    Uses MongoDB via FinanceDB (Motor async).
 
     Usage:
         engine = EscalationEngine()
         result = await engine.escalate(invoice_id, force_tier=None)
     """
 
-    async def get_current_tier(self, invoice_id: int) -> int:
-        """Determine the current escalation tier from DB state."""
+    async def get_current_tier(self, invoice_id: str) -> int:
+        """Determine the current escalation tier from MongoDB state."""
         try:
-            from core.finance_db import get_escalation_status
-            status_data = get_escalation_status(invoice_id)
+            from core.mongo_connect import get_finance_db
+            db = get_finance_db()
+            status_data = await db.get_escalation_status(invoice_id)
 
             if "error" in status_data:
                 return 0
@@ -97,7 +99,6 @@ class EscalationEngine:
             invoice = status_data.get("invoice", {})
             invoice_status = invoice.get("status", "pending")
 
-            # Check if already in terminal/frozen state
             if invoice_status in ("paid", "written_off", "cancelled", "disputed"):
                 return 0
 
@@ -108,8 +109,8 @@ class EscalationEngine:
 
     async def escalate(
         self,
-        invoice_id:  int,
-        customer_id: Optional[int] = None,
+        invoice_id:  str,
+        customer_id: Optional[str] = None,
         amount:      float         = 0,
         force_tier:  Optional[int] = None,
         request_id:  str           = "",
@@ -148,11 +149,12 @@ class EscalationEngine:
             invoice_id, current, target_tier, tier_def["name"],
         )
 
-        # If escalating to legal, create a legal case
+        # If escalating to legal, create a legal case via MongoDB
         if target_tier == 5:
             try:
-                from core.finance_db import create_legal_case
-                case_result = create_legal_case(
+                from core.mongo_connect import get_finance_db
+                db = get_finance_db()
+                case_result = await db.create_legal_case(
                     invoice_id=invoice_id,
                     customer_id=customer_id,
                     amount=amount,
@@ -187,19 +189,18 @@ class EscalationEngine:
                     "result": result,
                 })
             except Exception as e:
-                logger.warning(
-                    "Escalation action %s failed: %s", action, e,
-                )
+                logger.warning("Escalation action %s failed: %s", action, e)
                 actions_executed.append({
                     "action": action,
                     "status": "failed",
                     "error":  str(e),
                 })
 
-        # Log the escalation itself
+        # Log the escalation via MongoDB collection log
         try:
-            from core.finance_db import log_collection_action
-            log_collection_action(
+            from core.mongo_connect import get_finance_db
+            db = get_finance_db()
+            await db.log_collection_action(
                 invoice_id=invoice_id,
                 customer_id=customer_id,
                 action_type="escalation",
@@ -221,7 +222,7 @@ class EscalationEngine:
             "tier_label":       tier_def["label"],
             "sla_days":         tier_def["sla_days"],
             "actions_executed": actions_executed,
-            "escalated_at":     datetime.utcnow().isoformat() + "Z",
+            "escalated_at":     datetime.now(timezone.utc).isoformat(),
         }
 
     def get_tier_info(self, tier: int) -> dict:
@@ -242,7 +243,6 @@ class EscalationEngine:
         if invoice_status == "disputed":
             return {"action": "wait", "reason": "Invoice is under dispute — no escalation allowed"}
 
-        # Recommend based on overdue days
         if overdue_days >= 180:
             recommended = 6
         elif overdue_days >= 90:

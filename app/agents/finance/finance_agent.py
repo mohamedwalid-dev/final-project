@@ -18,6 +18,11 @@ Pipeline:
     Invoice Event → Feature Builder → ML Risk Score
                   → Rule Check → LLM Reasoning
                   → Decision → Action Worker → Audit Log
+
+FIXES (2026-05-25):
+    FIX-1: Feature shape mismatch — see risk_model_handler.py note below
+    FIX-2: Gemini quota guard — skip LLM instantly on RESOURCE_EXHAUSTED
+            instead of burning 25+ seconds on retries per invoice
 """
 
 from __future__ import annotations
@@ -25,6 +30,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
+import time
 from typing import Optional
 
 from agents.base_agent import BaseAgent, RequestContext, generate_request_id
@@ -48,6 +55,68 @@ MAX_OVERDUE_DAYS_WRITEOFF= 180  # write-off after 180 days overdue
 
 MIN_AMOUNT_FOR_LEGAL     = 5000.0   # EGP — below this don't go legal
 MIN_AMOUNT_FOR_WRITEOFF  = 500.0    # EGP — below this write off directly
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 🛡️  GEMINI QUOTA GUARD (FIX-2)
+# ════════════════════════════════════════════════════════════════════════════
+
+class _GeminiQuotaGuard:
+    """
+    Tracks Gemini API quota exhaustion at process level.
+
+    When a 429 RESOURCE_EXHAUSTED is received, the guard blocks all LLM
+    calls for `cooldown_seconds` (default: 65 s — slightly above the
+    longest retry-delay seen in logs: 59 s).
+
+    This prevents every in-flight invoice from burning 25+ seconds on
+    exponential-backoff retries when the daily free-tier quota is gone.
+    """
+
+    def __init__(self, cooldown_seconds: float = 65.0):
+        self._lock             = threading.Lock()
+        self._blocked_until    = 0.0        # epoch seconds
+        self._cooldown         = cooldown_seconds
+        self._total_skips      = 0
+
+    def is_blocked(self) -> bool:
+        return time.monotonic() < self._blocked_until
+
+    def report_exhausted(self, retry_after_seconds: float = 65.0) -> None:
+        """Call this when a 429 RESOURCE_EXHAUSTED is caught."""
+        with self._lock:
+            self._blocked_until = time.monotonic() + max(retry_after_seconds, self._cooldown)
+            self._total_skips  += 1
+            logger.warning(
+                "🛑 [GeminiQuotaGuard] Quota exhausted — LLM skipped for %.0f s "
+                "(total skips today: %d)",
+                retry_after_seconds,
+                self._total_skips,
+            )
+
+    @property
+    def total_skips(self) -> int:
+        return self._total_skips
+
+
+# Singleton — shared across all FinanceAgent instances in the process
+_quota_guard = _GeminiQuotaGuard()
+
+
+def _extract_retry_after(exc: Exception) -> float:
+    """
+    Parse 'retryDelay' from a Google 429 error message.
+    Falls back to 65 s if not found.
+    """
+    msg = str(exc)
+    import re
+    match = re.search(r"'retryDelay':\s*'(\d+)s'", msg)
+    if match:
+        return float(match.group(1)) + 5.0   # +5 s buffer
+    match = re.search(r"retry in (\d+(?:\.\d+)?)s", msg, re.IGNORECASE)
+    if match:
+        return float(match.group(1)) + 5.0
+    return 65.0
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -165,7 +234,7 @@ class FinanceAgent(BaseAgent):
         try:
             from core.metrics_collector import get_metrics_collector, MetricEvent
             await get_metrics_collector().emit(MetricEvent(
-                metric_type = decision. get("decision", "unknown"),
+                metric_type = decision.get("decision", "unknown"),
                 category    = "finance",
                 value       = 1,
                 tags        = {
@@ -541,7 +610,7 @@ class FinanceAgent(BaseAgent):
             "flags":          [],
         }
 
-    # ── LLM Invocation ────────────────────────────────────────────────────────
+    # ── LLM Invocation (FIX-2 applied here) ──────────────────────────────────
 
     async def _invoke_llm(
         self,
@@ -549,7 +618,22 @@ class FinanceAgent(BaseAgent):
         ml_result:  dict,
         request_id: str,
     ) -> Optional[dict]:
-        """Call Gemini for nuanced invoice risk reasoning."""
+        """
+        Call Gemini for nuanced invoice risk reasoning.
+
+        FIX-2: Check _GeminiQuotaGuard before even importing langchain.
+        If quota is exhausted we return None immediately — no retries,
+        no 25-second wait — and the pipeline falls back to rule-based logic.
+        """
+        # ── FIX-2: instant bail-out when quota is known exhausted ──────────
+        if _quota_guard.is_blocked():
+            logger.info(
+                "[request_id=%s] ⏭️ [QuotaGuard] Gemini quota cooling down — "
+                "skipping LLM, using rule fallback",
+                request_id,
+            )
+            return None
+
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
             from config.settings import get_settings
@@ -567,6 +651,8 @@ class FinanceAgent(BaseAgent):
                 model          = settings.GEMINI_MODEL,
                 google_api_key = settings.GOOGLE_API_KEY,
                 temperature    = 0.05,
+                # Disable SDK-level retries — quota guard handles back-off
+                max_retries    = 0,
             )
 
             prompt = FinancePromptBuilder.invoice_risk(
@@ -596,13 +682,27 @@ class FinanceAgent(BaseAgent):
                 "[request_id=%s] ⏰ Finance LLM timeout — rule fallback",
                 request_id,
             )
-        except ImportError:
-            logger.warning(
-                "[request_id=%s] ⚠️ langchain_google_genai not installed",
-                request_id,
-            )
+
         except Exception as e:
-            logger.warning("[request_id=%s] ⚠️ Finance LLM failed: %s", request_id, e)
+            err_str = str(e)
+
+            # ── FIX-2: catch quota exhaustion and register with guard ───────
+            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                retry_after = _extract_retry_after(e)
+                _quota_guard.report_exhausted(retry_after)
+                logger.warning(
+                    "[request_id=%s] 🛑 Gemini quota exhausted — rule fallback "
+                    "(cooling down %.0f s)",
+                    request_id, retry_after,
+                )
+            elif "langchain_google_genai" in err_str or isinstance(e, ImportError):
+                logger.warning(
+                    "[request_id=%s] ⚠️ langchain_google_genai not installed",
+                    request_id,
+                )
+            else:
+                logger.warning("[request_id=%s] ⚠️ Finance LLM failed: %s", request_id, e)
+
         return None
 
     # ── Score → Decision Mapping ──────────────────────────────────────────────

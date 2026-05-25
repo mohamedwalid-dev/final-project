@@ -1,21 +1,20 @@
 """
-🔄 Finance Invoice Workflow — v2.1 Production
-===============================================
+🔄 Finance Invoice Workflow — v3.0 (MongoDB/Motor)
+====================================================
 File: app/workflows/finance/invoice_workflow.py
 
-v2.1 Changes (over v2.0):
-    ✅ on_workflow_completed() في نهاية OverdueInvoiceWorkflow  ← الـ "completion signal" المفقود
-    ✅ on_workflow_completed() في نهاية NewInvoiceWorkflow
-    ✅ on_workflow_completed() في نهاية PaymentReceivedWorkflow
-    ✅ execution_ms يتحسب بدقة وبيتبعت للـ bridge
-    ✅ Dashboard يعكس "Processed/Done" فورًا بعد كل workflow
+v3.0 Changes (Migration: MySQL → MongoDB):
+    ✅ _get_invoice_status()      ← FinanceDB.invoices (Motor) بدل core.db MySQL
+    ✅ _claim_invoice()           ← atomic update_one + $set بدل SQL UPDATE
+    ✅ _enrich_with_customer_data() ← aggregation pipeline بدل raw SQL JOINs
+    ✅ _persist()                 ← FinanceDB methods بدل core.db functions
+    ✅ كل import لـ core.db اتشال تماماً
+    ✅ get_finance_db() singleton من core.mongo_connect
 
-v2.0 Changes (unchanged):
-    ✅ FinanceMetricsBridge integrated
-    ✅ on_invoice_decision() بعد _persist()
-    ✅ on_payment_received() في PaymentReceivedWorkflow
-    ✅ on_action_executed() في _execute_actions()
-    ✅ Error handling محسّن
+v2.1 Changes (unchanged):
+    ✅ on_workflow_completed() في نهاية كل workflow
+    ✅ execution_ms يتحسب بدقة ويتبعت للـ bridge
+    ✅ Dashboard يعكس "Processed/Done" فورًا بعد كل workflow
 """
 
 from __future__ import annotations
@@ -25,6 +24,8 @@ import logging
 import time
 from typing import Optional
 
+from bson import ObjectId
+
 from agents.base_agent import generate_request_id
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,16 @@ TERMINAL_STATUSES = {
     "paid", "settled", "written_off", "cancelled",
     "disputed", "in_progress_collection",
 }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔌  DB helper — lazy singleton (FinanceDB من mongo_connect)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_db():
+    """Return the shared FinanceDB instance (Motor async)."""
+    from core.mongo_connect import get_finance_db
+    return get_finance_db()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -65,19 +76,18 @@ class OverdueInvoiceWorkflow:
         invoice_id  = payload.get("invoice_id")
         customer_id = payload.get("customer_id", "?")
 
-        # ⏱️ نبدأ العداد هنا عشان نحسب الـ execution_ms الكامل للـ workflow
         workflow_start_ms = int(time.time() * 1000)
 
         self.audit_logger.log(
-            event_type = "invoice_overdue",
-            stage      = "workflow",
-            message    = (
+            event_type="invoice_overdue",
+            stage="workflow",
+            message=(
                 f"[request_id={request_id}] OverdueInvoiceWorkflow started — "
                 f"invoice={invoice_id} customer={customer_id}"
             ),
         )
 
-        # ── Step 0: Status Pre-Check ──────────────────────────────────────────
+        # ── Step 0: Status Pre-Check ──────────────────────────────────────
         if invoice_id:
             current_status = await self._get_invoice_status(invoice_id)
             if current_status in TERMINAL_STATUSES:
@@ -86,19 +96,18 @@ class OverdueInvoiceWorkflow:
                     request_id, invoice_id, current_status,
                 )
                 result = {
-                    "decision":    "skipped",
-                    "confidence":  1.0,
-                    "invoice_id":  invoice_id,
-                    "reasoning":   f"Invoice already in terminal state: {current_status}",
-                    "workflow":    "OverdueInvoiceWorkflow_v2.1",
-                    "request_id":  request_id,
-                    "skipped":     True,
+                    "decision":   "skipped",
+                    "confidence": 1.0,
+                    "invoice_id": invoice_id,
+                    "reasoning":  f"Invoice already in terminal state: {current_status}",
+                    "workflow":   "OverdueInvoiceWorkflow_v3.0",
+                    "request_id": request_id,
+                    "skipped":    True,
                 }
-                # ✅ v2.1: completion signal حتى للـ skipped
                 await self._emit_completion(result, payload, workflow_start_ms)
                 return result
 
-        # ── Step 1: Atomic Claim ──────────────────────────────────────────────
+        # ── Step 1: Atomic Claim ──────────────────────────────────────────
         if invoice_id:
             claimed = await self._claim_invoice(invoice_id, request_id)
             if not claimed:
@@ -111,16 +120,16 @@ class OverdueInvoiceWorkflow:
                     "confidence": 1.0,
                     "invoice_id": invoice_id,
                     "reasoning":  "Already claimed by another process",
-                    "workflow":   "OverdueInvoiceWorkflow_v2.1",
+                    "workflow":   "OverdueInvoiceWorkflow_v3.0",
                     "request_id": request_id,
                 }
                 await self._emit_completion(result, payload, workflow_start_ms)
                 return result
 
-        # ── Step 2: Enrich payload ────────────────────────────────────────────
+        # ── Step 2: Enrich payload ────────────────────────────────────────
         payload = await self._enrich_with_customer_data(payload, request_id)
 
-        # ── Step 3: Finance Agent Decision ───────────────────────────────────
+        # ── Step 3: Finance Agent Decision ───────────────────────────────
         start_ms = int(time.time() * 1000)
         try:
             agent_result = await self.agent.process_invoice(payload)
@@ -148,64 +157,52 @@ class OverdueInvoiceWorkflow:
             execution_ms,
         )
 
-        # ── Step 4: Persist to DB ─────────────────────────────────────────────
+        # ── Step 4: Persist to DB ─────────────────────────────────────────
         await self._persist(agent_result, payload, request_id, execution_ms)
 
-        # ── Step 5: Execute Actions ───────────────────────────────────────────
+        # ── Step 5: Execute Actions ───────────────────────────────────────
         actions_taken = await self._execute_actions(agent_result, payload, request_id)
 
-        # ── Step 6: Build Final Result ────────────────────────────────────────
+        # ── Step 6: Build Final Result ────────────────────────────────────
         result = {
             **agent_result,
-            "workflow":      "OverdueInvoiceWorkflow_v2.1",
+            "workflow":      "OverdueInvoiceWorkflow_v3.0",
             "execution_ms":  execution_ms,
             "actions_taken": actions_taken,
         }
 
         self.audit_logger.log(
-            event_type = "invoice_overdue",
-            stage      = "workflow",
-            message    = (
+            event_type="invoice_overdue",
+            stage="workflow",
+            message=(
                 f"[request_id={request_id}] OverdueInvoiceWorkflow complete — "
                 f"invoice={invoice_id} decision={agent_result.get('decision')}"
             ),
-            data = {
-                "decision":       agent_result.get("decision"),
-                "risk_score":     agent_result.get("risk_score"),
-                "execution_ms":   execution_ms,
-                "actions_taken":  actions_taken,
+            data={
+                "decision":      agent_result.get("decision"),
+                "risk_score":    agent_result.get("risk_score"),
+                "execution_ms":  execution_ms,
+                "actions_taken": actions_taken,
             },
         )
 
-        # ── Step 7: ✅ v2.1 — Completion Signal (الـ "Done" metric المفقود) ──
+        # ── Step 7: Completion Signal ─────────────────────────────────────
         await self._emit_completion(result, payload, workflow_start_ms)
-
         return result
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # 🏁  _emit_completion — الـ completion signal
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── _emit_completion ──────────────────────────────────────────────────
 
     async def _emit_completion(
         self, result: dict, payload: dict, workflow_start_ms: int
     ) -> None:
-        """
-        ✅ الـ "invoice_completed" signal.
-
-        ده اللي كان ناقص — بدونه الـ Dashboard بيشوف:
-            ❌ "started" بس مفيش "done"
-
-        بعده:
-            ✅ "Processed / Decided / Escalated" يظهر فورًا
-        """
         try:
             total_ms = int(time.time() * 1000) - workflow_start_ms
             from core.finance_metrics_bridge import metrics_bridge
             await metrics_bridge.on_workflow_completed(
-                workflow_name = "OverdueInvoiceWorkflow",
-                result        = result,
-                payload       = payload,
-                execution_ms  = total_ms,
+                workflow_name="OverdueInvoiceWorkflow",
+                result=result,
+                payload=payload,
+                execution_ms=total_ms,
             )
         except Exception as e:
             logger.warning(
@@ -232,87 +229,128 @@ class OverdueInvoiceWorkflow:
                 "request_id": req_id,
             }
 
-    # ── Private Helpers ───────────────────────────────────────────────────────
+    # ── Private Helpers ───────────────────────────────────────────────────
 
-    async def _get_invoice_status(self, invoice_id: int) -> Optional[str]:
+    async def _get_invoice_status(self, invoice_id) -> Optional[str]:
+        """
+        MongoDB: بنجيب status من invoices collection مباشرةً.
+        invoice_id ممكن يكون string أو ObjectId.
+        """
         try:
-            import importlib
-            db_module = importlib.import_module("core.db")
-            with db_module.get_db() as (_, cur):
-                cur.execute(
-                    "SELECT status FROM invoices WHERE id = %s LIMIT 1",
-                    (invoice_id,),
-                )
-                row = cur.fetchone()
-                return row["status"] if row else None
+            db  = _get_db()
+            oid = ObjectId(str(invoice_id))
+            doc = await db.invoices.find_one({"_id": oid}, {"status": 1})
+            return doc.get("status") if doc else None
         except Exception as e:
             logger.warning("⚠️ Could not check invoice status: %s", e)
             return None
 
-    async def _claim_invoice(self, invoice_id: int, request_id: str) -> bool:
+    async def _claim_invoice(self, invoice_id, request_id: str) -> bool:
+        """
+        Atomic claim بـ update_one + $nin check — بدل MySQL row-level lock.
+        بيرجع True لو احنا اللي claim-نا، False لو حد تاني سبقنا.
+        """
         try:
-            import importlib
-            db_module = importlib.import_module("core.db")
-            with db_module.get_db() as (conn, cur):
-                cur.execute(
-                    "UPDATE invoices SET status = %s "
-                    "WHERE id = %s AND status NOT IN ('paid', 'written_off', 'cancelled', 'in_progress_collection')",
-                    ("in_progress_collection", invoice_id),
-                )
-                conn.commit()
-                return cur.rowcount >= 1
+            db     = _get_db()
+            oid    = ObjectId(str(invoice_id))
+            result = await db.invoices.update_one(
+                {
+                    "_id":    oid,
+                    "status": {"$nin": list(TERMINAL_STATUSES)},
+                },
+                {
+                    "$set": {
+                        "status":     "in_progress_collection",
+                        "updated_at": __import__("datetime").datetime.now(
+                            __import__("datetime").timezone.utc
+                        ),
+                    }
+                },
+            )
+            return result.modified_count >= 1
         except Exception as e:
             logger.warning(
                 "[request_id=%s] ⚠️ Invoice claim failed: %s — allowing through",
                 request_id, e,
             )
-            return True
+            return True   # fail-open: نخلي الـ workflow يكمل
 
     async def _enrich_with_customer_data(self, payload: dict, request_id: str) -> dict:
+        """
+        بنجيب:
+          1. invoice history (aggregation على invoices) — بدل SQL GROUP BY
+          2. customer info من customers collection — بدل SQL JOIN
+        """
         customer_id = payload.get("customer_id")
         if not customer_id:
             return payload
+
         try:
-            import importlib
-            db_module = importlib.import_module("core.db")
-            with db_module.get_db() as (_, cur):
-                cur.execute(
-                    """
-                    SELECT
-                        COUNT(*)                                       AS total_invoices,
-                        SUM(CASE WHEN status='paid' THEN 1 ELSE 0 END) AS paid_count,
-                        SUM(CASE WHEN status='overdue' THEN 1 ELSE 0 END) AS overdue_count,
-                        AVG(DATEDIFF(updated_at, due_date))            AS avg_delay_days
-                    FROM invoices
-                    WHERE customer_id = %s AND status != 'draft'
-                      AND created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
-                    """,
-                    (customer_id,),
+            db  = _get_db()
+            cid = ObjectId(str(customer_id))
+
+            # ── Payment history (last 12 months) ─────────────────────────
+            from datetime import datetime, timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(days=365)
+
+            history_pipeline = [
+                {
+                    "$match": {
+                        "customer_id": cid,
+                        "status":      {"$ne": "draft"},
+                        "created_at":  {"$gte": cutoff},
+                    }
+                },
+                {
+                    "$group": {
+                        "_id":            None,
+                        "total_invoices": {"$sum": 1},
+                        "paid_count":     {
+                            "$sum": {"$cond": [{"$eq": ["$status", "paid"]}, 1, 0]}
+                        },
+                        "overdue_count":  {
+                            "$sum": {"$cond": [{"$eq": ["$status", "overdue"]}, 1, 0]}
+                        },
+                        # avg delay = mean(updated_at - due_date) in days للـ paid invoices
+                        "avg_delay_ms":   {
+                            "$avg": {
+                                "$cond": [
+                                    {"$eq": ["$status", "paid"]},
+                                    {"$subtract": ["$updated_at", "$due_date"]},
+                                    None,
+                                ]
+                            }
+                        },
+                    }
+                },
+            ]
+            history_docs = await db.invoices.aggregate(history_pipeline).to_list(1)
+            history      = history_docs[0] if history_docs else {}
+
+            avg_delay_days = 0.0
+            if history.get("avg_delay_ms"):
+                avg_delay_days = history["avg_delay_ms"] / 86_400_000   # ms → days
+
+            enriched = {
+                **payload,
+                "payment_history_count":  int(history.get("total_invoices", 0)),
+                "payment_history_paid":   int(history.get("paid_count", 0)),
+                "payment_history_late":   int(history.get("overdue_count", 0)),
+                "avg_payment_delay_days": round(avg_delay_days, 2),
+            }
+
+            # ── Customer info ─────────────────────────────────────────────
+            customer = await db.customers.find_one({"_id": cid})
+            if customer:
+                enriched["customer_name"]       = customer.get("name", "Unknown")
+                enriched["credit_score"]        = float(customer.get("credit_score") or 650)
+                enriched["industry"]            = customer.get("industry", "unknown")
+                enriched["customer_age_months"] = int(
+                    customer.get("account_age_months") or 12
                 )
-                history = cur.fetchone() or {}
 
-                enriched = {
-                    **payload,
-                    "payment_history_count": int(history.get("total_invoices") or 0),
-                    "payment_history_paid":  int(history.get("paid_count") or 0),
-                    "payment_history_late":  int(history.get("overdue_count") or 0),
-                    "avg_payment_delay_days": float(history.get("avg_delay_days") or 0),
-                }
+            return enriched
 
-                cur.execute(
-                    "SELECT * FROM customers WHERE id = %s LIMIT 1",
-                    (customer_id,),
-                )
-                customer = cur.fetchone()
-                if customer:
-                    enriched["customer_name"]       = customer.get("name", "Unknown")
-                    enriched["credit_score"]        = float(customer.get("credit_score") or 650)
-                    enriched["industry"]            = customer.get("industry", "unknown")
-                    enriched["customer_age_months"] = int(
-                        customer.get("account_age_months") or 12
-                    )
-
-                return enriched
         except Exception as e:
             logger.warning(
                 "[request_id=%s] ⚠️ Customer data enrichment failed: %s",
@@ -327,116 +365,101 @@ class OverdueInvoiceWorkflow:
         request_id:   str,
         execution_ms: int,
     ) -> None:
-        """Save decision to DB + push to metrics bridge immediately."""
-        try:
-            from core.db import (
-                update_invoice_status,
-                save_finance_decision,
-                write_audit_log,
-                write_finance_audit,
-            )
+        """
+        يحفظ:
+          1. invoice status  ← FinanceDB.update_invoice_status()
+          2. AI decision     ← FinanceDB.save_finance_decision()
+          3. Finance audit   ← FinanceDB.write_finance_audit()
+          4. Metrics bridge  ← on_invoice_decision()
+        """
+        db         = _get_db()
+        invoice_id = payload.get("invoice_id")
+        decision   = result.get("decision", "unknown")
 
-            invoice_id = payload.get("invoice_id")
-            decision   = result.get("decision", "unknown")
+        STATUS_MAP = {
+            "safe_to_collect":  "overdue",
+            "soft_follow_up":   "overdue",
+            "hard_follow_up":   "overdue",
+            "payment_plan":     "payment_plan",
+            "suspend_service":  "suspended",
+            "legal_escalation": "legal",
+            "write_off":        "written_off",
+            "on_hold_disputed": "disputed",
+            "payment_complete": "paid",
+            "partial_payment":  "partial",
+        }
+        new_status = STATUS_MAP.get(decision, "overdue")
 
-            status_map = {
-                "safe_to_collect":  "overdue",
-                "soft_follow_up":   "overdue",
-                "hard_follow_up":   "overdue",
-                "payment_plan":     "payment_plan",
-                "suspend_service":  "suspended",
-                "legal_escalation": "legal",
-                "write_off":        "written_off",
-                "on_hold_disputed": "disputed",
-                "payment_complete": "paid",
-                "partial_payment":  "partial",
-            }
-            new_status = status_map.get(decision, "overdue")
-
-            if invoice_id:
-                try:
-                    update_invoice_status(
-                        invoice_id      = invoice_id,
-                        status          = new_status,
-                        ai_decision     = decision,
-                        risk_score      = float(result.get("risk_score", 0)),
-                        decision_reason = result.get("reason", "")[:1000],
-                        action_plan     = str(result.get("action_plan", [])),
-                        request_id      = request_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[request_id=%s] ⚠️ update_invoice_status failed: %s",
-                        request_id, e,
-                    )
-
+        # 1. Update invoice status ─────────────────────────────────────────
+        if invoice_id:
             try:
-                save_finance_decision({
-                    "agent_type":   "finance_agent_v2.1",
-                    "entity":       "invoices",
-                    "entity_id":    int(invoice_id or 0),
-                    "event_id":     payload.get("event_id"),
-                    "decision":     decision,
-                    "confidence":   float(result.get("confidence", 0)),
-                    "risk_score":   float(result.get("risk_score", 0)),
-                    "reasoning":    result.get("reason", "")[:500],
-                    "action_plan":  str(result.get("action_plan", [])),
-                    "execution_ms": execution_ms,
-                    "request_id":   request_id,
-                })
-            except Exception as e:
-                logger.warning(
-                    "[request_id=%s] ⚠️ save_finance_decision failed: %s",
-                    request_id, e,
-                )
-
-            try:
-                write_finance_audit(
-                    domain          = "invoice",
-                    entity_id       = int(invoice_id or 0),
-                    customer_id     = int(payload.get("customer_id", 0) or 0),
-                    decision        = decision,
+                await db.update_invoice_status(
+                    invoice_id      = invoice_id,
+                    status          = new_status,
+                    ai_decision     = decision,
                     risk_score      = float(result.get("risk_score", 0)),
-                    confidence      = float(result.get("confidence", 0)),
-                    decision_source = result.get("model_source", "agent"),
-                    llm_used        = bool(result.get("llm_used", False)),
+                    decision_reason = result.get("reason", "")[:1000],
+                    action_plan     = str(result.get("action_plan", [])),
                     request_id      = request_id,
-                    execution_ms    = execution_ms,
-                    action_plan     = result.get("action_plan", []),
                 )
             except Exception as e:
                 logger.warning(
-                    "[request_id=%s] ⚠️ write_finance_audit failed: %s",
+                    "[request_id=%s] ⚠️ update_invoice_status failed: %s",
                     request_id, e,
                 )
 
-            write_audit_log(
-                action       = f"invoice_{decision}",
-                entity       = "invoices",
-                entity_id    = int(invoice_id or 0),
-                performed_by = "finance_agent_v2.1",
-                details      = (
-                    f"[request_id={request_id}] "
-                    f"risk={result.get('risk_score', 0):.0%} | "
-                    f"action={result.get('primary_action')} | "
-                    f"exec={execution_ms}ms | "
-                    f"{result.get('reason', '')[:150]}"
-                ),
+        # 2. Save AI decision ──────────────────────────────────────────────
+        try:
+            await db.save_finance_decision({
+                "agent_type":   "finance_agent_v3.0",
+                "entity":       "invoices",
+                "entity_id":    ObjectId(str(invoice_id)) if invoice_id else None,
+                "event_id":     payload.get("event_id"),
+                "decision":     decision,
+                "confidence":   float(result.get("confidence", 0)),
+                "risk_score":   float(result.get("risk_score", 0)),
+                "reasoning":    result.get("reason", "")[:500],
+                "action_plan":  str(result.get("action_plan", [])),
+                "execution_ms": execution_ms,
+                "request_id":   request_id,
+            })
+        except Exception as e:
+            logger.warning(
+                "[request_id=%s] ⚠️ save_finance_decision failed: %s",
+                request_id, e,
             )
 
-            # ── v2.0: Push to Metrics Bridge immediately after persist ──────
-            try:
-                from core.finance_metrics_bridge import metrics_bridge
-                await metrics_bridge.on_invoice_decision(result, {
-                    **payload,
-                    "new_status": new_status,
-                })
-            except Exception as e:
-                logger.warning("[request_id=%s] ⚠️ metrics_bridge.on_invoice_decision failed (non-critical): %s", request_id, e)
-
+        # 3. Finance audit ─────────────────────────────────────────────────
+        try:
+            await db.write_finance_audit(
+                domain          = "invoice",
+                entity_id       = ObjectId(str(invoice_id)) if invoice_id else None,
+                customer_id     = ObjectId(str(payload["customer_id"])) if payload.get("customer_id") else None,
+                decision        = decision,
+                risk_score      = float(result.get("risk_score", 0)),
+                confidence      = float(result.get("confidence", 0)),
+                decision_source = result.get("model_source", "agent"),
+                llm_used        = bool(result.get("llm_used", False)),
+                request_id      = request_id,
+                execution_ms    = execution_ms,
+                action_plan     = result.get("action_plan", []),
+            )
         except Exception as e:
-            logger.error(
-                "[request_id=%s] ❌ Finance persist failed: %s",
+            logger.warning(
+                "[request_id=%s] ⚠️ write_finance_audit failed: %s",
+                request_id, e,
+            )
+
+        # 4. Metrics bridge ────────────────────────────────────────────────
+        try:
+            from core.finance_metrics_bridge import metrics_bridge
+            await metrics_bridge.on_invoice_decision(result, {
+                **payload,
+                "new_status": new_status,
+            })
+        except Exception as e:
+            logger.warning(
+                "[request_id=%s] ⚠️ metrics_bridge.on_invoice_decision failed: %s",
                 request_id, e,
             )
 
@@ -466,12 +489,8 @@ class OverdueInvoiceWorkflow:
                     "status": "executed",
                     "result": action_result,
                 })
-                logger.info(
-                    "[request_id=%s] ✅ Action executed: %s",
-                    request_id, action,
-                )
+                logger.info("[request_id=%s] ✅ Action executed: %s", request_id, action)
 
-                # ── v2.0: Push action metric ─────────────────────────────────
                 try:
                     from core.finance_metrics_bridge import metrics_bridge
                     await metrics_bridge.on_action_executed(
@@ -518,7 +537,7 @@ class NewInvoiceWorkflow:
         request_id        = payload.get("request_id") or generate_request_id()
         payload           = {**payload, "request_id": request_id}
         invoice_id        = payload.get("invoice_id")
-        workflow_start_ms = int(time.time() * 1000)   # ✅ v2.1: track full time
+        workflow_start_ms = int(time.time() * 1000)
 
         logger.info(
             "[request_id=%s] 🧾 NewInvoiceWorkflow started — invoice=%s",
@@ -537,17 +556,17 @@ class NewInvoiceWorkflow:
             }
 
         await self._persist(result, payload, request_id)
-        result["workflow"] = "NewInvoiceWorkflow_v2.1"
+        result["workflow"] = "NewInvoiceWorkflow_v3.0"
 
-        # ✅ v2.1: Completion signal
+        # Completion signal
         try:
             total_ms = int(time.time() * 1000) - workflow_start_ms
             from core.finance_metrics_bridge import metrics_bridge
             await metrics_bridge.on_workflow_completed(
-                workflow_name = "NewInvoiceWorkflow",
-                result        = result,
-                payload       = payload,
-                execution_ms  = total_ms,
+                workflow_name="NewInvoiceWorkflow",
+                result=result,
+                payload=payload,
+                execution_ms=total_ms,
             )
         except Exception as e:
             logger.warning("[request_id=%s] ⚠️ completion signal failed: %s", request_id, e)
@@ -566,41 +585,34 @@ class NewInvoiceWorkflow:
             return {"decision": "invoice_registered", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        try:
-            from core.db import write_audit_log, update_invoice_collection_strategy
-            invoice_id = payload.get("invoice_id")
-            if invoice_id:
-                try:
-                    update_invoice_collection_strategy(
-                        invoice_id           = invoice_id,
-                        risk_score           = float(result.get("risk_score", 0)),
-                        collection_strategy  = result.get("collection_strategy", "standard"),
-                        first_reminder_days  = int(result.get("first_reminder_days", 7)),
-                        request_id           = request_id,
-                    )
-                except Exception as e:
-                    logger.warning("[request_id=%s] ⚠️ update_invoice_collection_strategy failed: %s", request_id, e)
+        """
+        يحدّث collection strategy على الـ invoice document في MongoDB.
+        بدل update_invoice_collection_strategy من core.db.
+        """
+        db         = _get_db()
+        invoice_id = payload.get("invoice_id")
 
-            write_audit_log(
-                action       = "invoice_risk_assessed",
-                entity       = "invoices",
-                entity_id    = int(invoice_id or 0),
-                performed_by = "finance_agent_v2.1",
-                details      = (
-                    f"[request_id={request_id}] strategy={result.get('collection_strategy')} | "
-                    f"risk={result.get('risk_score', 0):.0%}"
-                ),
-            )
-
-            # ── v2.0: Push new invoice metric ────────────────────────────────
+        if invoice_id:
             try:
-                from core.finance_metrics_bridge import metrics_bridge
-                await metrics_bridge.on_invoice_decision(result, payload)
-            except Exception:
-                pass
+                await db.update_invoice_collection_strategy(
+                    invoice_id           = invoice_id,
+                    risk_score           = float(result.get("risk_score", 0)),
+                    collection_strategy  = result.get("collection_strategy", "standard"),
+                    first_reminder_days  = int(result.get("first_reminder_days", 7)),
+                    request_id           = request_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[request_id=%s] ⚠️ update_invoice_collection_strategy failed: %s",
+                    request_id, e,
+                )
 
-        except Exception as e:
-            logger.warning("[request_id=%s] ⚠️ NewInvoice persist failed: %s", request_id, e)
+        # Metrics bridge
+        try:
+            from core.finance_metrics_bridge import metrics_bridge
+            await metrics_bridge.on_invoice_decision(result, payload)
+        except Exception:
+            pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -624,7 +636,7 @@ class PaymentReceivedWorkflow:
         payload           = {**payload, "request_id": request_id}
         invoice_id        = payload.get("invoice_id")
         amount_paid       = float(payload.get("amount_paid", 0))
-        workflow_start_ms = int(time.time() * 1000)   # ✅ v2.1: track full time
+        workflow_start_ms = int(time.time() * 1000)
 
         logger.info(
             "[request_id=%s] 💳 PaymentReceivedWorkflow started — "
@@ -639,17 +651,17 @@ class PaymentReceivedWorkflow:
             result = {"decision": "payment_complete", "error": str(e), "request_id": request_id}
 
         await self._persist(result, payload, request_id)
-        result["workflow"] = "PaymentReceivedWorkflow_v2.1"
+        result["workflow"] = "PaymentReceivedWorkflow_v3.0"
 
-        # ✅ v2.1: Completion signal
+        # Completion signal
         try:
             total_ms = int(time.time() * 1000) - workflow_start_ms
             from core.finance_metrics_bridge import metrics_bridge
             await metrics_bridge.on_workflow_completed(
-                workflow_name = "PaymentReceivedWorkflow",
-                result        = result,
-                payload       = payload,
-                execution_ms  = total_ms,
+                workflow_name="PaymentReceivedWorkflow",
+                result=result,
+                payload=payload,
+                execution_ms=total_ms,
             )
         except Exception as e:
             logger.warning("[request_id=%s] ⚠️ completion signal failed: %s", request_id, e)
@@ -668,47 +680,40 @@ class PaymentReceivedWorkflow:
             return {"decision": "payment_complete", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        try:
-            from core.db import write_audit_log
-            invoice_id  = payload.get("invoice_id")
-            amount_paid = float(payload.get("amount_paid", 0))
-            decision    = result.get("decision", "payment_complete")
+        """
+        لو payment_complete → يعمل update_invoice_status("paid") في MongoDB.
+        بدل raw SQL UPDATE.
+        """
+        db          = _get_db()
+        invoice_id  = payload.get("invoice_id")
+        amount_paid = float(payload.get("amount_paid", 0))
+        decision    = result.get("decision", "payment_complete")
 
-            if invoice_id and decision == "payment_complete":
-                try:
-                    import importlib
-                    db_module = importlib.import_module("core.db")
-                    with db_module.get_db() as (conn, cur):
-                        cur.execute(
-                            "UPDATE invoices SET status='paid', paid_at=NOW() WHERE id=%s",
-                            (invoice_id,),
-                        )
-                        conn.commit()
-                except Exception as e:
-                    logger.warning("[request_id=%s] ⚠️ Invoice update failed: %s", request_id, e)
-
-            write_audit_log(
-                action       = f"payment_{decision}",
-                entity       = "invoices",
-                entity_id    = int(invoice_id or 0),
-                performed_by = "finance_agent_v2.1",
-                details      = (
-                    f"[request_id={request_id}] "
-                    f"amount_paid={amount_paid:,.2f} EGP | decision={decision}"
-                ),
-            )
-
-            # ── v2.0: Push payment metric → Dashboard يتحدّث فورًا ──────────
+        if invoice_id and decision == "payment_complete":
             try:
-                from core.finance_metrics_bridge import metrics_bridge
-                await metrics_bridge.on_payment_received(
+                await db.update_invoice_status(
                     invoice_id  = invoice_id,
-                    customer_id = payload.get("customer_id"),
-                    amount_paid = amount_paid,
-                    decision    = decision,
+                    status      = "paid",
+                    ai_decision = "payment_complete",
+                    request_id  = request_id,
                 )
             except Exception as e:
-                logger.warning("[request_id=%s] ⚠️ metrics_bridge.on_payment_received failed (non-critical): %s", request_id, e)
+                logger.warning(
+                    "[request_id=%s] ⚠️ Invoice paid update failed: %s",
+                    request_id, e,
+                )
 
+        # Metrics bridge
+        try:
+            from core.finance_metrics_bridge import metrics_bridge
+            await metrics_bridge.on_payment_received(
+                invoice_id  = invoice_id,
+                customer_id = payload.get("customer_id"),
+                amount_paid = amount_paid,
+                decision    = decision,
+            )
         except Exception as e:
-            logger.warning("[request_id=%s] ⚠️ PaymentReceived persist failed: %s", request_id, e)
+            logger.warning(
+                "[request_id=%s] ⚠️ metrics_bridge.on_payment_received failed: %s",
+                request_id, e,
+            )

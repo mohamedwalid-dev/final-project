@@ -1,10 +1,19 @@
 """
-🔄 Finance Feedback Loop — v1.0 Production
-============================================
+🔄 Finance Feedback Loop — v2.0 Production (MongoDB/Motor)
+===========================================================
 File: app/core/feedback_loop.py
 
-Compares AI decisions with actual customer behavior.
-Feeds accuracy metrics back to improve the system.
+v2.0 Changes (Migration: MySQL → MongoDB):
+    ✅ ai_feedback           → MongoDB collection  (بدل MySQL table)
+    ✅ ai_accuracy_metrics   → MongoDB collection  (بدل MySQL table)
+    ✅ _get_decisions_to_evaluate() ← Motor aggregation pipeline بدل raw SQL
+    ✅ _save_feedback()             ← upsert في MongoDB بدل INSERT ... ON DUPLICATE KEY
+    ✅ _compute_accuracy_metrics()  ← aggregation بدل SQL GROUP BY
+    ✅ _save_accuracy_metrics()     ← bulk_write (upserts) بدل MySQL INSERT
+    ✅ _check_drift()               ← Motor find + aggregation بدل SQL AVG
+    ✅ get_accuracy_summary()       ← Motor aggregation بدل SQL GROUP BY
+    ✅ كل import لـ core.db اتشال تماماً
+    ✅ get_finance_db() singleton من core.mongo_connect
 
 How it works:
     1. Scheduler runs daily
@@ -14,19 +23,11 @@ How it works:
     5. Detects model drift (accuracy dropping)
     6. Triggers alert if drift detected
 
-Outcome Classification:
-    AI Decision          → Good Outcome      → Bad Outcome
-    soft_follow_up       → paid              → still overdue 14+ days
-    hard_follow_up       → paid / plan       → legal / write_off
-    payment_plan         → partial / paid    → write_off / no payment
-    suspend_service      → paid after suspend → legal / write_off
-    legal_escalation     → collected legally → write_off
-
 Add to trigger.py:
     from core.feedback_loop import job_run_feedback_loop
     _scheduler.add_job(
         job_run_feedback_loop,
-        trigger=CronTrigger(hour=2, minute=0),  # daily 2 AM
+        trigger=CronTrigger(hour=2, minute=0),
         id="feedback_loop",
         name="[Finance] AI Feedback Loop",
         max_instances=1,
@@ -35,16 +36,29 @@ Add to trigger.py:
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from bson import ObjectId
+from pymongo import UpdateOne, ASCENDING, DESCENDING
 
 logger = logging.getLogger(__name__)
 
 
+# ── DB helper ─────────────────────────────────────────────────────────────────
+
+def _get_db():
+    """Return the shared FinanceDB instance (Motor async)."""
+    from core.mongo_connect import get_finance_db
+    return get_finance_db()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 # ── Outcome Rules ─────────────────────────────────────────────────────────────
-# Maps (decision, actual_status) → outcome label
 
 OUTCOME_MATRIX: dict[str, dict[str, str]] = {
     "safe_to_collect": {
@@ -55,301 +69,358 @@ OUTCOME_MATRIX: dict[str, dict[str, str]] = {
         "partial":     "partial",
     },
     "soft_follow_up": {
-        "paid":             "correct",
-        "partial":          "partial",
-        "overdue":          "wrong",   # still unpaid after soft nudge
-        "legal":            "wrong",
-        "written_off":      "wrong",
-        "payment_plan":     "partial",
-        "suspended":        "neutral",
+        "paid":         "correct",
+        "partial":      "partial",
+        "overdue":      "wrong",
+        "legal":        "wrong",
+        "written_off":  "wrong",
+        "payment_plan": "partial",
+        "suspended":    "neutral",
     },
     "hard_follow_up": {
-        "paid":             "correct",
-        "payment_plan":     "correct",  # escalation worked → plan agreed
-        "partial":          "partial",
-        "legal":            "neutral",  # escalated correctly
-        "suspended":        "neutral",
-        "overdue":          "wrong",
-        "written_off":      "wrong",
+        "paid":         "correct",
+        "payment_plan": "correct",
+        "partial":      "partial",
+        "legal":        "neutral",
+        "suspended":    "neutral",
+        "overdue":      "wrong",
+        "written_off":  "wrong",
     },
     "payment_plan": {
-        "paid":             "correct",
-        "payment_plan":     "correct",  # still on plan — in progress
-        "partial":          "partial",
-        "overdue":          "wrong",
-        "legal":            "wrong",
-        "written_off":      "wrong",
+        "paid":         "correct",
+        "payment_plan": "correct",
+        "partial":      "partial",
+        "overdue":      "wrong",
+        "legal":        "wrong",
+        "written_off":  "wrong",
     },
     "suspend_service": {
-        "paid":             "correct",  # suspension worked!
-        "payment_plan":     "correct",
-        "legal":            "neutral",  # escalated
-        "suspended":        "neutral",  # still suspended — waiting
-        "written_off":      "wrong",
-        "overdue":          "wrong",
+        "paid":         "correct",
+        "payment_plan": "correct",
+        "legal":        "neutral",
+        "suspended":    "neutral",
+        "written_off":  "wrong",
+        "overdue":      "wrong",
     },
     "legal_escalation": {
-        "legal":            "neutral",   # in progress
-        "paid":             "correct",   # legal worked
-        "written_off":      "neutral",   # last resort — acceptable
-        "overdue":          "wrong",     # should not still be overdue
-        "suspended":        "neutral",
+        "legal":       "neutral",
+        "paid":        "correct",
+        "written_off": "neutral",
+        "overdue":     "wrong",
+        "suspended":   "neutral",
     },
     "write_off": {
-        "written_off":  "correct",
-        "paid":         "wrong",        # wrote off but customer paid — lost revenue
-        "legal":        "neutral",
-        "overdue":      "neutral",
+        "written_off": "correct",
+        "paid":        "wrong",
+        "legal":       "neutral",
+        "overdue":     "neutral",
     },
     "on_hold_disputed": {
-        "disputed":     "correct",
-        "paid":         "correct",
-        "overdue":      "neutral",
-        "legal":        "neutral",
+        "disputed": "correct",
+        "paid":     "correct",
+        "overdue":  "neutral",
+        "legal":    "neutral",
     },
 }
 
 
 def _classify_outcome(decision: str, actual_status: str, days_elapsed: int) -> str:
-    """Classify whether an AI decision led to a good outcome."""
-    matrix = OUTCOME_MATRIX.get(decision, {})
+    matrix  = OUTCOME_MATRIX.get(decision, {})
     outcome = matrix.get(actual_status, "unknown")
-
-    # Override: if decision was soft/hard follow_up and still overdue after 30 days → definitely wrong
     if outcome == "neutral" and actual_status == "overdue" and days_elapsed >= 30:
         outcome = "wrong"
-
     return outcome
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 📊  FEEDBACK DB FUNCTIONS
+# 📊  FEEDBACK — MongoDB FUNCTIONS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _ensure_feedback_tables() -> None:
+async def _ensure_feedback_indexes() -> None:
+    """
+    بدل CREATE TABLE IF NOT EXISTS — نعمل indexes على الـ collections.
+    آمن تُنادى أكتر من مرة (idempotent).
+    """
     try:
-        from core.db import get_db
-        with get_db() as (conn, cur):
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS ai_feedback (
-                    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    finance_decision_id BIGINT       DEFAULT NULL,
-                    invoice_id      INT              NOT NULL,
-                    customer_id     INT              DEFAULT NULL,
-                    ai_decision     VARCHAR(100)     NOT NULL,
-                    ai_risk_score   FLOAT            DEFAULT 0,
-                    actual_status   VARCHAR(100)     DEFAULT NULL,
-                    outcome         VARCHAR(20)      DEFAULT NULL,
-                    days_elapsed    INT              DEFAULT 0,
-                    decision_date   DATETIME         DEFAULT NULL,
-                    evaluated_at    DATETIME         DEFAULT NULL,
-                    notes           TEXT             DEFAULT NULL,
-                    INDEX idx_decision   (ai_decision),
-                    INDEX idx_outcome    (outcome),
-                    INDEX idx_invoice    (invoice_id),
-                    INDEX idx_evaluated  (evaluated_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
+        db = _get_db()
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS ai_accuracy_metrics (
-                    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    metric_date     DATE             NOT NULL,
-                    decision_type   VARCHAR(100)     NOT NULL,
-                    total_count     INT              DEFAULT 0,
-                    correct_count   INT              DEFAULT 0,
-                    wrong_count     INT              DEFAULT 0,
-                    partial_count   INT              DEFAULT 0,
-                    neutral_count   INT              DEFAULT 0,
-                    accuracy_pct    FLOAT            DEFAULT 0,
-                    avg_risk_score  FLOAT            DEFAULT 0,
-                    drift_detected  TINYINT(1)       DEFAULT 0,
-                    created_at      DATETIME         DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE KEY uq_date_decision (metric_date, decision_type),
-                    INDEX idx_date   (metric_date),
-                    INDEX idx_drift  (drift_detected)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-            conn.commit()
+        # ai_feedback
+        await db.db["ai_feedback"].create_indexes([
+            # unique على finance_decision_id عشان نمنع duplicates
+            __import__("pymongo").IndexModel(
+                [("finance_decision_id", ASCENDING)],
+                unique=True, sparse=True,
+            ),
+            __import__("pymongo").IndexModel([("ai_decision", ASCENDING)]),
+            __import__("pymongo").IndexModel([("outcome", ASCENDING)]),
+            __import__("pymongo").IndexModel([("invoice_id", ASCENDING)]),
+            __import__("pymongo").IndexModel([("evaluated_at", DESCENDING)]),
+        ])
+
+        # ai_accuracy_metrics
+        await db.db["ai_accuracy_metrics"].create_indexes([
+            # unique compound — بدل UNIQUE KEY uq_date_decision
+            __import__("pymongo").IndexModel(
+                [("metric_date", ASCENDING), ("decision_type", ASCENDING)],
+                unique=True,
+            ),
+            __import__("pymongo").IndexModel([("metric_date", DESCENDING)]),
+            __import__("pymongo").IndexModel([("drift_detected", ASCENDING)]),
+        ])
+
+        logger.debug("✅ Feedback indexes ready")
     except Exception as e:
-        logger.warning("⚠️ Feedback table init failed: %s", e)
+        logger.warning("⚠️ Feedback index init failed: %s", e)
 
 
-def _get_decisions_to_evaluate(min_days: int = 7) -> list[dict]:
-    """Get AI decisions made at least min_days ago, not yet evaluated."""
+async def _get_decisions_to_evaluate(min_days: int = 7) -> list[dict]:
+    """
+    بدل raw SQL JOIN بين finance_decisions و invoices:
+    بنعمل aggregation pipeline على finance_decisions
+    ونعمل $lookup على invoices.
+
+    بيرجع decisions اتعملت من >= min_days ومش متقيّمة في ai_feedback.
+    """
     try:
-        from core.db import get_db
-        with get_db() as (_, cur):
-            cur.execute(
-                """
-                SELECT
-                    fd.id           AS decision_id,
-                    fd.entity_id    AS invoice_id,
-                    fd.decision     AS ai_decision,
-                    fd.risk_score   AS ai_risk_score,
-                    fd.created_at   AS decision_date,
-                    i.status        AS current_status,
-                    i.customer_id   AS customer_id,
-                    DATEDIFF(NOW(), fd.created_at) AS days_elapsed
-                FROM finance_decisions fd
-                JOIN invoices i ON i.id = fd.entity_id
-                WHERE fd.entity = 'invoices'
-                  AND fd.created_at <= DATE_SUB(NOW(), INTERVAL %s DAY)
-                  AND fd.id NOT IN (
-                      SELECT finance_decision_id
-                      FROM ai_feedback
-                      WHERE finance_decision_id IS NOT NULL
-                  )
-                ORDER BY fd.created_at ASC
-                LIMIT 500
-                """,
-                (min_days,),
-            )
-            return cur.fetchall()
+        db     = _get_db()
+        cutoff = _utcnow() - timedelta(days=min_days)
+
+        # الـ ObjectIds اللي اتقيّموا قبل كده
+        evaluated_cursor = db.db["ai_feedback"].find(
+            {"finance_decision_id": {"$exists": True, "$ne": None}},
+            {"finance_decision_id": 1},
+        )
+        evaluated_ids = {
+            doc["finance_decision_id"]
+            async for doc in evaluated_cursor
+        }
+
+        pipeline = [
+            # فقط decisions على invoices قبل الـ cutoff
+            {
+                "$match": {
+                    "entity":     "invoices",
+                    "created_at": {"$lte": cutoff},
+                    "_id":        {"$nin": list(evaluated_ids)},
+                }
+            },
+            # $lookup لجيب current invoice status
+            {
+                "$lookup": {
+                    "from":         "invoices",
+                    "localField":   "entity_id",
+                    "foreignField": "_id",
+                    "as":           "_inv",
+                }
+            },
+            {"$unwind": {"path": "$_inv", "preserveNullAndEmptyArrays": True}},
+            # نحسب days_elapsed
+            {
+                "$addFields": {
+                    "current_status": "$_inv.status",
+                    "customer_id":    "$_inv.customer_id",
+                    "days_elapsed": {
+                        "$toInt": {
+                            "$divide": [
+                                {"$subtract": [_utcnow(), "$created_at"]},
+                                86_400_000,
+                            ]
+                        }
+                    },
+                }
+            },
+            {"$project": {"_inv": 0}},
+            {"$limit": 500},
+        ]
+
+        docs = await db.decisions.aggregate(pipeline).to_list(None)
+        return docs
+
     except Exception as e:
         logger.error("❌ _get_decisions_to_evaluate failed: %s", e)
         return []
 
 
-def _save_feedback(row: dict) -> None:
+async def _save_feedback(row: dict) -> None:
+    """
+    بدل INSERT ... ON DUPLICATE KEY UPDATE:
+    نعمل upsert بـ finance_decision_id كـ filter.
+    """
     try:
-        from core.db import get_db
-        with get_db() as (conn, cur):
-            cur.execute(
-                """
-                INSERT INTO ai_feedback
-                    (finance_decision_id, invoice_id, customer_id,
-                     ai_decision, ai_risk_score, actual_status,
-                     outcome, days_elapsed, decision_date, evaluated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
-                ON DUPLICATE KEY UPDATE
-                    actual_status = VALUES(actual_status),
-                    outcome       = VALUES(outcome),
-                    evaluated_at  = NOW()
-                """,
-                (
-                    row["decision_id"],
-                    row["invoice_id"],
-                    row["customer_id"],
-                    row["ai_decision"],
-                    float(row["ai_risk_score"] or 0),
-                    row["current_status"],
-                    row["outcome"],
-                    int(row["days_elapsed"] or 0),
-                    row["decision_date"],
-                ),
-            )
-            conn.commit()
+        db = _get_db()
+
+        decision_id = row.get("_id")   # ObjectId of finance_decision doc
+        invoice_oid = row.get("entity_id")
+        customer_id = row.get("customer_id")
+
+        await db.db["ai_feedback"].update_one(
+            {"finance_decision_id": decision_id},
+            {
+                "$set": {
+                    "finance_decision_id": decision_id,
+                    "invoice_id":    invoice_oid,
+                    "customer_id":   customer_id,
+                    "ai_decision":   str(row.get("decision", "")),
+                    "ai_risk_score": float(row.get("risk_score") or 0),
+                    "actual_status": str(row.get("current_status") or ""),
+                    "outcome":       str(row.get("outcome", "")),
+                    "days_elapsed":  int(row.get("days_elapsed") or 0),
+                    "decision_date": row.get("created_at"),
+                    "evaluated_at":  _utcnow(),
+                }
+            },
+            upsert=True,
+        )
     except Exception as e:
         logger.warning("⚠️ _save_feedback failed: %s", e)
 
 
-def _compute_accuracy_metrics(date_str: str) -> list[dict]:
-    """Compute daily accuracy per decision type."""
+async def _compute_accuracy_metrics(date_str: str) -> list[dict]:
+    """
+    بدل SQL GROUP BY على ai_feedback:
+    aggregation pipeline يجمّع by ai_decision لليوم المحدد.
+    """
     try:
-        from core.db import get_db
-        with get_db() as (_, cur):
-            cur.execute(
-                """
-                SELECT
-                    ai_decision,
-                    COUNT(*)                                                AS total,
-                    SUM(CASE WHEN outcome='correct'  THEN 1 ELSE 0 END)    AS correct,
-                    SUM(CASE WHEN outcome='wrong'    THEN 1 ELSE 0 END)    AS wrong,
-                    SUM(CASE WHEN outcome='partial'  THEN 1 ELSE 0 END)    AS partial,
-                    SUM(CASE WHEN outcome='neutral'  THEN 1 ELSE 0 END)    AS neutral,
-                    AVG(ai_risk_score)                                      AS avg_risk
-                FROM ai_feedback
-                WHERE DATE(evaluated_at) = %s
-                GROUP BY ai_decision
-                """,
-                (date_str,),
-            )
-            return cur.fetchall()
+        db = _get_db()
+
+        # نحول date_str لـ datetime range (UTC)
+        day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        day_end   = day_start + timedelta(days=1)
+
+        pipeline = [
+            {
+                "$match": {
+                    "evaluated_at": {"$gte": day_start, "$lt": day_end}
+                }
+            },
+            {
+                "$group": {
+                    "_id":      "$ai_decision",
+                    "total":    {"$sum": 1},
+                    "correct":  {"$sum": {"$cond": [{"$eq": ["$outcome", "correct"]},  1, 0]}},
+                    "wrong":    {"$sum": {"$cond": [{"$eq": ["$outcome", "wrong"]},    1, 0]}},
+                    "partial":  {"$sum": {"$cond": [{"$eq": ["$outcome", "partial"]},  1, 0]}},
+                    "neutral":  {"$sum": {"$cond": [{"$eq": ["$outcome", "neutral"]},  1, 0]}},
+                    "avg_risk": {"$avg": "$ai_risk_score"},
+                }
+            },
+        ]
+
+        docs = await db.db["ai_feedback"].aggregate(pipeline).to_list(None)
+        # نضيف ai_decision كـ key واضح
+        for d in docs:
+            d["ai_decision"] = d.pop("_id", "")
+        return docs
+
     except Exception as e:
         logger.error("❌ _compute_accuracy_metrics failed: %s", e)
         return []
 
 
-def _save_accuracy_metrics(date_str: str, metrics: list[dict]) -> None:
+async def _save_accuracy_metrics(date_str: str, metrics: list[dict]) -> None:
+    """
+    بدل INSERT ... ON DUPLICATE KEY UPDATE:
+    bulk_write مع UpdateOne upserts.
+    """
+    if not metrics:
+        return
     try:
-        from core.db import get_db
-        with get_db() as (conn, cur):
-            for m in metrics:
-                total   = int(m["total"] or 0)
-                correct = int(m["correct"] or 0)
-                wrong   = int(m["wrong"] or 0)
-                partial = int(m["partial"] or 0)
-                neutral = int(m["neutral"] or 0)
+        db = _get_db()
 
-                accuracy = (correct / total * 100) if total > 0 else 0.0
+        day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-                cur.execute(
-                    """
-                    INSERT INTO ai_accuracy_metrics
-                        (metric_date, decision_type, total_count, correct_count,
-                         wrong_count, partial_count, neutral_count,
-                         accuracy_pct, avg_risk_score)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON DUPLICATE KEY UPDATE
-                        total_count   = VALUES(total_count),
-                        correct_count = VALUES(correct_count),
-                        wrong_count   = VALUES(wrong_count),
-                        partial_count = VALUES(partial_count),
-                        neutral_count = VALUES(neutral_count),
-                        accuracy_pct  = VALUES(accuracy_pct),
-                        avg_risk_score= VALUES(avg_risk_score)
-                    """,
-                    (date_str, m["ai_decision"], total, correct, wrong, partial, neutral,
-                     round(accuracy, 2), float(m["avg_risk"] or 0)),
-                )
-            conn.commit()
+        ops = []
+        for m in metrics:
+            total   = int(m.get("total") or 0)
+            correct = int(m.get("correct") or 0)
+            wrong   = int(m.get("wrong") or 0)
+            partial = int(m.get("partial") or 0)
+            neutral = int(m.get("neutral") or 0)
+            accuracy = round(correct / total * 100, 2) if total > 0 else 0.0
+
+            ops.append(UpdateOne(
+                {
+                    "metric_date":   day_start,
+                    "decision_type": m["ai_decision"],
+                },
+                {
+                    "$set": {
+                        "metric_date":   day_start,
+                        "decision_type": m["ai_decision"],
+                        "total_count":   total,
+                        "correct_count": correct,
+                        "wrong_count":   wrong,
+                        "partial_count": partial,
+                        "neutral_count": neutral,
+                        "accuracy_pct":  accuracy,
+                        "avg_risk_score": round(float(m.get("avg_risk") or 0), 4),
+                        # drift_detected يتحدث في _check_drift
+                    },
+                    "$setOnInsert": {"drift_detected": False, "created_at": _utcnow()},
+                },
+                upsert=True,
+            ))
+
+        if ops:
+            await db.db["ai_accuracy_metrics"].bulk_write(ops, ordered=False)
+
     except Exception as e:
         logger.error("❌ _save_accuracy_metrics failed: %s", e)
 
 
-def _check_drift(metrics: list[dict]) -> list[dict]:
+async def _check_drift(metrics: list[dict]) -> list[dict]:
     """
-    Detect model drift: accuracy dropped >15% vs last 7-day avg.
-    Returns list of drifting decision types.
+    بدل SQL AVG + UPDATE:
+    Motor: بنجيب avg من آخر 7 أيام ونقارن بـ today.
+    بيرجع list of drifting decision types.
     """
     drifting = []
     try:
-        from core.db import get_db
-        with get_db() as (_, cur):
-            for m in metrics:
-                decision_type = m["ai_decision"]
-                today_acc     = float(m["correct"] or 0) / max(int(m["total"] or 1), 1) * 100
+        db       = _get_db()
+        now      = _utcnow()
+        week_ago = now - timedelta(days=7)
 
-                # Get 7-day average
-                cur.execute(
-                    """
-                    SELECT AVG(accuracy_pct) AS avg_acc
-                    FROM ai_accuracy_metrics
-                    WHERE decision_type = %s
-                      AND metric_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-                    """,
-                    (decision_type,),
-                )
-                row     = cur.fetchone()
-                avg_acc = float(row["avg_acc"] or 0) if row else 0
+        for m in metrics:
+            decision_type = m["ai_decision"]
+            total_today   = int(m.get("total") or 1)
+            correct_today = int(m.get("correct") or 0)
+            today_acc     = correct_today / total_today * 100
 
-                if avg_acc > 0 and today_acc < avg_acc - 15:
-                    drifting.append({
+            # 7-day avg accuracy من ai_accuracy_metrics
+            pipeline = [
+                {
+                    "$match": {
                         "decision_type": decision_type,
-                        "today_accuracy": round(today_acc, 1),
-                        "avg_7d_accuracy": round(avg_acc, 1),
-                        "drop": round(avg_acc - today_acc, 1),
-                    })
-                    # Flag in DB
-                    cur.execute(
-                        """
-                        UPDATE ai_accuracy_metrics
-                        SET drift_detected = 1
-                        WHERE decision_type = %s AND metric_date = CURDATE()
-                        """,
-                        (decision_type,),
-                    )
+                        "metric_date":   {"$gte": week_ago},
+                    }
+                },
+                {
+                    "$group": {
+                        "_id":     None,
+                        "avg_acc": {"$avg": "$accuracy_pct"},
+                    }
+                },
+            ]
+            docs    = await db.db["ai_accuracy_metrics"].aggregate(pipeline).to_list(1)
+            avg_acc = float(docs[0]["avg_acc"]) if docs else 0.0
+
+            if avg_acc > 0 and today_acc < avg_acc - 15:
+                drifting.append({
+                    "decision_type":   decision_type,
+                    "today_accuracy":  round(today_acc, 1),
+                    "avg_7d_accuracy": round(avg_acc, 1),
+                    "drop":            round(avg_acc - today_acc, 1),
+                })
+                # Flag drift في الـ metrics doc
+                day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                await db.db["ai_accuracy_metrics"].update_one(
+                    {
+                        "decision_type": decision_type,
+                        "metric_date":   {"$gte": day_start},
+                    },
+                    {"$set": {"drift_detected": True}},
+                )
+
     except Exception as e:
         logger.error("❌ _check_drift failed: %s", e)
 
@@ -369,9 +440,9 @@ async def job_run_feedback_loop() -> None:
     computes daily accuracy, and detects drift.
     """
     logger.info("🔄 [FeedbackLoop] Starting daily evaluation...")
-    _ensure_feedback_tables()
+    await _ensure_feedback_indexes()
 
-    decisions = _get_decisions_to_evaluate(min_days=7)
+    decisions = await _get_decisions_to_evaluate(min_days=7)
     if not decisions:
         logger.info("✅ [FeedbackLoop] No decisions to evaluate.")
         return
@@ -383,14 +454,14 @@ async def job_run_feedback_loop() -> None:
     wrong_count   = 0
 
     for row in decisions:
-        ai_decision    = str(row.get("ai_decision", ""))
-        actual_status  = str(row.get("current_status", ""))
-        days_elapsed   = int(row.get("days_elapsed") or 0)
+        ai_decision   = str(row.get("decision", ""))
+        actual_status = str(row.get("current_status") or "")
+        days_elapsed  = int(row.get("days_elapsed") or 0)
 
-        outcome = _classify_outcome(ai_decision, actual_status, days_elapsed)
+        outcome        = _classify_outcome(ai_decision, actual_status, days_elapsed)
         row["outcome"] = outcome
 
-        _save_feedback(row)
+        await _save_feedback(row)
         evaluated += 1
 
         if outcome == "correct":
@@ -399,9 +470,9 @@ async def job_run_feedback_loop() -> None:
             wrong_count += 1
 
     # Compute today's metrics
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    metrics   = _compute_accuracy_metrics(today_str)
-    _save_accuracy_metrics(today_str, metrics)
+    today_str = _utcnow().strftime("%Y-%m-%d")
+    metrics   = await _compute_accuracy_metrics(today_str)
+    await _save_accuracy_metrics(today_str, metrics)
 
     overall_acc = (correct_count / evaluated * 100) if evaluated > 0 else 0
     logger.info(
@@ -410,7 +481,7 @@ async def job_run_feedback_loop() -> None:
     )
 
     # Check for drift
-    drifting = _check_drift(metrics)
+    drifting = await _check_drift(metrics)
     if drifting:
         await _send_drift_alert(drifting, overall_acc)
     else:
@@ -418,7 +489,6 @@ async def job_run_feedback_loop() -> None:
 
 
 async def _send_drift_alert(drifting: list[dict], overall_acc: float) -> None:
-    """Send drift alert via the monitoring system."""
     try:
         from core.finance_monitor import get_monitor
         monitor = get_monitor()
@@ -430,61 +500,90 @@ async def _send_drift_alert(drifting: list[dict], overall_acc: float) -> None:
                     f"Accuracy dropped {d['drop']:.1f}% for '{d['decision_type']}'. "
                     f"Today: {d['today_accuracy']}% vs 7-day avg: {d['avg_7d_accuracy']}%"
                 ),
-                data    = d,
+                data=d,
             )
         logger.warning(
-            "🚨 [FeedbackLoop] Drift detected in %d decision types! Overall accuracy: %.1f%%",
+            "🚨 [FeedbackLoop] Drift detected in %d decision types! Overall: %.1f%%",
             len(drifting), overall_acc,
         )
     except Exception as e:
         logger.error("❌ [FeedbackLoop] Drift alert failed: %s", e)
 
 
-def get_accuracy_summary(days: int = 30) -> dict:
-    """Get accuracy summary for the last N days — used by dashboard/API."""
-    _ensure_feedback_tables()
+# ═════════════════════════════════════════════════════════════════════════════
+# 📊  ACCURACY SUMMARY — for dashboard/API
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def get_accuracy_summary(days: int = 30) -> dict:
+    """
+    بدل SQL GROUP BY على ai_accuracy_metrics:
+    Motor aggregation يجيب avg accuracy per decision type.
+    """
+    await _ensure_feedback_indexes()
     try:
-        from core.db import get_db
-        with get_db() as (_, cur):
-            cur.execute(
-                """
-                SELECT
-                    decision_type,
-                    ROUND(AVG(accuracy_pct), 1)     AS avg_accuracy,
-                    SUM(total_count)                AS total_evaluated,
-                    SUM(correct_count)              AS total_correct,
-                    SUM(wrong_count)                AS total_wrong,
-                    MAX(drift_detected)             AS drift_ever,
-                    MAX(metric_date)                AS last_evaluated
-                FROM ai_accuracy_metrics
-                WHERE metric_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-                GROUP BY decision_type
-                ORDER BY avg_accuracy ASC
-                """,
-                (days,),
-            )
-            rows = cur.fetchall()
+        db     = _get_db()
+        since  = _utcnow() - timedelta(days=days)
 
-            # Overall
-            cur.execute(
-                """
-                SELECT
-                    ROUND(AVG(accuracy_pct), 1) AS overall_accuracy,
-                    SUM(total_count)            AS total_evaluated,
-                    SUM(drift_detected)         AS total_drift_alerts
-                FROM ai_accuracy_metrics
-                WHERE metric_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-                """,
-                (days,),
-            )
-            overall = cur.fetchone() or {}
+        # Per-decision breakdown
+        pipeline = [
+            {"$match": {"metric_date": {"$gte": since}}},
+            {
+                "$group": {
+                    "_id":             "$decision_type",
+                    "avg_accuracy":    {"$avg": "$accuracy_pct"},
+                    "total_evaluated": {"$sum": "$total_count"},
+                    "total_correct":   {"$sum": "$correct_count"},
+                    "total_wrong":     {"$sum": "$wrong_count"},
+                    "drift_ever":      {"$max": "$drift_detected"},
+                    "last_evaluated":  {"$max": "$metric_date"},
+                }
+            },
+            {
+                "$project": {
+                    "_id":            0,
+                    "decision_type":  "$_id",
+                    "avg_accuracy":   {"$round": ["$avg_accuracy", 1]},
+                    "total_evaluated": 1,
+                    "total_correct":   1,
+                    "total_wrong":     1,
+                    "drift_ever":      1,
+                    "last_evaluated":  1,
+                }
+            },
+            {"$sort": {"avg_accuracy": ASCENDING}},
+        ]
+        by_decision = await db.db["ai_accuracy_metrics"].aggregate(pipeline).to_list(None)
 
-            return {
-                "period_days":  days,
-                "overall":      overall,
-                "by_decision":  rows,
-                "as_of":        datetime.utcnow().isoformat() + "Z",
-            }
+        # Overall summary
+        overall_pipeline = [
+            {"$match": {"metric_date": {"$gte": since}}},
+            {
+                "$group": {
+                    "_id":               None,
+                    "overall_accuracy":  {"$avg": "$accuracy_pct"},
+                    "total_evaluated":   {"$sum": "$total_count"},
+                    "total_drift_alerts":{"$sum": {"$cond": ["$drift_detected", 1, 0]}},
+                }
+            },
+            {
+                "$project": {
+                    "_id":               0,
+                    "overall_accuracy":  {"$round": ["$overall_accuracy", 1]},
+                    "total_evaluated":   1,
+                    "total_drift_alerts":1,
+                }
+            },
+        ]
+        overall_docs = await db.db["ai_accuracy_metrics"].aggregate(overall_pipeline).to_list(1)
+        overall      = overall_docs[0] if overall_docs else {}
+
+        return {
+            "period_days": days,
+            "overall":     overall,
+            "by_decision": by_decision,
+            "as_of":       _utcnow().isoformat() + "Z",
+        }
+
     except Exception as e:
         logger.error("❌ get_accuracy_summary failed: %s", e)
         return {"error": str(e)}

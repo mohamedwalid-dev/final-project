@@ -28,7 +28,7 @@ try:
         TIER3_REJECT_THRESHOLD,
         RISK_LOW_THRESHOLD,
         RISK_MEDIUM_THRESHOLD,
-        classify_risk            as _classify_risk_fn,
+        classify_risk as _classify_risk_fn,
         apply_standard_threshold as _apply_threshold_fn,
     )
     _THRESHOLDS_LOADED = True
@@ -136,6 +136,11 @@ class BaseAgent(ABC):
     @abstractmethod
     def process(self, data: dict) -> dict:
         """
+
+        1. ML prediction
+        2. reasoning    
+        3. AI logic
+
         Core reasoning method.
 
         Args:
@@ -292,9 +297,20 @@ class BaseAgent(ABC):
             ctx,
             f"{self.name} FAILED with {type(exc).__name__}: {exc}\n{tb}",
         )
+
+        # This writes in an official log:
+            # Who experienced an error
+            # When
+            # In which agent
         self.audit_logger.log(
             event_type = self.name,
             stage      = "agent_error",
+
+            # request_id
+            # اسم الـ agent
+            # Error Type
+            # part of the message
+
             message    = (
                 f"{ctx.log_prefix()} {self.name} error: "
                 f"{type(exc).__name__}: {str(exc)[:200]}"

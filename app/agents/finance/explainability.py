@@ -457,6 +457,7 @@ class FinanceExplainabilityEngine:
         Returns:
             ExplainabilityResult with reasons, neutral_factors, recommended_action, etc.
         """
+        # One row or matrix 
         if features.ndim == 2:
             row = features[0]
         else:

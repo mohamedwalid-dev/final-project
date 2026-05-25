@@ -1,13 +1,11 @@
 """
-🔍 HR Debug Endpoints — v3.2
-==============================
+🔍 HR Debug Endpoints — v3.2 (MongoDB)
+========================================
 File: app/routers/hr_debug.py
 
 أضف دي في main.py:
     from routers.hr_debug import debug_router
     app.include_router(debug_router, prefix="", tags=["🔍 Debug"])
-
-أو الصق الـ endpoints مباشرة في main.py.
 
 Endpoints:
     POST /leaves/debug         ← simulate + full debug panel (بدون حفظ في DB)
@@ -15,22 +13,29 @@ Endpoints:
     POST /model/analyze        ← تحليل input بدون تسجيل في DB
 """
 
-from fastapi import APIRouter, HTTPException
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from typing import Optional
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, validator
 
 debug_router = APIRouter()
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# 📋  Schemas
+# ═════════════════════════════════════════════════════════════════════════════
+
 class LeaveDebugRequest(BaseModel):
     """نفس الـ LeaveApprovalRequest + debug mode."""
-    employee_id:         str           = Field(..., description="ID الموظف")
-    employee_name:       str           = Field("Debug User")
-    requested_days:      int           = Field(..., gt=0)
-    leave_balance:       int           = Field(0, ge=0)
-    leave_type:          str           = Field("annual")
-    reason:              str           = Field("")
+    employee_id:         str            = Field(..., description="ID الموظف")
+    employee_name:       str            = Field("Debug User")
+    requested_days:      int            = Field(..., gt=0)
+    leave_balance:       int            = Field(0, ge=0)
+    leave_type:          str            = Field("annual")
+    reason:              str            = Field("")
     performance_score:   Optional[float] = Field(None, ge=0.0, le=1.0)
     attendance_rate:     Optional[float] = Field(None, ge=0.0, le=1.0)
     absence_count:       Optional[int]   = Field(None, ge=0)
@@ -45,6 +50,10 @@ class LeaveDebugRequest(BaseModel):
     def coerce_id(cls, v):
         return str(v)
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 🔍  ENDPOINTS
+# ═════════════════════════════════════════════════════════════════════════════
 
 @debug_router.post("/leaves/debug", tags=["🔍 Debug"])
 async def debug_leave_decision(body: LeaveDebugRequest):
@@ -64,40 +73,39 @@ async def debug_leave_decision(body: LeaveDebugRequest):
 
     payload = body.dict()
 
-    # Run ML + LLM (Tier logic)
-    agent   = HRAgent()
-    result  = await agent.async_process(payload)
-
-    # Run Validation Layer
+    agent     = HRAgent()
+    result    = await agent.async_process(payload)
     validated = DecisionValidationLayer().validate_and_override(result, payload)
-
-    # Build full debug panel
     debug_data = HRAgent.get_decision_debug(validated, payload)
 
     return {
-        "mode":            "debug_only — no DB changes",
-        "timestamp":       datetime.utcnow().isoformat() + "Z",
-        "final_decision":  validated.get("decision"),
-        "confidence":      validated.get("confidence"),
-        "tier":            validated.get("tier"),
+        "mode":             "debug_only — no DB changes",
+        "timestamp":        datetime.now(timezone.utc).isoformat(),
+        "final_decision":   validated.get("decision"),
+        "confidence":       validated.get("confidence"),
+        "tier":             validated.get("tier"),
         "override_applied": "override_rule" in validated,
-        "override_rule":   validated.get("override_rule"),
-        "debug_panel":     debug_data,
+        "override_rule":    validated.get("override_rule"),
+        "debug_panel":      debug_data,
         "employee_response": _build_quick_response(validated, body),
     }
 
 
 @debug_router.get("/leaves/{leave_id}/debug", tags=["🔍 Debug"])
-async def debug_existing_leave(leave_id: int):
+async def debug_existing_leave(leave_id: str):
     """
-    🔍 Debug panel لإجازة موجودة في DB.
-    بيعيد تشغيل الـ pipeline على نفس البيانات.
+    🔍 Debug panel لإجازة موجودة في MongoDB.
+    بيعيد تشغيل الـ pipeline على نفس البيانات — بدون تغيير.
+
+    leave_id هنا ObjectId string (MongoDB).
     """
-    from core.db import get_leave
+    from core.mongo_connect import get_hr_db
     from agents.hr.hr_agent import HRAgent
     from workflows.hr.decision_rules import DecisionValidationLayer
 
-    leave = get_leave(leave_id)
+    db    = get_hr_db()
+    leave = await db.get_leave(leave_id)
+
     if not leave:
         raise HTTPException(status_code=404, detail=f"Leave #{leave_id} not found")
 
@@ -107,18 +115,18 @@ async def debug_existing_leave(leave_id: int):
         "requested_days": leave.get("leave_days", leave.get("requested_days", 1)),
     }
 
-    agent     = HRAgent()
-    result    = await agent.async_process(payload)
-    validated = DecisionValidationLayer().validate_and_override(result, payload)
+    agent      = HRAgent()
+    result     = await agent.async_process(payload)
+    validated  = DecisionValidationLayer().validate_and_override(result, payload)
     debug_data = HRAgent.get_decision_debug(validated, payload)
 
     return {
-        "leave_id":        leave_id,
-        "stored_status":   leave.get("status"),
-        "rerun_decision":  validated.get("decision"),
-        "timestamp":       datetime.utcnow().isoformat() + "Z",
-        "note":            "Re-run only — no DB changes made",
-        "debug_panel":     debug_data,
+        "leave_id":       leave_id,
+        "stored_status":  leave.get("status"),
+        "rerun_decision": validated.get("decision"),
+        "timestamp":      datetime.now(timezone.utc).isoformat(),
+        "note":           "Re-run only — no DB changes made",
+        "debug_panel":    debug_data,
     }
 
 
@@ -136,9 +144,9 @@ async def analyze_request(body: LeaveDebugRequest):
     from agents.hr.conflict_resolver import get_conflict_resolver
     from config.hr_thresholds import get_thresholds_from_metadata
 
-    payload = body.dict()
-    handler = get_model_handler()
-    result  = handler.predict(payload)
+    payload  = body.dict()
+    handler  = get_model_handler()
+    result   = handler.predict(payload)
 
     thresholds = get_thresholds_from_metadata(handler._metadata)
     resolver   = get_conflict_resolver()
@@ -152,27 +160,29 @@ async def analyze_request(body: LeaveDebugRequest):
     )
 
     return {
-        "ml_only":              True,
-        "decision":             result["decision"],
-        "confidence":           result["confidence"],
-        "tier":                 result["tier"],
-        "source":               result["source"],
-        "is_outlier":           result["is_outlier"],
-        "breakdown":            result["breakdown"],
-        "key_factors":          result["key_factors"],
-        "input_warnings":       result["input_warnings"],
-        "conflict_analysis":    conflict_analysis,
-        "thresholds":           thresholds,
-        "raw_input_balance":    payload.get("leave_balance"),
-        "model_balance":        result["breakdown"].get("leave_balance"),
-        "balance_match":        (
+        "ml_only":           True,
+        "decision":          result["decision"],
+        "confidence":        result["confidence"],
+        "tier":              result["tier"],
+        "source":            result["source"],
+        "is_outlier":        result["is_outlier"],
+        "breakdown":         result["breakdown"],
+        "key_factors":       result["key_factors"],
+        "input_warnings":    result["input_warnings"],
+        "conflict_analysis": conflict_analysis,
+        "thresholds":        thresholds,
+        "raw_input_balance": payload.get("leave_balance"),
+        "model_balance":     result["breakdown"].get("leave_balance"),
+        "balance_match":     (
             payload.get("leave_balance") == result["breakdown"].get("leave_balance")
         ),
     }
 
 
-def _build_quick_response(validated: dict, body) -> dict:
-    decision = validated.get("decision", "escalate")
+# ── Helper ────────────────────────────────────────────────────────────────────
+
+def _build_quick_response(validated: dict, body: LeaveDebugRequest) -> dict:
+    decision  = validated.get("decision", "escalate")
     templates = {
         "approve":  f"✅ موافقة على {body.requested_days} يوم",
         "reject":   f"❌ رفض طلب {body.requested_days} يوم — {validated.get('reason', '')[:80]}",

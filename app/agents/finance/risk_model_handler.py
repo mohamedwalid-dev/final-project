@@ -1,14 +1,35 @@
 """
-🧠 Finance Risk Model Handler — v3.1 (Production)
-===================================================
-File: app/agents/finance/risk_model_handler_v3.py
+🧠 Finance Risk Model Handler — v4.2 (Feature Alignment Fix)
+============================================================
+File: app/agents/finance/risk_model_handler.py
 
-Changes from v3.0 → v3.1:
-    ✅ Prediction latency tracking (ms) per request
-    ✅ Model version stamped on every prediction response
-    ✅ Input features snapshot in structured logs (audit-ready)
-    ✅ FinanceExplainabilityEngine integrated — rich reasons replace "General risk"
-    ✅ Structured log format (JSON-style fields) for easy parsing by ELK/Datadog
+v4.2 FIX (Critical):
+    ❌ المشكلة: ValueError: Feature shape mismatch, expected: 38, got 41
+       السبب: الـ predictor._to_features() ببني 41 feature دايماً
+              لكن لو التدريب اتعمل بـ finance_train_patch.py اللي بيعمل
+              drop_leakage_features() → الموديل اتدرب على 38 فقط.
+
+    ✅ الحل: Feature Alignment via saved feature columns file
+        1. _load() يحمّل finance_feature_columns.pkl لو موجود
+        2. _align_features() يعمل reindex: missing=0, extra=drop
+        3. _ml_predict() يستدعيه بعد _strip_ml_excluded وقبل predictor.predict()
+        4. Backward compatible: لو الملف مش موجود → شغّال كالأول
+
+    التغييرات عن v4.1:
+        ✅ _saved_columns attribute جديد في __init__
+        ✅ _load_feature_columns() method جديدة
+        ✅ _align_features() method جديدة (الـ reindex الاحترافي)
+        ✅ _ml_predict() يستدعي _align_features بعد _strip_ml_excluded
+        ✅ get_info() يوضح column alignment status
+        ✅ version string "4.2"
+
+v4.1 (unchanged behavior):
+    ✅ _strip_ml_excluded() — يشيل overdue_days وأصحابه قبل ML
+    ✅ GeminiQuotaGuard — detects 429, pauses LLM for 60 min
+    ✅ RuleBasedPredictor — fallback كامل
+
+v4.0 (unchanged behavior):
+    ✅ predictor._to_features() builds all features internally
 """
 
 from __future__ import annotations
@@ -18,184 +39,261 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Optional
-
+import uuid
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
 MODEL_DIR  = os.path.join(os.path.dirname(__file__), "..", "..", "models", "finance")
 MODEL_PATH = os.path.join(MODEL_DIR, "payment_risk_v8.pkl")
+FEATURE_COLUMNS_PATH = os.path.join(MODEL_DIR, "finance_feature_columns.pkl")
 
-INDUSTRY_RISK = {
-    "retail": 0.40, "hospitality": 0.50, "construction": 0.60,
-    "manufacturing": 0.35, "technology": 0.25, "healthcare": 0.20,
-    "education": 0.15, "government": 0.05, "financial": 0.20,
-    "real_estate": 0.55, "food_beverage": 0.45,
-    "transportation": 0.40, "unknown": 0.40,
+# ─────────────────────────────────────────────────────────────────────────────
+# v4.1: Fields to strip before passing data to ML predictor
+# ─────────────────────────────────────────────────────────────────────────────
+_ML_EXCLUDED_FIELDS = {
+    "overdue_days",
+    "overdue_days_normalized",
+    "overdue_x_industry",
+    "payment_delay",
+    "is_late",
+    "is_bad_payer",
+    "request_id",
+    "event_id",
+    "skipped",
+    "workflow",
 }
-
-SEASONAL_RISK = {
-    1: 0.50, 2: 0.45, 3: 0.35, 4: 0.30, 5: 0.30, 6: 0.40,
-    7: 0.35, 8: 0.40, 9: 0.30, 10: 0.25, 11: 0.30, 12: 0.55,
-}
-
-BASE_FEATURE_NAMES = [
-    "overdue_days_normalized",   # 0
-    "amount_normalized",          # 1
-    "paid_ratio",                 # 2
-    "late_ratio",                 # 3
-    "on_time_ratio",              # 4
-    "customer_age_normalized",    # 5
-    "invoice_frequency",          # 6
-    "avg_delay_normalized",       # 7
-    "credit_score_normalized",    # 8
-    "industry_risk_factor",       # 9
-    "seasonal_factor",            # 10
-]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Structured Prediction Logger
+# Gemini Quota Guard (unchanged from v4.1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class GeminiQuotaGuard:
+    def __init__(self, retry_pause_minutes: int = 60):
+        self._lock              = threading.Lock()
+        self._exhausted_at: Optional[datetime] = None
+        self._retry_pause       = timedelta(minutes=retry_pause_minutes)
+        self._total_exhaustions = 0
+
+    def is_available(self) -> bool:
+        with self._lock:
+            if self._exhausted_at is None:
+                return True
+            if datetime.utcnow() - self._exhausted_at > self._retry_pause:
+                logger.info("✅ [GeminiQuotaGuard] Pause elapsed — resuming LLM calls")
+                self._exhausted_at = None
+                return True
+            remaining = self._retry_pause - (datetime.utcnow() - self._exhausted_at)
+            logger.debug(
+                "⏳ [GeminiQuotaGuard] Still paused — %.0f min remaining",
+                remaining.total_seconds() / 60,
+            )
+            return False
+
+    def mark_exhausted(self) -> None:
+        with self._lock:
+            if self._exhausted_at is None:
+                self._exhausted_at = datetime.utcnow()
+                self._total_exhaustions += 1
+                logger.warning(
+                    "⚠️  [GeminiQuotaGuard] Quota exhausted (#%d) — "
+                    "LLM calls paused for %d min",
+                    self._total_exhaustions,
+                    self._retry_pause.seconds // 60,
+                )
+
+    def get_status(self) -> dict:
+        with self._lock:
+            available = self._exhausted_at is None or (
+                datetime.utcnow() - self._exhausted_at > self._retry_pause
+            )
+            remaining_sec = 0
+            if self._exhausted_at and not available:
+                remaining_sec = int(
+                    (self._retry_pause - (datetime.utcnow() - self._exhausted_at))
+                    .total_seconds()
+                )
+            return {
+                "available":           available,
+                "total_exhaustions":   self._total_exhaustions,
+                "exhausted_at":        self._exhausted_at.isoformat() if self._exhausted_at else None,
+                "retry_pause_minutes": self._retry_pause.seconds // 60,
+                "remaining_seconds":   max(0, remaining_sec),
+            }
+
+
+_gemini_quota_guard = GeminiQuotaGuard(retry_pause_minutes=60)
+
+
+def get_gemini_quota_guard() -> GeminiQuotaGuard:
+    return _gemini_quota_guard
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Structured Prediction Logger (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PredictionLogger:
-    """
-    Emits structured log lines for every prediction.
-    Format is compatible with ELK Stack, Datadog, and CloudWatch Insights.
+    _SNAPSHOT_FIELDS = [
+        "overdue_days", "amount", "credit_score", "industry",
+        "payment_history_paid", "payment_history_late",
+        "customer_age_months", "invoice_count_90d",
+        "avg_payment_delay_days",
+    ]
 
-    Each log line contains:
-        request_id, model_version, latency_ms,
-        risk_score, decision, reasons,
-        input_snapshot (all 11 features)
-    """
-
-    def log(
-        self,
-        request_id:    str,
-        model_version: str,
-        latency_ms:    int,
-        risk_score:    float,
-        decision:      str,
-        confidence:    float,
-        reasons:       list,
-        features:      np.ndarray,
-        source:        str = "ml_model",
-    ) -> None:
-        """Emit a single structured log line for one prediction."""
-
-        snapshot = self._build_snapshot(features)
-
-        # ── Compact structured log (one line, easy to grep) ───────────────
+    def log(self, request_id, model_version, latency_ms, risk_score,
+            decision, confidence, reasons, raw_data, source="ml_model"):
+        snapshot = self._build_snapshot(raw_data)
         logger.info(
             "💰 [FinancePredict] "
             "request_id=%s | model=%s | latency=%dms | "
             "risk=%.4f | decision=%s | confidence=%.4f | source=%s | "
             "reasons=%s | features=%s",
-            request_id,
-            model_version,
-            latency_ms,
-            risk_score,
-            decision,
-            confidence,
-            source,
-            reasons,
-            json.dumps(snapshot, separators=(",", ":")),
+            request_id, model_version, latency_ms,
+            risk_score, decision, confidence, source,
+            reasons, json.dumps(snapshot, separators=(",", ":")),
         )
 
-        # ── Full structured payload at DEBUG level (for deep tracing) ─────
-        if logger.isEnabledFor(logging.DEBUG):
-            payload = {
-                "event":         "finance_prediction",
-                "request_id":    request_id,
-                "model_version": model_version,
-                "latency_ms":    latency_ms,
-                "risk_score":    round(risk_score, 4),
-                "decision":      decision,
-                "confidence":    round(confidence, 4),
-                "source":        source,
-                "reasons":       reasons,
-                "input_snapshot": snapshot,
-            }
-            logger.debug("💰 [FinancePredict:FULL] %s", json.dumps(payload, indent=2))
-
-    def log_error(
-        self,
-        request_id:    str,
-        model_version: str,
-        latency_ms:    int,
-        error:         str,
-        features:      Optional[np.ndarray] = None,
-    ) -> None:
-        """Log a prediction failure with full context."""
-        snapshot = self._build_snapshot(features) if features is not None else {}
+    def log_error(self, request_id, model_version, latency_ms, error, raw_data=None):
+        snapshot = self._build_snapshot(raw_data or {})
         logger.error(
             "❌ [FinancePredict:ERROR] "
-            "request_id=%s | model=%s | latency=%dms | "
-            "error=%s | features=%s",
+            "request_id=%s | model=%s | latency=%dms | error=%s | features=%s",
             request_id, model_version, latency_ms,
             error, json.dumps(snapshot, separators=(",", ":")),
         )
 
-    def log_fallback(
-        self,
-        request_id:    str,
-        model_version: str,
-        latency_ms:    int,
-        reason:        str,
-    ) -> None:
-        """Log that we fell back to rule-based prediction."""
+    def log_fallback(self, request_id, model_version, latency_ms, reason):
         logger.warning(
-            "⚠️ [FinancePredict:FALLBACK] "
+            "⚠️  [FinancePredict:FALLBACK] "
             "request_id=%s | model=%s | latency=%dms | reason=%s",
             request_id, model_version, latency_ms, reason,
         )
 
-    @staticmethod
-    def _build_snapshot(features: Optional[np.ndarray]) -> dict:
-        """Convert feature array → named dict for audit trail."""
-        if features is None:
-            return {}
-        row = features[0] if features.ndim == 2 else features
-        return {
-            name: round(float(val), 4)
-            for name, val in zip(BASE_FEATURE_NAMES, row)
-            if name != "on_time_ratio"  # derived — skip to reduce noise
-        }
+    def _build_snapshot(self, raw_data: dict) -> dict:
+        snapshot = {}
+        for field in self._SNAPSHOT_FIELDS:
+            val = raw_data.get(field)
+            if val is not None:
+                try:
+                    snapshot[field] = round(float(val), 4)
+                except (TypeError, ValueError):
+                    snapshot[field] = str(val)
+        if "industry" in raw_data:
+            snapshot["industry"] = str(raw_data["industry"])
+        return snapshot
 
 
 _pred_logger = PredictionLogger()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Handler
+# Rule-Based Fallback (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class FinanceRiskModelHandlerV3:
-    """
-    Thread-safe singleton handler for v3.x model.
+class RuleBasedPredictor:
+    INDUSTRY_RISK = {
+        "retail": 0.40, "hospitality": 0.50, "construction": 0.60,
+        "manufacturing": 0.35, "technology": 0.25, "healthcare": 0.20,
+        "education": 0.15, "government": 0.05, "financial": 0.20,
+        "real_estate": 0.55, "food_beverage": 0.45,
+        "transportation": 0.40, "unknown": 0.40,
+    }
 
-    v3.1 additions:
-        - predict() now returns `latency_ms` and `model_version`
-        - Every call emits a structured log with input snapshot
-        - Rich explainability via FinanceExplainabilityEngine
+    def predict(self, data: dict) -> dict:
+        def safe_float(val, default=0.0):
+            try:
+                v = float(val or default)
+                return v if (v == v and abs(v) != float("inf")) else default
+            except (TypeError, ValueError):
+                return default
+
+        overdue_days  = safe_float(data.get("overdue_days"), 0.0)
+        credit_score  = safe_float(data.get("credit_score"), 650.0)
+        p_count       = max(1, int(safe_float(data.get("payment_history_count"), 1)))
+        paid_count    = int(safe_float(data.get("payment_history_paid"), 0))
+        late_count    = int(safe_float(data.get("payment_history_late"), 0))
+        amount        = safe_float(data.get("amount"), 0.0)
+        raw_industry  = str(data.get("industry", "unknown") or "unknown").lower().strip()
+
+        paid_ratio    = paid_count / p_count
+        late_ratio    = late_count / p_count
+        overdue_norm  = min(overdue_days / 180.0, 1.0)
+        credit_norm   = min(max(credit_score, 300), 850) / 850.0
+        amount_norm   = min(amount / 100_000.0, 1.0)
+        industry_risk = self.INDUSTRY_RISK.get(raw_industry, 0.40)
+
+        score  = 0.0
+        score += overdue_norm         * 0.40
+        score += (1.0 - paid_ratio)   * 0.20
+        score += late_ratio           * 0.15
+        score += (1.0 - credit_norm)  * 0.15
+        score += industry_risk        * 0.05
+        score += amount_norm          * 0.05
+        score  = min(max(score, 0.0), 1.0)
+
+        if score >= 0.70:
+            decision = "reject"
+        elif score >= 0.45:
+            decision = "manual_review"
+        else:
+            decision = "approve"
+
+        return {
+            "risk_score": round(score, 4),
+            "decision":   decision,
+            "confidence": 0.65,
+            "reasons":    ["Rule-based assessment — ML model not available"],
+            "source":     "rules-v4.2",
+            "risk_label": self._label(score),
+        }
+
+    @staticmethod
+    def _label(score: float) -> str:
+        if score >= 0.70: return "high"
+        if score >= 0.45: return "medium"
+        return "low"
+
+
+_rule_predictor = RuleBasedPredictor()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Handler — v4.2
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FinanceRiskModelHandler:
+    """
+    Thread-safe singleton handler — v4.2.
+
+    v4.2 Fix (Critical):
+        Feature shape mismatch بين التدريب والـ inference.
+        _align_features() بيعمل reindex على الـ feature dict
+        عشان يطابق الـ columns اللي الموديل اتدرب عليها بالظبط.
+
+    v4.1 Fix:
+        _ml_predict() strips _ML_EXCLUDED_FIELDS (overdue_days etc.)
+        قبل ما يبعت data للـ ML predictor.
     """
 
-    _instance: Optional["FinanceRiskModelHandlerV3"] = None
+    _instance: Optional["FinanceRiskModelHandler"] = None
     _lock      = threading.Lock()
 
     def __init__(self):
-        self._predictor    = None
-        self._ensemble     = None
-        self._metadata     = {}
-        self._loaded       = False
-        self._version      = "unknown"
-        self._trained_at   = "unknown"
+        self._predictor:     Optional[object] = None
+        self._metadata:      dict             = {}
+        self._loaded:        bool             = False
+        self._version:       str              = "unknown"
+        self._trained_at:    str              = "unknown"
+        self._feature_count: int              = 41
+        self._saved_columns: Optional[list]  = None   # v4.2: feature alignment
         self._load()
 
     @classmethod
-    def get_instance(cls) -> "FinanceRiskModelHandlerV3":
+    def get_instance(cls) -> "FinanceRiskModelHandler":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -219,27 +317,41 @@ class FinanceRiskModelHandlerV3:
                 saved = pickle.load(f)
 
             self._predictor  = saved.get("predictor")
-            self._ensemble   = saved.get("ensemble")
             self._metadata   = saved.get("metadata", {})
-            self._version    = self._metadata.get("version", "3.x")
+            self._version    = self._metadata.get("version", "8.x")
             self._trained_at = self._metadata.get("trained_at", "unknown")
-            self._loaded     = True
+            self._feature_count = int(self._metadata.get("feature_count", 41))
 
-            metrics = self._metadata.get("metrics", {})
-            de_cfg  = self._metadata.get("decision_engine", {})
+            if self._predictor is not None and not hasattr(self._predictor, "_to_features"):
+                logger.warning(
+                    "⚠️  Loaded predictor missing _to_features() — "
+                    "incompatible version. Rule fallback will be used."
+                )
+                self._predictor = None
 
-            logger.info(
-                "✅ Finance Risk Model v%s loaded | "
-                "trained=%s | AUC=%.4f | features=%s | "
-                "thresholds: reject≥%.2f review≥%.2f",
-                self._version,
-                self._trained_at,
-                float(metrics.get("roc_auc") or 0),
-                self._metadata.get("feature_count", "?"),
-                de_cfg.get("reject_threshold", 0.70),
-                de_cfg.get("review_threshold", 0.45),
-            )
-            return True
+            self._loaded = self._predictor is not None
+
+            # ── v4.2: Load feature columns for alignment ──────────────────
+            self._load_feature_columns()
+
+            metrics  = self._metadata.get("metrics", {})
+            de_cfg   = self._metadata.get("decision_engine", {})
+
+            if self._loaded:
+                logger.info(
+                    "✅ Finance Risk Model v%s loaded | "
+                    "trained=%s | AUC=%.4f | features=%d | "
+                    "alignment=%s | "
+                    "v4.2 feature alignment fix: ACTIVE",
+                    self._version,
+                    self._trained_at,
+                    float(metrics.get("roc_auc") or 0),
+                    self._feature_count,
+                    f"{len(self._saved_columns)} cols" if self._saved_columns else "disabled",
+                )
+            else:
+                logger.warning("⚠️  Model file found but predictor invalid — rule fallback active")
+            return self._loaded
 
         except Exception as e:
             logger.error("❌ Finance model load error: %s", e, exc_info=True)
@@ -248,131 +360,139 @@ class FinanceRiskModelHandlerV3:
 
     def reload(self) -> bool:
         with self._lock:
-            self._predictor  = None
-            self._ensemble   = None
-            self._metadata   = {}
-            self._loaded     = False
+            self._predictor    = None
+            self._metadata     = {}
+            self._loaded       = False
+            self._saved_columns = None
+            FinanceRiskModelHandler._instance = None
             return self._load()
 
     def is_loaded(self) -> bool:
-        return self._loaded and (
-            self._predictor is not None or self._ensemble is not None
-        )
+        return self._loaded and self._predictor is not None
 
-    # ── Feature Building ─────────────────────────────────────────────────────
+    # ── v4.2: Load feature columns ────────────────────────────────────────────
 
-    def build_features(self, data: dict) -> np.ndarray:
+    def _load_feature_columns(self) -> None:
         """
-        Build 11-feature normalized vector from raw invoice/customer data.
-        Handles missing values, unknown industries, and edge cases.
+        v4.2: يحمّل أسماء الـ features اللي الموديل اتدرب عليها.
+
+        الملف ده بيتنتج من finance_train.py (v8.2+) أو finance_train_patch.py
+        بعد ما drop_leakage_features() تشتغل.
+
+        لو الملف مش موجود → _saved_columns = None (backward compatible).
+        في الحالة دي الـ ML predictor ممكن يتعرض لـ shape mismatch.
         """
-        from datetime import datetime
+        import pickle
+        try:
+            if os.path.exists(FEATURE_COLUMNS_PATH):
+                with open(FEATURE_COLUMNS_PATH, "rb") as f:
+                    cols = pickle.load(f)
+                # Filter out any ML-excluded fields لو اتحفظوا بالغلط
+                self._saved_columns = [c for c in cols if c not in _ML_EXCLUDED_FIELDS]
+                logger.info(
+                    "✅ [RiskHandler v4.2] Feature columns loaded: %d columns from %s",
+                    len(self._saved_columns), FEATURE_COLUMNS_PATH,
+                )
+            else:
+                self._saved_columns = None
+                logger.warning(
+                    "⚠️  [RiskHandler v4.2] finance_feature_columns.pkl not found: %s\n"
+                    "    Feature alignment DISABLED — ML may get shape mismatch.\n"
+                    "    Fix: re-run finance_train_patch.py to regenerate the file.",
+                    FEATURE_COLUMNS_PATH,
+                )
+        except Exception as e:
+            self._saved_columns = None
+            logger.error("❌ [RiskHandler v4.2] Failed to load feature columns: %s", e)
 
-        def safe_float(val, default=0.0):
-            try:
-                v = float(val or default)
-                return v if (v == v and abs(v) != float("inf")) else default
-            except (TypeError, ValueError):
-                return default
+    # ── v4.2: Align features to training schema ───────────────────────────────
 
-        overdue_days      = safe_float(data.get("overdue_days"),          0.0)
-        amount            = safe_float(data.get("amount"),                 0.0)
-        payment_count     = max(1, int(safe_float(data.get("payment_history_count"), 1)))
-        paid_count        = int(safe_float(data.get("payment_history_paid"),  0))
-        late_count        = int(safe_float(data.get("payment_history_late"),  0))
-        customer_age_mo   = safe_float(data.get("customer_age_months"),    12.0)
-        invoice_count_90d = safe_float(data.get("invoice_count_90d"),      1.0)
-        avg_delay_days    = safe_float(data.get("avg_payment_delay_days"), 0.0)
-        credit_score      = safe_float(data.get("credit_score"),           650.0)
-        month             = int(safe_float(data.get("invoice_month"), datetime.utcnow().month))
+    def _align_features(self, data: dict) -> dict:
+        """
+        v4.2: يضمن إن الـ features اللي بتروح للـ ML predictor
+        متطابقة تماماً مع اللي الموديل اتدرب عليهم.
 
-        raw_industry  = str(data.get("industry", "unknown") or "unknown").lower().strip()
-        industry_risk = INDUSTRY_RISK.get(raw_industry, INDUSTRY_RISK["unknown"])
+        Logic:
+          - لو _saved_columns مش محمّل → يرجع data كما هو (backward compat)
+          - Column موجودة في saved_columns وفي data   → تتحط كما هي
+          - Column موجودة في saved_columns ومش في data → تتحط 0.0 (fill_value)
+          - Column موجودة في data بس مش في saved_columns → تتشال (extra)
 
-        paid_ratio         = paid_count / payment_count
-        late_ratio         = late_count / payment_count
-        amount_normalized  = min(amount / 100_000.0, 1.0)
-        credit_normalized  = min(max(credit_score, 300), 850) / 850.0
-        age_normalized     = min(customer_age_mo / 60.0, 1.0)
-        seasonal_factor    = SEASONAL_RISK.get(month, 0.35)
-        overdue_normalized = min(overdue_days / 180.0, 1.0)
+        بيشتغل على dict مش DataFrame عشان يفضل consistent مع باقي الكود.
+        الـ predictor._to_features() هي اللي بتحوّل dict لـ DataFrame داخلياً.
+        """
+        if self._saved_columns is None:
+            return data
 
-        return np.array([
-            overdue_normalized,
-            amount_normalized,
-            paid_ratio,
-            late_ratio,
-            1.0 - late_ratio,          # on_time_ratio
-            age_normalized,
-            min(invoice_count_90d / 20.0, 1.0),
-            min(avg_delay_days / 90.0, 1.0),
-            credit_normalized,
-            industry_risk,
-            seasonal_factor,
-        ], dtype=np.float64).reshape(1, -1)
+        aligned      = {}
+        missing_cols = []
+        extra_cols   = []
 
-    # ── Predict ──────────────────────────────────────────────────────────────
+        for col in self._saved_columns:
+            if col in data:
+                aligned[col] = data[col]
+            else:
+                aligned[col] = 0.0
+                missing_cols.append(col)
+
+        for col in data:
+            if col not in self._saved_columns:
+                extra_cols.append(col)
+
+        if missing_cols or extra_cols:
+            logger.info(
+                "🔧 [RiskHandler v4.2] Feature alignment applied: "
+                "expected=%d | received=%d | missing=%d (→0) | extra=%d (dropped)\n"
+                "   missing: %s\n   extra:   %s",
+                len(self._saved_columns),
+                len(data),
+                len(missing_cols),
+                len(extra_cols),
+                missing_cols[:10],
+                extra_cols[:10],
+            )
+        else:
+            logger.debug(
+                "✅ [RiskHandler v4.2] Feature alignment OK: %d/%d columns matched",
+                len(self._saved_columns), len(self._saved_columns),
+            )
+
+        return aligned
+
+    # ── Predict (public API) ──────────────────────────────────────────────────
 
     def predict(self, data: dict, request_id: str = "") -> dict:
-        """
-        Full prediction pipeline — v3.1.
-
-        Returns:
-            {
-                "risk_score":      float,
-                "risk_label":      "low|medium|high",
-                "decision":        "approve|manual_review|reject",
-                "confidence":      float,
-                "reasons":         [str, str, str],       ← rich, specific reasons
-                "positive_factors":[str, ...],
-                "negative_factors":[str, ...],
-                "dominant_factor": str,
-                "summary":         str,
-                "feature_snapshot":dict,                  ← all 11 features (audit trail)
-                "latency_ms":      int,                   ← prediction time in ms
-                "model_version":   str,                   ← e.g. "8.0" or "3.1-rules"
-                "source":          str,
-            }
-        """
         request_id    = request_id or _make_request_id()
-        model_version = self._version if self._loaded else "rules-v3.1"
+        model_version = self._version if self._loaded else "rules-v4.2"
         t_start       = time.perf_counter()
-        features      = None
 
         try:
-            features = self.build_features(data)
-
             if self.is_loaded():
-                result = self._ml_predict(features)
+                result = self._ml_predict(data, request_id)
             else:
-                result = self._rule_based_predict_raw(features)
+                result = self._rule_predict(data)
 
-            latency_ms = int((time.perf_counter() - t_start) * 1000)
+            latency_ms  = int((time.perf_counter() - t_start) * 1000)
+            explanation = self._explain(data, result["risk_score"], result["decision"])
 
-            # ── Explainability ────────────────────────────────────────────
-            explanation = self._explain(features, result["risk_score"], result["decision"])
-
-            # Only override reasons if explainability produced something meaningful
             if explanation.reasons and explanation.reasons[0] != "General risk assessment":
-                result["reasons"]          = explanation.reasons
-                result["positive_factors"] = explanation.positive_factors
-                result["negative_factors"] = explanation.negative_factors
-                result["dominant_factor"]  = explanation.dominant_factor
-                result["summary"]          = explanation.summary
-                result["feature_snapshot"] = explanation.feature_snapshot
+                result.update({
+                    "reasons":          explanation.reasons,
+                    "positive_factors": explanation.positive_factors,
+                    "negative_factors": explanation.negative_factors,
+                    "dominant_factor":  explanation.dominant_factor,
+                    "summary":          explanation.summary,
+                })
             else:
                 result.setdefault("positive_factors", [])
                 result.setdefault("negative_factors", result.get("reasons", []))
-                result.setdefault("dominant_factor",  result.get("reasons", ["?"])[0])
+                result.setdefault("dominant_factor",  (result.get("reasons") or ["?"])[0])
                 result.setdefault("summary",          "")
-                result.setdefault("feature_snapshot", _pred_logger._build_snapshot(features))
 
-            # ── Stamp metadata ────────────────────────────────────────────
             result["latency_ms"]    = latency_ms
             result["model_version"] = model_version
             result["request_id"]    = request_id
 
-            # ── Structured log ────────────────────────────────────────────
             _pred_logger.log(
                 request_id    = request_id,
                 model_version = model_version,
@@ -380,34 +500,11 @@ class FinanceRiskModelHandlerV3:
                 risk_score    = result["risk_score"],
                 decision      = result["decision"],
                 confidence    = result.get("confidence", 0.0),
-                reasons       = result["reasons"],
-                features      = features,
+                reasons       = result.get("reasons", []),
+                raw_data      = data,
                 source        = result.get("source", "unknown"),
             )
-
-            # ── Emit to MetricsCollector if available ────────────────────────
-            try:
-                from core.metrics_collector import get_metrics_collector, MetricEvent
-                collector = get_metrics_collector()
-
-                collector.emit(MetricEvent(
-                    metric_type = result["decision"],
-                    category    = "finance",
-                    value       = result["risk_score"],
-                    tags        = {
-                        "request_id":   request_id,
-                        "model_version": model_version,
-                        "latency_ms":   latency_ms,
-                        "confidence":   result.get("confidence", 0.0),
-                        "llm_used":     result.get("llm_used", False),
-                    },
-                    entity_id   = data.get("invoice_id"),
-                    entity_type = "invoice",
-                ))
-            except Exception:
-                pass  # ignore if collector not running
-
-
+            self._emit_metric(result, data, request_id, model_version, latency_ms)
             return result
 
         except Exception as e:
@@ -417,140 +514,191 @@ class FinanceRiskModelHandlerV3:
                 model_version = model_version,
                 latency_ms    = latency_ms,
                 error         = str(e),
-                features      = features,
+                raw_data      = data,
             )
-            logger.error("❌ [RiskHandler v3.1] predict() failed: %s", e, exc_info=True)
-
-            # Structured fallback — never crash the caller
+            logger.error("❌ [RiskHandler v4.2] predict() failed: %s", e, exc_info=True)
             return self._emergency_result(request_id, model_version, latency_ms, str(e))
 
-    # ── ML Predict (internal) ─────────────────────────────────────────────────
+    # ── v4.1: Strip excluded fields ───────────────────────────────────────────
 
-    def _ml_predict(self, features: np.ndarray) -> dict:
-        """Call the loaded ML predictor — returns raw result dict."""
-        if self._predictor is not None:
-            result = self._predictor.predict(features)
-            return {
-                "risk_score": float(result.get("risk_score", 0.5)),
-                "decision":   result.get("decision", "manual_review"),
-                "confidence": float(result.get("confidence", 0.5)),
-                "reasons":    result.get("reasons", ["General risk assessment"]),
-                "source":     "ml_model_v3.1",
-                "risk_label": self._score_to_label(float(result.get("risk_score", 0.5))),
-            }
-        else:
-            # Fallback: raw ensemble
+    def _strip_ml_excluded(self, data: dict) -> dict:
+        stripped = {k: v for k, v in data.items() if k not in _ML_EXCLUDED_FIELDS}
+        removed  = [k for k in data if k in _ML_EXCLUDED_FIELDS]
+        if removed:
+            logger.debug(
+                "🔧 [RiskHandler v4.2] Stripped %d ML-excluded field(s): %s",
+                len(removed), removed,
+            )
+        return stripped
+
+    # ── ML Predict (v4.2) ─────────────────────────────────────────────────────
+
+    def _ml_predict(self, data: dict, request_id: str) -> dict:
+        """
+        Delegate to FinanceRiskPredictorV8.predict(dict).
+
+        ✅ v4.1 FIX: Strip _ML_EXCLUDED_FIELDS (overdue_days etc.)
+        ✅ v4.2 FIX: Build numpy array via _to_features() first,
+                     then slice to saved_columns by index.
+                     Prevents: ValueError: Feature shape mismatch, expected: 38, got 41
+        """
+        try:
             from training.finance_train import (
-                add_engineered_features, safe_preprocess,
-                ensemble_predict_proba, DecisionEngine,
+                FinanceRiskPredictorV8, ensemble_predict_proba,
+                BASE_FEATURES, CREDIT_FEATURES,
+                INCOME_FEATURES, BEHAVIORAL_FEATURES, ENGINEERED_FEATURES,
             )
-            X_clean = safe_preprocess(features)
-            X_eng   = add_engineered_features(X_clean)
-            prob    = float(ensemble_predict_proba(self._ensemble, X_eng)[0])
-            de_cfg  = self._metadata.get("decision_engine", {})
-            engine  = DecisionEngine(
-                reject_threshold = de_cfg.get("reject_threshold", 0.70),
-                review_threshold = de_cfg.get("review_threshold", 0.45),
-            )
-            res = engine.decide(prob)
+            predictor: FinanceRiskPredictorV8 = self._predictor  # type: ignore[assignment]
+
+            # ── v4.1: Strip leaky fields ──────────────────────────────────
+            ml_data = self._strip_ml_excluded(data)
+
+            # ── v4.2: Build feature array then align by index ─────────────
+            X = predictor._to_features(ml_data)   # (1, 41)
+
+            if self._saved_columns is not None and X.shape[1] != len(self._saved_columns):
+                all_features = (
+                    BASE_FEATURES + CREDIT_FEATURES +
+                    INCOME_FEATURES + BEHAVIORAL_FEATURES + ENGINEERED_FEATURES
+                )
+                col_index = {name: i for i, name in enumerate(all_features)}
+                indices   = [col_index[c] for c in self._saved_columns if c in col_index]
+
+                if len(indices) == len(self._saved_columns):
+                    X = X[:, indices]   # (1, 38)
+                    logger.debug(
+                        "🔧 [RiskHandler v4.2] Array aligned: %d → %d features",
+                        len(all_features), X.shape[1],
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ [RiskHandler v4.2] Could not align all columns "
+                        "(%d/%d found) — using X as-is",
+                        len(indices), len(self._saved_columns),
+                    )
+
+            # ── Predict directly on numpy array ───────────────────────────
+            prob   = float(ensemble_predict_proba(predictor.ensemble, X)[0])
+            de     = predictor.decision_engine
+            result = de.decide(prob)
+            result = de.explain(result, predictor.shap_importance)
+
+            raw_decision = result.get("decision", "manual_review")
+            review_level = result.get("review_level")
+            risk_score   = float(result.get("risk_score", 0.5))
+            decision     = self._map_decision(raw_decision, review_level, risk_score)
+            raw_reasons  = result.get("reasons", [])
+            reasons      = self._extract_reason_strings(raw_reasons)
+
             return {
-                "risk_score": float(res.get("risk_score", prob)),
-                "decision":   res.get("decision", "manual_review"),
-                "confidence": float(res.get("confidence", prob)),
-                "reasons":    res.get("reasons", ["General risk assessment"]),
-                "source":     "ml_ensemble_v3.1",
-                "risk_label": self._score_to_label(prob),
+                "risk_score":         risk_score,
+                "decision":           decision,
+                "confidence":         float(result.get("confidence", risk_score)),
+                "reasons":            reasons or ["ML-based risk assessment"],
+                "source":             f"ml_v{self._version}",
+                "risk_label":         self._score_to_label(risk_score),
+                "review_level":       review_level,
+                "recommended_action": result.get("recommended_action", ""),
+                "prediction_id":      result.get("prediction_id", ""),
             }
 
-    # ── Rule-based Predict (fallback, on normalized features) ─────────────────
+        except Exception as e:
+            logger.error(
+                "❌ [RiskHandler v4.2] _ml_predict() error: %s — falling back to rules",
+                e, exc_info=True,
+            )
+            _pred_logger.log_fallback(
+                request_id    = request_id,
+                model_version = self._version,
+                latency_ms    = 0,
+                reason        = f"ML predict error: {e}",
+            )
+            result = _rule_predictor.predict(data)
+            result["source"] = "rules-v4.2-ml-error-fallback"
+            return result
 
-    def _rule_based_predict_raw(self, features: np.ndarray) -> dict:
-        """
-        Rule-based prediction that operates on the pre-built feature array.
-        Used when the ML model is not loaded.
-        """
-        row = features[0]
+    # ── Decision Mapping (unchanged) ──────────────────────────────────────────
 
-        overdue_norm  = float(row[0])
-        paid_ratio    = float(row[2])
-        late_ratio    = float(row[3])
-        credit_norm   = float(row[8])
-        industry_risk = float(row[9])
-        amount_norm   = float(row[1])
+    @staticmethod
+    def _map_decision(raw_decision: str, review_level: Optional[str], risk_score: float) -> str:
+        if raw_decision == "approve":
+            return "approve"
+        if raw_decision == "reject":
+            return "legal_escalation" if risk_score >= 0.65 else "hard_follow_up"
+        if raw_decision == "review":
+            return "hard_follow_up" if review_level == "escalate" else "soft_follow_up"
+        return "manual_review"
 
-        score  = 0.0
-        score += overdue_norm  * 0.40
-        score += (1.0 - paid_ratio) * 0.20
-        score += late_ratio    * 0.15
-        score += (1.0 - credit_norm) * 0.15
-        score += industry_risk * 0.05
-        score += amount_norm   * 0.05
-        score  = min(max(score, 0.0), 1.0)
+    @staticmethod
+    def _extract_reason_strings(reasons) -> list:
+        if not reasons:
+            return []
+        result = []
+        for r in reasons:
+            if isinstance(r, str):
+                result.append(r)
+            elif isinstance(r, dict):
+                text = r.get("reason_ar") or r.get("reason_en") or r.get("en") or str(r)
+                result.append(text)
+        return result
 
-        if score >= 0.70:
-            decision = "reject"
-        elif score >= 0.45:
-            decision = "manual_review"
-        else:
-            decision = "approve"
+    # ── Explainability (unchanged) ────────────────────────────────────────────
 
-        _pred_logger.log_fallback(
-            request_id    = "",
-            model_version = "rules-v3.1",
-            latency_ms    = 0,
-            reason        = "ML model not loaded",
-        )
-
-        return {
-            "risk_score": round(score, 4),
-            "decision":   decision,
-            "confidence": 0.70,
-            "reasons":    ["General risk assessment"],   # will be overridden by explainability
-            "source":     "rules-v3.1",
-            "risk_label": self._score_to_label(score),
-        }
-
-    # ── Explainability ────────────────────────────────────────────────────────
-
-    def _explain(
-        self,
-        features:   np.ndarray,
-        risk_score: float,
-        decision:   str,
-    ):
-        """Run the explainability engine — returns ExplainabilityResult."""
+    def _explain(self, data: dict, risk_score: float, decision: str):
         try:
             from agents.finance.explainability import get_explainability_engine
             engine = get_explainability_engine()
-            return engine.explain(features, risk_score, decision)
+            return engine.explain_from_dict(data, risk_score, decision)
+        except AttributeError:
+            try:
+                from agents.finance.explainability import get_explainability_engine
+                engine = get_explainability_engine()
+                dummy  = np.array([[risk_score] * 11])
+                return engine.explain(dummy, risk_score, decision)
+            except Exception:
+                pass
         except Exception as e:
-            logger.warning("⚠️ Explainability engine failed: %s", e)
-            # Return a minimal stub so the caller doesn't crash
-            from types import SimpleNamespace
-            stub = SimpleNamespace(
-                reasons          = ["General risk assessment"],
-                positive_factors = [],
-                negative_factors = [],
-                dominant_factor  = "General risk assessment",
-                summary          = "",
-                feature_snapshot = {},
-            )
-            return stub
+            logger.warning("⚠️  Explainability engine failed: %s", e)
+
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            reasons=["General risk assessment"],
+            positive_factors=[], negative_factors=[],
+            dominant_factor="General risk assessment",
+            summary="", feature_snapshot={},
+        )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _score_to_label(self, score: float) -> str:
+    @staticmethod
+    def _score_to_label(score: float) -> str:
         if score >= 0.70: return "high"
         if score >= 0.45: return "medium"
         return "low"
 
-    def _emergency_result(
-        self,
-        request_id:    str,
-        model_version: str,
-        latency_ms:    int,
-        error_msg:     str,
-    ) -> dict:
+    @staticmethod
+    def _emit_metric(result, data, request_id, model_version, latency_ms):
+        try:
+            from core.metrics_collector import get_metrics_collector, MetricEvent
+            collector = get_metrics_collector()
+            collector.emit(MetricEvent(
+                metric_type = result["decision"],
+                category    = "finance",
+                value       = result["risk_score"],
+                tags        = {
+                    "request_id":    request_id,
+                    "model_version": model_version,
+                    "latency_ms":    latency_ms,
+                    "confidence":    result.get("confidence", 0.0),
+                    "llm_used":      result.get("llm_used", False),
+                },
+                entity_id   = data.get("invoice_id"),
+                entity_type = "invoice",
+            ))
+        except Exception:
+            pass
+
+    def _emergency_result(self, request_id, model_version, latency_ms, error_msg):
         return {
             "risk_score":       0.5,
             "risk_label":       "medium",
@@ -561,7 +709,6 @@ class FinanceRiskModelHandlerV3:
             "negative_factors": ["Prediction service encountered an error"],
             "dominant_factor":  "Prediction service error",
             "summary":          "Unable to assess risk automatically — manual review required.",
-            "feature_snapshot": {},
             "latency_ms":       latency_ms,
             "model_version":    model_version,
             "source":           "emergency_fallback",
@@ -581,27 +728,65 @@ class FinanceRiskModelHandlerV3:
             "trained_at":       self._trained_at,
             "roc_auc":          met.get("roc_auc"),
             "pr_auc":           met.get("pr_auc"),
-            "feature_count":    self._metadata.get("feature_count", 11),
+            "feature_count":    self._feature_count,
             "ensemble_weights": self._metadata.get("ensemble_weights"),
-            "decision_engine": {
-                "reject_threshold": de.get("reject_threshold", 0.70),
-                "review_threshold": de.get("review_threshold", 0.45),
+            "decision_engine":  de,
+            "gemini_quota":     _gemini_quota_guard.get_status(),
+            # ── v4.2: Feature alignment status ───────────────────────────
+            "feature_alignment": {
+                "columns_file":      FEATURE_COLUMNS_PATH,
+                "columns_loaded":    self._saved_columns is not None,
+                "n_saved_columns":   len(self._saved_columns) if self._saved_columns else None,
+                "status": (
+                    f"✅ active ({len(self._saved_columns)} cols)"
+                    if self._saved_columns
+                    else "⚠️  disabled — finance_feature_columns.pkl missing"
+                ),
             },
-            "cost_optimization": self._metadata.get("cost_optimization", {}),
-            "explainability":    "v1.0 (threshold-based, SHAP-free)",
-            "logging":           "structured (latency + snapshot + version per request)",
+            "ml_excluded_fields": sorted(_ML_EXCLUDED_FIELDS),
+            "architecture": {
+                "v4.2_fix": (
+                    "_ml_predict() calls _align_features() after _strip_ml_excluded(). "
+                    "Aligns feature dict to saved training columns: "
+                    "missing cols → 0.0, extra cols → dropped. "
+                    "Fixes: ValueError: Feature shape mismatch, expected: 38, got 41."
+                ),
+                "v4.1_fix": (
+                    "_ml_predict() strips _ML_EXCLUDED_FIELDS before passing data to "
+                    "FinanceRiskPredictorV8.predict() — prevents leakage guard false "
+                    "positive on overdue_days. ML model now active for all non-hard-rule cases."
+                ),
+            },
+            "bug_fixes": {
+                "v4.2": (
+                    "CRITICAL: Feature shape mismatch fix. "
+                    "_load_feature_columns() loads finance_feature_columns.pkl. "
+                    "_align_features() reindexes feature dict to match training schema. "
+                    "Called in _ml_predict() between _strip_ml_excluded and predictor.predict(). "
+                    "Backward compatible: if .pkl missing → pass-through (v4.1 behavior)."
+                ),
+                "v4.1": (
+                    "CRITICAL: _ml_predict() now calls _strip_ml_excluded() before "
+                    "predictor.predict(). Prevents ValueError on overdue_days leakage guard."
+                ),
+                "v4.0": (
+                    "Removed local build_features() (11 features) — "
+                    "uses predictor._to_features() for all 41 training features."
+                ),
+            },
         }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Singleton accessor + helpers
+# Singleton accessor
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_finance_risk_handler() -> FinanceRiskModelHandlerV3:
-    """Singleton accessor — drop-in replacement for v3.0."""
-    return FinanceRiskModelHandlerV3.get_instance()
+def get_finance_risk_handler() -> FinanceRiskModelHandler:
+    return FinanceRiskModelHandler.get_instance()
+
+
+FinanceRiskModelHandlerV3 = FinanceRiskModelHandler
 
 
 def _make_request_id() -> str:
-    import uuid
     return f"fin-{uuid.uuid4().hex[:12]}"

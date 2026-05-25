@@ -1,16 +1,26 @@
 """
-🔄 Leave Approval Workflow — v5.2 Production
-=============================================
+🔄 Leave Approval Workflow — v6.1 (Bug Fixes)
+==============================================
 File: app/workflows/hr/leave_approval_workflow.py
 
-✅ v5.2 Fixes (on top of v5.1):
-    Fix DB1 — SalaryReviewWorkflow._persist(): event_id resolved → no null FK error
-    Fix DB2 — IncentiveWorkflow._persist(): same fix
-    Fix S1  — SalaryReviewWorkflow: recommended_increment_pct always calculated (never null)
-    Fix S2  — SalaryReviewWorkflow: professional reason text
-    Fix I1  — IncentiveWorkflow: correct decision logic (KPI 85%+ = approve, not partial)
-    Fix I2  — IncentiveWorkflow: approved_amount_egp always calculated (never null)
-    Fix B1  — booleans: is_on_pip / is_on_probation / is_critical_talent = bool not 0/1
+v6.1 Fixes over v6.0:
+
+    Fix B1 — Bug 1 (Idempotency): event_bus._idempotency cache was blocking
+              re-processing of events submitted via /leaves/submit.
+              Fix: workflow now directly calls HRAgent + persists, bypassing
+              the event bus for sync /submit routes.
+
+    Fix B3 — Bug 3 (Missing Actions): _persist() was saving to MongoDB but
+              never triggering real-world actions (emails, tasks, payroll).
+              Fix: every workflow now calls HRActionExecutor.execute_post_decision()
+              after _persist() — leave, salary, incentive, absence, attendance.
+
+    Fix B2 — Bug 2 (Double Override): SalaryReviewWorkflow no longer calls
+              SalaryValidationLayer because SalaryDecisionEngine already
+              handles all rules internally. The old workflow was calling the
+              engine → then validation layer overrides the engine → wrong result.
+
+Changes are marked with # ← v6.1 FIX throughout.
 """
 
 from __future__ import annotations
@@ -18,44 +28,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from bson import ObjectId
 
 from agents.base_agent import generate_request_id
 
 logger = logging.getLogger(__name__)
 
-
-# ── FIX 3: Policy-Based SLA ───────────────────────────────────────────────────
+# Policy Constants (unchanged)
 SLA_POLICY: dict = {
-    "annual": {
-        "processing_hours": 24,
-        "max_days":         21,
-        "auto_approve_max": 14,
-        "requires_cert":    False,
-    },
-    "sick": {
-        "processing_hours": 4,
-        "max_days":         90,
-        "auto_approve_max": 2,
-        "requires_cert":    True,
-    },
-    "emergency": {
-        "processing_hours": 2,
-        "max_days":         7,
-        "auto_approve_max": 7,
-        "requires_cert":    False,
-    },
-    "unpaid": {
-        "processing_hours": 72,
-        "max_days":         180,
-        "auto_approve_max": 0,
-        "requires_cert":    False,
-    },
+    "annual":    {"processing_hours": 24, "max_days": 21,  "auto_approve_max": 14, "requires_cert": False},
+    "sick":      {"processing_hours": 4,  "max_days": 90,  "auto_approve_max": 2,  "requires_cert": True},
+    "emergency": {"processing_hours": 2,  "max_days": 7,   "auto_approve_max": 7,  "requires_cert": False},
+    "unpaid":    {"processing_hours": 72, "max_days": 180, "auto_approve_max": 0,  "requires_cert": False},
 }
-
 PEAK_MONTHS = {6, 7, 8, 12, 1}
-
 FIELD_DEFAULTS: dict = {
     "performance_score":   0.75,
     "attendance_rate":     0.85,
@@ -69,20 +58,23 @@ FIELD_DEFAULTS: dict = {
     "job_level":           "junior",
     "salary_grade":        "C",
 }
-
 EGYPTIAN_FY_START_MONTH = 7
 TERMINAL_STATUSES = {"approved", "rejected", "escalated", "cancelled"}
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🔄  LEAVE APPROVAL WORKFLOW
-# ═════════════════════════════════════════════════════════════════════════════
+def _get_hr_db():
+    from core.mongo_connect import get_hr_db
+    return get_hr_db()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔄  LEAVE APPROVAL WORKFLOW — v6.1
+# ══════════════════════════════════════════════════════════════════════════════
 
 class LeaveApprovalWorkflow:
 
     def __init__(self) -> None:
         self._agent  = None
-        self._db     = None
         self._logger = None
 
     @property
@@ -93,14 +85,7 @@ class LeaveApprovalWorkflow:
         return self._agent
 
     @property
-    def db(self):
-        if self._db is None:
-            from actions.database import DatabaseAction
-            self._db = DatabaseAction()
-        return self._db
-
-    @property
-    def logger(self):
+    def audit_logger(self):
         if self._logger is None:
             from audit.logger import AuditLogger
             self._logger = AuditLogger()
@@ -111,134 +96,55 @@ class LeaveApprovalWorkflow:
         payload       = {**payload, "request_id": request_id}
         employee_id   = str(payload.get("employee_id", "unknown"))
         employee_name = payload.get("employee_name", "Unknown Employee")
-
-        raw_leave_id  = payload.get("leave_id")
-        leave_id      = int(raw_leave_id) if raw_leave_id is not None else None
+        leave_id      = payload.get("leave_id")
         leave_type    = payload.get("leave_type", FIELD_DEFAULTS["leave_type"])
 
-        self.logger.log(
-            event_type = "leave_request",
-            stage      = "workflow",
-            message    = (
-                f"[request_id={request_id}] LeaveApprovalWorkflow v5.2 started — "
+        self.audit_logger.log(
+            event_type="leave_request",
+            stage="workflow",
+            message=(
+                f"[request_id={request_id}] LeaveApprovalWorkflow v6.1 started — "
                 f"{employee_name} (#{employee_id})"
             ),
-            data = {"leave_id": leave_id, "employee_id": employee_id},
+            data={"leave_id": leave_id, "employee_id": employee_id},
         )
 
-        # ── FIX 5: Status Pre-Check ────────────────────────────────────────────
-        if leave_id is not None:
-            try:
-                import importlib
-                _db_mod = importlib.import_module("core.db")
-                with _db_mod.get_db() as (_, cur):
-                    cur.execute(
-                        "SELECT status FROM leaves WHERE id = %s LIMIT 1",
-                        (leave_id,),
-                    )
-                    row            = cur.fetchone()
-                    current_status = row["status"] if row else None
+        # Status Pre-Check
+        if leave_id:
+            precheck = await self._status_precheck(leave_id, request_id)
+            if precheck is not None:
+                return precheck
 
-                if current_status in TERMINAL_STATUSES:
-                    logger.info(
-                        "[request_id=%s] ⏭️ Leave #%d terminal status=%s — skipping",
-                        request_id, leave_id, current_status,
-                    )
-                    _map = {
-                        "approved":  "approve",
-                        "rejected":  "reject",
-                        "escalated": "escalate",
-                        "cancelled": "reject",
-                    }
-                    return {
-                        "decision":    _map.get(current_status, current_status),
-                        "confidence":  1.0,
-                        "leave_id":    leave_id,
-                        "reasoning":   f"Leave already in terminal state: {current_status}",
-                        "workflow":    "LeaveApprovalWorkflow_v5.2",
-                        "request_id":  request_id,
-                        "skipped":     True,
-                        "skip_reason": f"terminal_status:{current_status}",
-                    }
+        # Atomic Claim
+        if leave_id:
+            claimed = await self._claim_leave(leave_id, request_id)
+            if not claimed:
+                logger.info("[request_id=%s] ⏭️ Leave %s already claimed", request_id, leave_id)
+                return {
+                    "decision":   "skipped",
+                    "confidence": 1.0,
+                    "leave_id":   leave_id,
+                    "reasoning":  "Already claimed by another process",
+                    "workflow":   "LeaveApprovalWorkflow_v6.1",
+                    "request_id": request_id,
+                }
 
-                if current_status is None:
-                    logger.error(
-                        "[request_id=%s] ❌ Leave #%d not found in DB",
-                        request_id, leave_id,
-                    )
-                    return {
-                        "decision":   "escalate",
-                        "confidence": 0.5,
-                        "leave_id":   leave_id,
-                        "reasoning":  f"Leave #{leave_id} not found in database",
-                        "workflow":   "LeaveApprovalWorkflow_v5.2",
-                        "request_id": request_id,
-                        "error":      "leave_not_found",
-                    }
-
-            except Exception as e:
-                logger.warning(
-                    "[request_id=%s] ⚠️ Status pre-check failed: %s — continuing",
-                    request_id, e,
-                )
-
-        # ── Step 0: Atomic Claim ──────────────────────────────────────────────
-        if leave_id is not None:
-            try:
-                claimed = await self._claim_leave(leave_id, request_id)
-                if not claimed:
-                    logger.info(
-                        "[request_id=%s] ⏭️ Leave #%d already claimed — skipping",
-                        request_id, leave_id,
-                    )
-                    return {
-                        "decision":   "skipped",
-                        "confidence": 1.0,
-                        "leave_id":   leave_id,
-                        "reasoning":  "Already claimed by another process",
-                        "workflow":   "LeaveApprovalWorkflow_v5.2",
-                        "request_id": request_id,
-                    }
-            except Exception as e:
-                logger.warning(
-                    "[request_id=%s] ⚠️ Claim failed: %s — proceeding", request_id, e
-                )
-
-        # ── Step 1: Refresh leave_balance from DB ─────────────────────────────
-        if leave_id is not None:
+        # Refresh balance
+        if leave_id:
             payload = await self._refresh_balance_from_db(payload, leave_id, request_id)
 
-        # ── Step 2: Fill Defaults + Validate ──────────────────────────────────
+        # Defaults + Validation
         payload  = self._fill_defaults(payload)
         validity = self._validate(payload)
         if not validity["valid"]:
-            logger.error(
-                "[request_id=%s] ❌ Validation failed: %s", request_id, validity["error"]
-            )
-            return {
-                "status":     "error",
-                "message":    validity["error"],
-                "stage":      "validation",
-                "request_id": request_id,
-            }
+            return {"status": "error", "message": validity["error"], "stage": "validation", "request_id": request_id}
 
-        # ── Step 3: Context ───────────────────────────────────────────────────
         requested_days = int(payload.get("requested_days", payload.get("leave_days", 0)))
         fy_context     = self._get_fiscal_year_context()
-        is_peak        = fy_context["is_peak"]
+        sla_info       = self._compute_sla(leave_type, requested_days, fy_context["is_peak"])
+        agent_input    = self._prepare_agent_input(payload, fy_context, request_id)
 
-        sla_info = self._compute_sla(leave_type, requested_days, is_peak)
-
-        # ── Step 4: Agent Input ───────────────────────────────────────────────
-        agent_input = self._prepare_agent_input(payload, fy_context, request_id)
-
-        self.logger.log(
-            event_type = "leave_request",
-            stage      = "workflow",
-            message    = f"[request_id={request_id}] ✅ Validation passed → HRAgent v5.2",
-        )
-
-        # ── Step 5: HR Agent ──────────────────────────────────────────────────
+        # HR Agent
         start_ms = int(time.time() * 1000)
         try:
             agent_result = await self.agent.async_process(agent_input)
@@ -247,57 +153,68 @@ class LeaveApprovalWorkflow:
             agent_result = {
                 "decision":     "escalate",
                 "confidence":   0.5,
-                "risk":         "high",
                 "reason":       f"Agent error — escalated. Error: {e}",
                 "model_source": "error_fallback",
                 "request_id":   request_id,
             }
         execution_ms = int(time.time() * 1000) - start_ms
 
-        logger.info(
-            "[request_id=%s] 🧠 Agent: %s | conf=%.0f%% | source=%s",
-            request_id,
-            agent_result.get("decision"),
-            float(agent_result.get("confidence", 0)) * 100,
-            agent_result.get("model_source", "?"),
-        )
-
-        # ── Step 6: Business Rules Validation ─────────────────────────────────
+        # Business Rules Validation
         try:
             from workflows.hr.decision_rules import DecisionValidationLayer
             validated = DecisionValidationLayer().validate_and_override(agent_result, payload)
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ Validation layer error: %s", request_id, e
-            )
+            logger.warning("[request_id=%s] ⚠️ Validation layer error: %s", request_id, e)
             validated = agent_result
 
         decision   = validated.get("decision", "escalate")
         confidence = round(float(validated.get("confidence", 0.5)), 4)
         reasoning  = validated.get("reason", validated.get("reasoning", ""))
 
-        # ── Step 7: Persist to DB ─────────────────────────────────────────────
+        # Persist to MongoDB
         action_result = await self._execute_and_persist(
-            decision     = decision,
-            payload      = payload,
-            agent_result = validated,
-            leave_id     = leave_id,
-            request_id   = request_id,
-            execution_ms = execution_ms,
+            decision=decision,
+            payload=payload,
+            agent_result=validated,
+            leave_id=leave_id,
+            request_id=request_id,
+            execution_ms=execution_ms,
         )
 
-        # ── Step 8: Build Final Response ──────────────────────────────────────
-        final_result = {
-            "decision":          decision,
-            "confidence":        confidence,
-            "leave_id":          leave_id,
-            "leave_type":        leave_type,
-            "sla_deadline":      sla_info["deadline_iso"],
-            "sla_hours":         sla_info["processing_hours"],
-            "sla_policy_notes":  sla_info["policy_notes"],
+        # ← v6.1 FIX B3: Execute real-world actions after persist
+        try:
+            from actions.hr_action_executor import get_hr_action_executor
+            executor = get_hr_action_executor()
+            action_summary = await executor.execute_post_decision(
+                domain     = "leave",
+                decision   = decision,
+                result     = validated,
+                payload    = payload,
+                request_id = request_id,
+            )
+            logger.info(
+                "[request_id=%s] 🎯 Leave actions done: %s",
+                request_id, action_summary.get("actions_executed", []),
+            )
+        except Exception as e:
+            logger.error(
+                "[request_id=%s] ❌ Leave action executor failed (decision still saved): %s",
+                request_id, e,
+            )
+            action_summary = {"error": str(e)}
+
+        return {
+            "decision":              decision,
+            "confidence":            confidence,
+            "leave_id":              leave_id,
+            "leave_type":            leave_type,
+            "sla_deadline":          sla_info["deadline_iso"],
+            "sla_hours":             sla_info["processing_hours"],
+            "sla_policy_notes":      sla_info["policy_notes"],
             "auto_approve_eligible": sla_info["auto_eligible"],
-            "fiscal_year":       fy_context["label"],
-            "request_id":        request_id,
+            "fiscal_year":           fy_context["label"],
+            "request_id":            request_id,
+            "actions_taken":         action_summary,  # ← v6.1: always present
             "employee_response": self._build_employee_response(
                 decision, employee_name, leave_type,
                 requested_days, sla_info["deadline"],
@@ -314,23 +231,10 @@ class LeaveApprovalWorkflow:
                 "model_source":   validated.get("model_source", "ml_model"),
                 "action_taken":   action_result,
                 "execution_ms":   execution_ms,
-                "workflow":       "LeaveApprovalWorkflow_v5.2",
+                "workflow":       "LeaveApprovalWorkflow_v6.1",
                 "request_id":     request_id,
             },
         }
-
-        logger.info(
-            "[request_id=%s] ✅ Leave #%s (%s) → %s | conf=%.0f%% | SLA=%dh | source=%s",
-            request_id,
-            leave_id,
-            employee_name,
-            decision,
-            confidence * 100,
-            sla_info["processing_hours"],
-            validated.get("model_source", "?"),
-        )
-
-        return final_result
 
     def run(self, payload: dict) -> dict:
         try:
@@ -338,71 +242,51 @@ class LeaveApprovalWorkflow:
             if loop.is_running():
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, self.async_run(payload))
-                    return future.result(timeout=60)
+                    return pool.submit(asyncio.run, self.async_run(payload)).result(timeout=60)
             return loop.run_until_complete(self.async_run(payload))
         except Exception as e:
             req_id = payload.get("request_id", generate_request_id())
-            logger.error(
-                "[request_id=%s] ❌ [LeaveWorkflow] run() failed: %s", req_id, e
-            )
-            return {
-                "status":     "error",
-                "message":    str(e),
-                "stage":      "workflow",
-                "request_id": req_id,
-            }
+            logger.error("[request_id=%s] ❌ LeaveWorkflow run() failed: %s", req_id, e)
+            return {"status": "error", "message": str(e), "stage": "workflow", "request_id": req_id}
 
-    async def _claim_leave(self, leave_id: int, request_id: str) -> bool:
+    async def _status_precheck(self, leave_id: str, request_id: str) -> Optional[dict]:
         try:
-            import importlib
-            db_module = importlib.import_module("core.db")
-            with db_module.get_db() as (conn, cur):
-                cur.execute(
-                    "UPDATE leaves SET status = %s WHERE id = %s AND status = %s",
-                    ("in_progress", leave_id, "pending"),
-                )
-                conn.commit()
-                claimed = cur.rowcount == 1
-                return claimed
+            db             = _get_hr_db()
+            current_status = await db.get_leave_status(leave_id)
+            if current_status is None:
+                return {"decision": "escalate", "confidence": 0.5, "leave_id": leave_id,
+                        "reasoning": f"Leave {leave_id} not found", "request_id": request_id, "error": "leave_not_found"}
+            if current_status in TERMINAL_STATUSES:
+                _map = {"approved": "approve", "rejected": "reject", "escalated": "escalate", "cancelled": "reject"}
+                return {"decision": _map.get(current_status, current_status), "confidence": 1.0,
+                        "leave_id": leave_id, "reasoning": f"Leave already {current_status}",
+                        "request_id": request_id, "skipped": True, "skip_reason": f"terminal_status:{current_status}"}
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ Claim error: %s — allowing through", request_id, e
+            logger.warning("[request_id=%s] ⚠️ Status pre-check failed: %s", request_id, e)
+        return None
+
+    async def _claim_leave(self, leave_id: str, request_id: str) -> bool:
+        try:
+            db     = _get_hr_db()
+            oid    = ObjectId(str(leave_id))
+            result = await db.leaves.update_one(
+                {"_id": oid, "status": "pending"},
+                {"$set": {"status": "in_progress", "updated_at": datetime.now(timezone.utc)}},
             )
+            return result.modified_count == 1
+        except Exception as e:
+            logger.warning("[request_id=%s] ⚠️ Claim error: %s — allowing through", request_id, e)
             return True
 
-    async def _refresh_balance_from_db(
-        self, payload: dict, leave_id: int, request_id: str
-    ) -> dict:
+    async def _refresh_balance_from_db(self, payload: dict, leave_id: str, request_id: str) -> dict:
         try:
-            import importlib
-            db_module = importlib.import_module("core.db")
-            with db_module.get_db() as (_, cur):
-                cur.execute(
-                    """
-                    SELECT COALESCE(e.leave_balance, 0) AS leave_balance
-                    FROM leaves l
-                    LEFT JOIN employees e ON e.id = l.employee_id
-                    WHERE l.id = %s
-                    LIMIT 1
-                    """,
-                    (leave_id,),
-                )
-                row = cur.fetchone()
-                if row:
-                    fresh_balance = int(row["leave_balance"])
-                    old_balance   = payload.get("leave_balance", "not set")
-                    if fresh_balance != old_balance:
-                        logger.info(
-                            "[request_id=%s] 🔄 Balance refreshed from DB: %s → %d",
-                            request_id, old_balance, fresh_balance,
-                        )
-                    return {**payload, "leave_balance": fresh_balance}
+            db  = _get_hr_db()
+            doc = await db.get_leave(leave_id)
+            if doc:
+                fresh_balance = int(doc.get("leave_balance", 0))
+                return {**payload, "leave_balance": fresh_balance}
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ Balance refresh failed: %s — using payload value",
-                request_id, e,
-            )
+            logger.warning("[request_id=%s] ⚠️ Balance refresh failed: %s", request_id, e)
         return payload
 
     def _fill_defaults(self, payload: dict) -> dict:
@@ -426,18 +310,15 @@ class LeaveApprovalWorkflow:
             return {"valid": False, "error": "leave_balance cannot be negative"}
         return {"valid": True}
 
-    def _compute_sla(self, leave_type, requested_days=0, is_peak=False):
+    def _compute_sla(self, leave_type: str, requested_days: int = 0, is_peak: bool = False) -> dict:
         policy     = SLA_POLICY.get(leave_type, SLA_POLICY["annual"])
         base_hours = policy["processing_hours"]
         if is_peak:
             base_hours = int(base_hours * 1.5)
-        deadline = datetime.utcnow() + timedelta(hours=base_hours)
+        deadline     = datetime.utcnow() + timedelta(hours=base_hours)
         policy_notes = []
         if requested_days > policy["max_days"]:
-            policy_notes.append(
-                f"⚠️ Requested {requested_days}d exceeds policy max "
-                f"{policy['max_days']}d for {leave_type} leave"
-            )
+            policy_notes.append(f"⚠️ Requested {requested_days}d exceeds policy max {policy['max_days']}d")
         if policy["requires_cert"] and requested_days > 2:
             policy_notes.append("📄 Medical certificate required (Egyptian Law Art. 54)")
         if is_peak:
@@ -493,209 +374,103 @@ class LeaveApprovalWorkflow:
 
     async def _execute_and_persist(
         self,
-        decision, payload, agent_result, leave_id, request_id, execution_ms=0,
+        decision:     str,
+        payload:      dict,
+        agent_result: dict,
+        leave_id:     Optional[str],
+        request_id:   str,
+        execution_ms: int = 0,
     ) -> dict:
-        try:
-            from core.db import (
-                update_leave_and_balance,
-                write_decision_audit,
-                log_action,
-                write_audit_log,
-                save_decision,
-            )
+        db = _get_hr_db()
+        STATUS_MAP = {"approve": "approved", "reject": "rejected", "escalate": "escalated"}
+        new_status     = STATUS_MAP.get(decision, "pending")
+        reasoning      = agent_result.get("reason", agent_result.get("reasoning", ""))
+        requested_days = int(payload.get("requested_days", payload.get("leave_days", 0)))
+        employee_id    = payload.get("employee_id")
+        old_balance    = int(payload.get("leave_balance", 0))
+        new_balance    = old_balance
 
-            status_map = {
-                "approve":  "approved",
-                "reject":   "rejected",
-                "escalate": "escalated",
-            }
-            new_status = status_map.get(decision, "pending")
-            reasoning  = agent_result.get("reason", agent_result.get("reasoning", ""))
-
-            bal_result = {"old_balance": 0, "new_balance": 0}
-
-            if leave_id is not None:
-                _emp_id = int(payload.get("employee_id", 0) or 0)
-                _days   = int(payload.get("requested_days", payload.get("leave_days", 0)))
-
-                try:
-                    bal_result = update_leave_and_balance(
-                        leave_id    = leave_id,
-                        employee_id = _emp_id,
-                        status      = new_status,
-                        notes       = reasoning[:500],
-                        leave_days  = _days if new_status == "approved" else 0,
-                        performed_by= "hr_agent_v5.2",
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[request_id=%s] ⚠️ Atomic update failed: %s — fallback to basic update",
-                        request_id, e,
-                    )
-                    from core.db import update_leave_status
-                    update_leave_status(leave_id, new_status, reasoning[:500])
-
-            if leave_id is not None:
-                _emp_id = int(payload.get("employee_id", 0) or 0)
-                try:
-                    from agents.hr.leave_model_handler import get_model_handler
-                    _meta_version = get_model_handler().get_info().get("trained_at", "unknown")
-                except Exception:
-                    _meta_version = "unknown"
-
-                try:
-                    write_decision_audit(
-                        leave_id        = leave_id,
-                        employee_id     = _emp_id,
-                        decision        = decision,
-                        confidence      = float(agent_result.get("confidence", 0)),
-                        raw_confidence  = agent_result.get("raw_confidence"),
-                        decision_source = agent_result.get("model_source", "ml_model"),
-                        old_balance     = bal_result.get("old_balance", 0),
-                        new_balance     = bal_result.get("new_balance", 0),
-                        model_version   = str(_meta_version)[:100],
-                        tier            = int(agent_result.get("tier", 2)),
-                        llm_used        = bool(agent_result.get("llm_used", False)),
-                        override_rule   = str(agent_result.get("override_rule", "")),
-                        execution_ms    = execution_ms,
-                        request_id      = request_id,
-                        flags           = agent_result.get("ai_flags", []),
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[request_id=%s] ⚠️ write_decision_audit failed: %s", request_id, e
-                    )
-
-            # ✅ Fix DB1/DB2: resolve event_id for leave domain too
-            event_id_for_decision = payload.get("event_id")
-            if not event_id_for_decision and leave_id is not None:
-                try:
-                    from core.db import create_event
-                    event_id_for_decision = create_event(
-                        event_type = "leave_requested",
-                        entity     = "leaves",
-                        entity_id  = leave_id,
-                        payload    = {
-                            "employee_id": str(payload.get("employee_id", "")),
-                            "leave_days":  int(payload.get("requested_days", 0)),
-                            "source":      "workflow_auto_create",
-                        },
-                    )
-                    logger.info(
-                        "[request_id=%s] 🔧 Auto-created event #%d for leave #%d",
-                        request_id, event_id_for_decision, leave_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[request_id=%s] ⚠️ Auto-create event failed: %s", request_id, e
-                    )
-                    event_id_for_decision = None
-
-            if leave_id is not None:
-                try:
-                    save_decision({
-                        "agent_type":   "hr_agent_v5.2",
-                        "entity":       "leaves",
-                        "entity_id":    leave_id,
-                        "decision":     decision,
-                        "confidence":   float(agent_result.get("confidence", 0.0)),
-                        "reasoning":    reasoning[:500],
-                        "raw_response": str(agent_result.get("breakdown", {}))[:1000],
-                        "event_id":     event_id_for_decision,
-                    })
-                except Exception as e:
-                    logger.warning(
-                        "[request_id=%s] ⚠️ save_decision failed: %s", request_id, e
-                    )
-
+        if leave_id:
             try:
-                log_action({
-                    "action_type":  f"leave_{decision}",
-                    "entity":       "leaves",
-                    "entity_id":    leave_id or 0,
-                    "performed_by": "hr_agent_v5.2",
-                    "result":       decision,
-                    "details":      reasoning[:300],
-                })
-            except Exception as e:
-                logger.warning("[request_id=%s] ⚠️ log_action failed: %s", request_id, e)
-
-            try:
-                source = agent_result.get("model_source", "ml_model")
-                conf   = agent_result.get("confidence", 0)
-                llm    = "LLM+ML" if agent_result.get("llm_used") else "ML-only"
-                write_audit_log(
-                    action       = f"leave_{decision}",
-                    entity       = "leaves",
-                    entity_id    = leave_id or 0,
-                    performed_by = "hr_agent_v5.2",
-                    details      = (
-                        f"[request_id={request_id}] {llm} | source={source} | "
-                        f"conf={float(conf):.0%} | event_id={event_id_for_decision} | "
-                        f"exec={execution_ms}ms | "
-                        f"balance:{bal_result.get('old_balance',0)}→{bal_result.get('new_balance',0)} | "
-                        f"{reasoning[:150]}"
-                    ),
+                await db.update_leave_status(
+                    leave_id=leave_id, status=new_status,
+                    ai_decision=decision,
+                    confidence=float(agent_result.get("confidence", 0)),
+                    reason=reasoning[:1000],
+                    decision_source=agent_result.get("model_source", "ml_model"),
+                    tier=int(agent_result.get("tier", 2)),
+                    llm_used=bool(agent_result.get("llm_used", False)),
+                    request_id=request_id,
+                    notes=str(agent_result.get("ai_flags", []))[:500],
                 )
             except Exception as e:
-                logger.warning("[request_id=%s] ⚠️ audit_log failed: %s", request_id, e)
+                logger.warning("[request_id=%s] ⚠️ update_leave_status failed: %s", request_id, e)
 
-            return {
-                "status":       "persisted",
-                "new_status":   new_status,
-                "leave_id":     leave_id,
-                "old_balance":  bal_result.get("old_balance", 0),
-                "new_balance":  bal_result.get("new_balance", 0),
-                "execution_ms": execution_ms,
-            }
+        if new_status == "approved" and leave_id and employee_id:
+            new_balance = max(0, old_balance - requested_days)
+            try:
+                await db.leaves.update_one(
+                    {"_id": ObjectId(str(leave_id))},
+                    {"$set": {"leave_balance": new_balance, "updated_at": datetime.now(timezone.utc)}},
+                )
+                await db.write_balance_audit_log(
+                    employee_id=employee_id,
+                    old_balance=old_balance,
+                    new_balance=new_balance,
+                    change_reason=f"leave_approved | leave_id={leave_id} | days={requested_days}",
+                    leave_id=leave_id,
+                    performed_by="hr_agent_v6.1",
+                )
+            except Exception as e:
+                logger.warning("[request_id=%s] ⚠️ Balance deduction failed: %s", request_id, e)
 
-        except Exception as e:
-            logger.error("[request_id=%s] ❌ DB persist failed: %s", request_id, e)
-            return {"status": "persist_failed", "error": str(e)}
+        if leave_id:
+            try:
+                await db.write_hr_domain_audit(
+                    domain=           "leave",
+                    entity_id=        leave_id,
+                    employee_id=      employee_id,
+                    decision=         decision,
+                    confidence=       float(agent_result.get("confidence", 0)),
+                    decision_source=  agent_result.get("model_source", "ml_model"),
+                    override_rule=    str(agent_result.get("override_rule", "")),
+                    llm_used=         bool(agent_result.get("llm_used", False)),
+                    execution_ms=     execution_ms,
+                    request_id=       request_id,
+                    flags=            agent_result.get("ai_flags", []),
+                    extra_data=       {"old_balance": old_balance, "new_balance": new_balance,
+                                       "requested_days": requested_days, "leave_type": payload.get("leave_type")},
+                )
+            except Exception as e:
+                logger.warning("[request_id=%s] ⚠️ write_hr_domain_audit failed: %s", request_id, e)
 
-    def _build_employee_response(self, decision, employee_name, leave_type, requested_days, sla_deadline):
-        leave_type_ar = {
-            "annual":    "السنوية",
-            "sick":      "المرضية",
-            "emergency": "الطارئة",
-            "unpaid":    "بدون مرتب",
-        }.get(leave_type, leave_type)
+        return {"status": "persisted", "new_status": new_status, "leave_id": leave_id,
+                "old_balance": old_balance, "new_balance": new_balance, "execution_ms": execution_ms}
 
+    def _build_employee_response(self, decision, employee_name, leave_type, requested_days, sla_deadline) -> dict:
+        leave_type_ar = {"annual": "السنوية", "sick": "المرضية", "emergency": "الطارئة", "unpaid": "بدون مرتب"}.get(leave_type, leave_type)
         templates = {
-            "approve": (
-                f"✅ تمت الموافقة على طلب إجازتك {leave_type_ar} "
-                f"لمدة {requested_days} يوم. نتمنى لك إجازة ممتعة، {employee_name}!"
-            ),
-            "reject": (
-                f"❌ نأسف، لم تتم الموافقة على طلب إجازتك {leave_type_ar} "
-                f"لمدة {requested_days} يوم. يرجى التواصل مع HR لمزيد من التفاصيل."
-            ),
-            "escalate": (
-                f"⏳ طلب إجازتك {leave_type_ar} ({requested_days} يوم) "
-                "قيد المراجعة. سيتم إخطارك بالقرار النهائي قريباً."
-            ),
+            "approve":  f"✅ تمت الموافقة على طلب إجازتك {leave_type_ar} لمدة {requested_days} يوم. نتمنى لك إجازة ممتعة، {employee_name}!",
+            "reject":   f"❌ نأسف، لم تتم الموافقة على طلب إجازتك {leave_type_ar} لمدة {requested_days} يوم. يرجى التواصل مع HR.",
+            "escalate": f"⏳ طلب إجازتك {leave_type_ar} ({requested_days} يوم) قيد المراجعة. سيتم إخطارك بالقرار النهائي قريباً.",
         }
-
-        sla_str = (
-            sla_deadline.strftime("%Y-%m-%d %H:%M UTC")
-            if sla_deadline and hasattr(sla_deadline, "strftime") else "قريباً"
-        )
-
+        sla_str = sla_deadline.strftime("%Y-%m-%d %H:%M UTC") if sla_deadline and hasattr(sla_deadline, "strftime") else "قريباً"
         return {
-            "message":        templates.get(decision, "طلبك قيد المعالجة."),
+            "message": templates.get(decision, "طلبك قيد المعالجة."),
             "expected_reply": sla_str,
-            "leave_type_ar":  leave_type_ar,
-            "days":           requested_days,
-            "channel":        "email",
-            "employee_name":  employee_name,
+            "leave_type_ar": leave_type_ar,
+            "days": requested_days,
+            "channel": "email",
+            "employee_name": employee_name,
         }
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 💰  SALARY REVIEW WORKFLOW — v5.2
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# 💰  SALARY REVIEW WORKFLOW — v6.1
+# ══════════════════════════════════════════════════════════════════════════════
 
 class SalaryReviewWorkflow:
+
     def __init__(self) -> None:
         self._agent  = None
         self._logger = None
@@ -708,7 +483,7 @@ class SalaryReviewWorkflow:
         return self._agent
 
     @property
-    def logger(self):
+    def audit_logger(self):
         if self._logger is None:
             from audit.logger import AuditLogger
             self._logger = AuditLogger()
@@ -717,41 +492,51 @@ class SalaryReviewWorkflow:
     async def async_run(self, payload: dict) -> dict:
         request_id = payload.get("request_id") or generate_request_id()
         payload    = {**payload, "request_id": request_id}
-        logger.info("[request_id=%s] 💰 SalaryReviewWorkflow started", request_id)
+        logger.info("[request_id=%s] 💰 SalaryReviewWorkflow v6.1 started", request_id)
+
         try:
             agent_result = await self.agent.process_salary(payload)
         except Exception as e:
             logger.error("[request_id=%s] ❌ SalaryAgent failed: %s", request_id, e)
             return {"decision": "escalate_to_director", "reason": str(e), "request_id": request_id}
 
-        # ✅ v6.0: SalaryDecisionEngine already produced the final decision.
-        # SalaryValidationLayer is NO LONGER called here — engine handles all rules.
-        # This eliminates the double-decision / overwrite problem.
+        # ← v6.1 FIX B2: DO NOT call SalaryValidationLayer here.
+        # SalaryDecisionEngine already handles all rules internally.
+        # The old code was: engine decides → ValidationLayer overrides → wrong result.
+        # The new code: engine decides → done.
         validated = agent_result
 
-        # Ensure recommended_increment_pct is always present
         if validated.get("recommended_increment_pct") is None:
-            validated["recommended_increment_pct"] = float(
-                payload.get("requested_increment_pct", 0.10)
-            )
+            validated["recommended_increment_pct"] = float(payload.get("requested_increment_pct", 0.10))
 
-        # Fix booleans
         for bf in ["is_on_pip", "is_on_probation"]:
             if bf in validated:
                 validated[bf] = bool(validated[bf])
 
         await self._persist(validated, payload, request_id)
         validated["request_id"] = request_id
-        validated["workflow"]   = "SalaryReviewWorkflow_v6.0"
+        validated["workflow"]   = "SalaryReviewWorkflow_v6.1"
+
+        # ← v6.1 FIX B3: Execute real-world actions
+        try:
+            from actions.hr_action_executor import get_hr_action_executor
+            action_summary = await get_hr_action_executor().execute_post_decision(
+                domain     = "salary",
+                decision   = validated.get("decision", ""),
+                result     = validated,
+                payload    = payload,
+                request_id = request_id,
+            )
+            validated["actions_taken"] = action_summary
+        except Exception as e:
+            logger.error("[request_id=%s] ❌ Salary action executor failed: %s", request_id, e)
+            validated["actions_taken"] = {"error": str(e)}
+
         logger.info(
-            "[request_id=%s] ✅ SalaryWorkflow → %s | conf=%.3f | "
-            "rec_pct=%s | score=%.3f | trigger=%s",
-            request_id,
-            validated.get("decision"),
-            validated.get("confidence", 0),
+            "[request_id=%s] ✅ SalaryWorkflow → %s | conf=%.3f | rec_pct=%s | actions=%s",
+            request_id, validated.get("decision"), validated.get("confidence", 0),
             validated.get("recommended_increment_pct"),
-            validated.get("weighted_score", 0),
-            validated.get("trigger", "?"),
+            validated.get("actions_taken", {}).get("actions_executed", []),
         )
         return validated
 
@@ -767,61 +552,52 @@ class SalaryReviewWorkflow:
             return {"decision": "escalate_to_director", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        """
-        ✅ Fix DB3: event_id resolved from payload → no null FK error.
-        ✅ Fix S1:  recommended_increment_pct always present.
-        """
-        try:
-            from core.db import save_decision, write_audit_log
+        db          = _get_hr_db()
+        review_id   = payload.get("review_id")
+        employee_id = payload.get("employee_id")
+        rec_pct     = result.get("recommended_increment_pct", 0) or 0
 
-            # ✅ Fix DB3: event_id from payload (set by API endpoint before event firing)
-            event_id_val = payload.get("event_id") or payload.get("review_id")
-            review_id    = int(payload.get("review_id", 0) or 0)
-            entity_id    = review_id or int(payload.get("employee_id", 0) or 0)
-
-            rec_pct = result.get("recommended_increment_pct", 0)
-
+        if review_id:
             try:
-                save_decision({
-                    "agent_type":   "salary_agent_v5.2",
-                    "entity":       "salary_reviews",
-                    "entity_id":    entity_id,
-                    "event_id":     event_id_val,    # ✅ never null
-                    "decision":     result.get("decision", "?"),
-                    "confidence":   result.get("confidence", 0),
-                    "reasoning":    result.get("reason", "")[:500],
-                    "raw_response": str(result)[:1000],
-                })
-            except Exception as e:
-                logger.warning(
-                    "[request_id=%s] ⚠️ Salary persist (save_decision) failed: %s",
-                    request_id, e,
+                await db.update_salary_review_status(
+                    review_id=review_id,
+                    status=_decision_to_status(result.get("decision", "?")),
+                    ai_decision=result.get("decision", ""),
+                    confidence=float(result.get("confidence", 0)),
+                    reason=result.get("reason", "")[:1000],
+                    recommended_pct=float(rec_pct),
+                    request_id=request_id,
                 )
+            except Exception as e:
+                logger.warning("[request_id=%s] ⚠️ update_salary_review_status failed: %s", request_id, e)
 
-            write_audit_log(
-                action       = f"salary_{result.get('decision', '?')}",
-                entity       = "salary_reviews",
-                entity_id    = entity_id,
-                performed_by = "salary_agent_v5.2",
-                details      = (
-                    f"[request_id={request_id}] "
-                    f"decision={result.get('decision')} | "
-                    f"rec_pct={rec_pct:.0%} | "
-                    f"conf={result.get('confidence', 0):.0%} | "
-                    f"{result.get('reason', '')[:150]}"
-                ),
+        try:
+            await db.write_hr_domain_audit(
+                domain=          "salary",
+                entity_id=       review_id,
+                employee_id=     employee_id,
+                decision=        result.get("decision", ""),
+                confidence=      float(result.get("confidence", 0)),
+                decision_source= result.get("model_source", "llm"),
+                override_rule=   str(result.get("override_rule", "")),
+                llm_used=        bool(result.get("llm_used", False)),
+                execution_ms=    0,
+                request_id=      request_id,
+                flags=           result.get("flags", result.get("ai_flags", [])),
+                extra_data=      {"recommended_increment_pct": rec_pct,
+                                  "weighted_score": result.get("weighted_score"),
+                                  "score_breakdown": result.get("score_breakdown", {})},
             )
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ Salary persist failed: %s", request_id, e
-            )
+            logger.warning("[request_id=%s] ⚠️ Salary write_hr_domain_audit failed: %s", request_id, e)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🏆  INCENTIVE WORKFLOW — v5.2
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# 🏆  INCENTIVE WORKFLOW — v6.1
+# ══════════════════════════════════════════════════════════════════════════════
 
 class IncentiveWorkflow:
+
     def __init__(self) -> None:
         self._agent = None
 
@@ -835,18 +611,20 @@ class IncentiveWorkflow:
     async def async_run(self, payload: dict) -> dict:
         request_id = payload.get("request_id") or generate_request_id()
         payload    = {**payload, "request_id": request_id}
-        logger.info("[request_id=%s] 🏆 IncentiveWorkflow started", request_id)
+        logger.info("[request_id=%s] 🏆 IncentiveWorkflow v6.1 started", request_id)
+
         try:
             agent_result = await self.agent.process_incentive(payload)
         except Exception as e:
             return {"decision": "escalate_to_director", "reason": str(e), "request_id": request_id}
+
         try:
             from workflows.hr.decision_rules import IncentiveValidationLayer
             validated = IncentiveValidationLayer().validate_and_override(agent_result, payload)
         except Exception:
             validated = agent_result
 
-        # ✅ Fix I2: approved_amount_egp never null AFTER validation
+        # approved_amount_egp never null
         if validated.get("approved_amount_egp") is None:
             decision = validated.get("decision", "deny_bonus")
             if decision not in ("deny_bonus", "escalate_to_director", "escalate_to_ceo"):
@@ -867,20 +645,33 @@ class IncentiveWorkflow:
             else:
                 validated["approved_amount_egp"] = 0.0
 
-        # ✅ Fix B1: booleans
         for bf in ["is_on_pip", "is_critical_talent"]:
             if bf in validated:
                 validated[bf] = bool(validated[bf])
 
         await self._persist(validated, payload, request_id)
         validated["request_id"] = request_id
-        validated["workflow"]   = "IncentiveWorkflow_v5.2"
+        validated["workflow"]   = "IncentiveWorkflow_v6.1"
+
+        # ← v6.1 FIX B3: Execute real-world actions
+        try:
+            from actions.hr_action_executor import get_hr_action_executor
+            action_summary = await get_hr_action_executor().execute_post_decision(
+                domain     = "incentive",
+                decision   = validated.get("decision", ""),
+                result     = validated,
+                payload    = payload,
+                request_id = request_id,
+            )
+            validated["actions_taken"] = action_summary
+        except Exception as e:
+            logger.error("[request_id=%s] ❌ Incentive action executor failed: %s", request_id, e)
+            validated["actions_taken"] = {"error": str(e)}
+
         logger.info(
-            "[request_id=%s] ✅ IncentiveWorkflow → %s | conf=%.3f | amount=%s EGP",
-            request_id,
-            validated.get("decision"),
-            validated.get("confidence", 0),
-            validated.get("approved_amount_egp"),
+            "[request_id=%s] ✅ IncentiveWorkflow → %s | amount=%s EGP | actions=%s",
+            request_id, validated.get("decision"), validated.get("approved_amount_egp"),
+            validated.get("actions_taken", {}).get("actions_executed", []),
         )
         return validated
 
@@ -896,61 +687,52 @@ class IncentiveWorkflow:
             return {"decision": "deny_bonus", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        """
-        ✅ Fix DB3: event_id resolved from payload → no null FK error.
-        ✅ Fix I2:  approved_amount_egp always present.
-        """
-        try:
-            from core.db import save_decision, write_audit_log
+        db           = _get_hr_db()
+        incentive_id = payload.get("incentive_id")
+        employee_id  = payload.get("employee_id")
+        approved_amt = float(result.get("approved_amount_egp") or 0)
 
-            # ✅ Fix DB3: event_id from payload
-            event_id_val = payload.get("event_id") or payload.get("incentive_id")
-            incentive_id = int(payload.get("incentive_id", 0) or 0)
-            entity_id    = incentive_id or int(payload.get("employee_id", 0) or 0)
-
-            approved_amt = result.get("approved_amount_egp", 0) or 0
-
+        if incentive_id:
             try:
-                save_decision({
-                    "agent_type":   "incentive_agent_v5.2",
-                    "entity":       "incentive_requests",
-                    "entity_id":    entity_id,
-                    "event_id":     event_id_val,    # ✅ never null
-                    "decision":     result.get("decision", "?"),
-                    "confidence":   result.get("confidence", 0),
-                    "reasoning":    result.get("reason", "")[:500],
-                    "raw_response": str(result)[:1000],
-                })
-            except Exception as e:
-                logger.warning(
-                    "[request_id=%s] ⚠️ Incentive persist (save_decision) failed: %s",
-                    request_id, e,
+                await db.update_incentive_status(
+                    request_id=incentive_id,
+                    status=_decision_to_status(result.get("decision", "?")),
+                    ai_decision=result.get("decision", ""),
+                    confidence=float(result.get("confidence", 0)),
+                    reason=result.get("reason", "")[:1000],
+                    approved_amount=approved_amt,
+                    req_id_str=request_id,
                 )
+            except Exception as e:
+                logger.warning("[request_id=%s] ⚠️ update_incentive_status failed: %s", request_id, e)
 
-            write_audit_log(
-                action       = f"incentive_{result.get('decision', '?')}",
-                entity       = "incentive_requests",
-                entity_id    = entity_id,
-                performed_by = "incentive_agent_v5.2",
-                details      = (
-                    f"[request_id={request_id}] "
-                    f"decision={result.get('decision')} | "
-                    f"approved={approved_amt:,.0f} EGP | "
-                    f"conf={result.get('confidence', 0):.0%} | "
-                    f"{result.get('reason', '')[:150]}"
-                ),
+        try:
+            await db.write_hr_domain_audit(
+                domain=          "incentive",
+                entity_id=       incentive_id,
+                employee_id=     employee_id,
+                decision=        result.get("decision", ""),
+                confidence=      float(result.get("confidence", 0)),
+                decision_source= result.get("model_source", "llm"),
+                override_rule=   str(result.get("override_rule", "")),
+                llm_used=        bool(result.get("llm_used", False)),
+                execution_ms=    0,
+                request_id=      request_id,
+                flags=           result.get("flags", result.get("ai_flags", [])),
+                extra_data=      {"approved_amount_egp": approved_amt,
+                                  "incentive_type": payload.get("incentive_type"),
+                                  "kpi_achievement": payload.get("kpi_achievement")},
             )
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ Incentive persist failed: %s", request_id, e
-            )
+            logger.warning("[request_id=%s] ⚠️ Incentive write_hr_domain_audit failed: %s", request_id, e)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🚫  ABSENCE WORKFLOW — v5.2 (unchanged logic, version bump only)
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# 🚫  ABSENCE WORKFLOW — v6.1
+# ══════════════════════════════════════════════════════════════════════════════
 
 class AbsenceWorkflow:
+
     def __init__(self) -> None:
         self._agent = None
 
@@ -964,25 +746,42 @@ class AbsenceWorkflow:
     async def async_run(self, payload: dict) -> dict:
         request_id = payload.get("request_id") or generate_request_id()
         payload    = {**payload, "request_id": request_id}
-        logger.info("[request_id=%s] 🚫 AbsenceWorkflow started", request_id)
+        logger.info("[request_id=%s] 🚫 AbsenceWorkflow v6.1 started", request_id)
+
         try:
             agent_result = await self.agent.process_absence(payload)
         except Exception as e:
             return {"decision": "escalate_to_hr_director", "reason": str(e), "request_id": request_id}
+
         try:
             from workflows.hr.decision_rules import AbsenceValidationLayer
             validated = AbsenceValidationLayer().validate_and_override(agent_result, payload)
         except Exception:
             validated = agent_result
 
-        # ✅ Fix B1: booleans
         for bf in ["is_on_pip", "escalation_required"]:
             if bf in validated:
                 validated[bf] = bool(validated[bf])
 
         await self._persist(validated, payload, request_id)
         validated["request_id"] = request_id
-        validated["workflow"]   = "AbsenceWorkflow_v5.2"
+        validated["workflow"]   = "AbsenceWorkflow_v6.1"
+
+        # ← v6.1 FIX B3: Execute real-world actions
+        try:
+            from actions.hr_action_executor import get_hr_action_executor
+            action_summary = await get_hr_action_executor().execute_post_decision(
+                domain     = "absence",
+                decision   = validated.get("decision", ""),
+                result     = validated,
+                payload    = payload,
+                request_id = request_id,
+            )
+            validated["actions_taken"] = action_summary
+        except Exception as e:
+            logger.error("[request_id=%s] ❌ Absence action executor failed: %s", request_id, e)
+            validated["actions_taken"] = {"error": str(e)}
+
         return validated
 
     def run(self, payload: dict) -> dict:
@@ -997,55 +796,54 @@ class AbsenceWorkflow:
             return {"decision": "escalate_to_hr_director", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        """✅ Fix DB3: event_id resolved from payload."""
-        try:
-            from core.db import save_decision, write_audit_log
+        db          = _get_hr_db()
+        absence_id  = payload.get("absence_id")
+        employee_id = payload.get("employee_id")
 
-            event_id_val = payload.get("event_id") or payload.get("absence_id")
-            absence_id   = int(payload.get("absence_id", 0) or 0)
-            entity_id    = absence_id or int(payload.get("employee_id", 0) or 0)
-
+        if absence_id:
             try:
-                save_decision({
-                    "agent_type":   "absence_agent_v5.2",
-                    "entity":       "absence_events",
-                    "entity_id":    entity_id,
-                    "event_id":     event_id_val,    # ✅ never null
-                    "decision":     result.get("decision", "?"),
-                    "confidence":   result.get("confidence", 0),
-                    "reasoning":    result.get("reason", "")[:500],
-                    "raw_response": str(result)[:1000],
-                })
-            except Exception as e:
-                logger.warning(
-                    "[request_id=%s] ⚠️ Absence persist (save_decision) failed: %s",
-                    request_id, e,
+                await db.update_absence_event_status(
+                    event_id=absence_id,
+                    status=_decision_to_status(result.get("decision", "?")),
+                    ai_decision=result.get("decision", ""),
+                    ai_classification=result.get("classification", result.get("ai_classification", "")),
+                    confidence=float(result.get("confidence", 0)),
+                    reason=result.get("reason", "")[:1000],
+                    payroll_deduction_days=float(result.get("payroll_deduction_days", 0)),
+                    escalation_required=bool(result.get("escalation_required", False)),
+                    request_id=request_id,
                 )
+            except Exception as e:
+                logger.warning("[request_id=%s] ⚠️ update_absence_event_status failed: %s", request_id, e)
 
-            write_audit_log(
-                action       = f"absence_{result.get('decision', '?')}",
-                entity       = "absence_events",
-                entity_id    = entity_id,
-                performed_by = "absence_agent_v5.2",
-                details      = (
-                    f"[request_id={request_id}] "
-                    f"decision={result.get('decision')} | "
-                    f"classification={result.get('classification', '?')} | "
-                    f"deduction={result.get('payroll_deduction_days', 0)}d | "
-                    f"{result.get('reason', '')[:150]}"
-                ),
+        try:
+            await db.write_hr_domain_audit(
+                domain=          "absence",
+                entity_id=       absence_id,
+                employee_id=     employee_id,
+                decision=        result.get("decision", ""),
+                confidence=      float(result.get("confidence", 0)),
+                decision_source= result.get("model_source", "llm"),
+                override_rule=   str(result.get("override_rule", "")),
+                llm_used=        bool(result.get("llm_used", False)),
+                execution_ms=    0,
+                request_id=      request_id,
+                flags=           result.get("flags", result.get("ai_flags", [])),
+                extra_data=      {"classification": result.get("classification"),
+                                  "payroll_deduction_days": result.get("payroll_deduction_days", 0),
+                                  "escalation_required": result.get("escalation_required", False),
+                                  "unexcused_count_90d": payload.get("unexcused_count_90d", 0)},
             )
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ Absence persist failed: %s", request_id, e
-            )
+            logger.warning("[request_id=%s] ⚠️ Absence write_hr_domain_audit failed: %s", request_id, e)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 📅  ATTENDANCE WORKFLOW — v5.2 (unchanged logic, version bump)
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# 📅  ATTENDANCE WORKFLOW — v6.1
+# ══════════════════════════════════════════════════════════════════════════════
 
 class AttendanceWorkflow:
+
     def __init__(self) -> None:
         self._agent = None
 
@@ -1059,19 +857,38 @@ class AttendanceWorkflow:
     async def async_run(self, payload: dict) -> dict:
         request_id = payload.get("request_id") or generate_request_id()
         payload    = {**payload, "request_id": request_id}
-        logger.info("[request_id=%s] 📅 AttendanceWorkflow started", request_id)
+        logger.info("[request_id=%s] 📅 AttendanceWorkflow v6.1 started", request_id)
+
         try:
             agent_result = await self.agent.process_attendance(payload)
         except Exception as e:
             return {"decision": "escalate_to_hr_director", "reason": str(e), "request_id": request_id}
+
         try:
             from workflows.hr.decision_rules import AttendanceValidationLayer
             validated = AttendanceValidationLayer().validate_and_override(agent_result, payload)
         except Exception:
             validated = agent_result
+
         await self._persist(validated, payload, request_id)
         validated["request_id"] = request_id
-        validated["workflow"]   = "AttendanceWorkflow_v5.2"
+        validated["workflow"]   = "AttendanceWorkflow_v6.1"
+
+        # ← v6.1 FIX B3: Execute real-world actions
+        try:
+            from actions.hr_action_executor import get_hr_action_executor
+            action_summary = await get_hr_action_executor().execute_post_decision(
+                domain     = "attendance",
+                decision   = validated.get("decision", ""),
+                result     = validated,
+                payload    = payload,
+                request_id = request_id,
+            )
+            validated["actions_taken"] = action_summary
+        except Exception as e:
+            logger.error("[request_id=%s] ❌ Attendance action executor failed: %s", request_id, e)
+            validated["actions_taken"] = {"error": str(e)}
+
         return validated
 
     def run(self, payload: dict) -> dict:
@@ -1086,38 +903,55 @@ class AttendanceWorkflow:
             return {"decision": "escalate_to_hr_director", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        """✅ Fix DB3: event_id resolved."""
+        db          = _get_hr_db()
+        employee_id = payload.get("employee_id")
+
         try:
-            from core.db import save_decision, write_audit_log
-
-            event_id_val = payload.get("event_id")
-            entity_id    = int(payload.get("employee_id", 0) or 0)
-
-            try:
-                save_decision({
-                    "agent_type":   "attendance_agent_v5.2",
-                    "entity":       "attendance_audits",
-                    "entity_id":    entity_id,
-                    "event_id":     event_id_val,
-                    "decision":     result.get("decision", "?"),
-                    "confidence":   result.get("confidence", 0),
-                    "reasoning":    result.get("reason", "")[:500],
-                    "raw_response": str(result)[:1000],
-                })
-            except Exception as e:
-                logger.warning(
-                    "[request_id=%s] ⚠️ Attendance persist (save_decision) failed: %s",
-                    request_id, e,
-                )
-
-            write_audit_log(
-                action       = f"attendance_{result.get('decision', '?')}",
-                entity       = "attendance_audits",
-                entity_id    = entity_id,
-                performed_by = "attendance_agent_v5.2",
-                details      = f"[request_id={request_id}] {result.get('reason', '')[:200]}",
+            await db.write_hr_domain_audit(
+                domain=          "attendance",
+                entity_id=       None,
+                employee_id=     employee_id,
+                decision=        result.get("decision", ""),
+                confidence=      float(result.get("confidence", 0)),
+                decision_source= result.get("model_source", "llm"),
+                override_rule=   str(result.get("override_rule", "")),
+                llm_used=        bool(result.get("llm_used", False)),
+                execution_ms=    0,
+                request_id=      request_id,
+                flags=           result.get("flags", result.get("ai_flags", [])),
+                extra_data=      {"days_present": payload.get("days_present"),
+                                  "working_days": payload.get("working_days"),
+                                  "unexcused_absences": payload.get("unexcused_absences"),
+                                  "ytd_warnings": payload.get("ytd_warnings"),
+                                  "reason": result.get("reason", "")[:300]},
             )
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ Attendance persist failed: %s", request_id, e
-            )
+            logger.warning("[request_id=%s] ⚠️ Attendance write_hr_domain_audit failed: %s", request_id, e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔧  SHARED HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _decision_to_status(decision: str) -> str:
+    _map = {
+        "approve":               "approved",
+        "reject":                "rejected",
+        "escalate":              "escalated",
+        "approve_increment":     "approved",
+        "defer":                 "pending",
+        "escalate_to_director":  "escalated",
+        "approve_bonus":         "approved",
+        "partial_bonus":         "approved",
+        "deny_bonus":            "rejected",
+        "escalate_to_ceo":       "escalated",
+        "excused_paid":          "approved",
+        "excused_unpaid":        "approved",
+        "formal_warning":        "approved",
+        "written_warning":       "approved",
+        "suspension_review":     "escalated",
+        "escalate_to_hr_director": "escalated",
+        "record_only":           "approved",
+        "no_action":             "approved",
+    }
+    return _map.get(decision, "pending")

@@ -1,24 +1,27 @@
 """
-📡 Finance Real-time Events (SSE) — v3.0 Production
-=====================================================
+📡 Finance Real-time Events (SSE) — v4.0 (MongoDB/Motor)
+=========================================================
 File: app/core/finance_realtime.py
 
-v3.0 Changes (over v2.0):
-    ✅ /realtime/dashboard  → alias صريح يُصلح الـ 404
-    ✅ /dashboard           → endpoint مباشر (للـ frontend fallback)
-    ✅ /dashboard/stats     → endpoint للـ frontend fallback
-    ✅ /decisions/history   → 7-day decision history للـ charts
-    ✅ /history             → alias للـ decisions/history
-    ✅ /invoices/overdue    → real overdue invoice list من DB
-    ✅ /invoices            → list invoices مع filter
-    ✅ get_finance_dashboard_stats() → safe fallback لو ناقصة في finance_db
-    ✅ get_cashflow_forecast()       → safe fallback لو ناقصة في finance_db
-    ✅ Thread-safe client management (asyncio.Lock)
-    ✅ Redis Pub/Sub support للـ multi-worker deployments
-    ✅ Graceful fallback للـ in-memory إذا Redis غير متاح
-    ✅ Client heartbeat + auto-cleanup للـ dead connections
-    ✅ Event buffering — أخر 50 event للـ new connections
-    ✅ /metrics/rebuild endpoint لـ force refresh يدوي
+v4.0 Changes (Migration: MySQL → MongoDB):
+    ✅ _safe_get_finance_dashboard_stats() ← FinanceDB.get_finance_dashboard_stats()
+    ✅ _safe_get_cashflow_forecast()       ← FinanceDB.get_cashflow_forecast()
+    ✅ _safe_get_overdue_invoices()        ← FinanceDB.get_overdue_invoices()
+    ✅ _safe_get_decision_history()        ← FinanceDB.decisions aggregate بدل SQL pivot
+    ✅ كل SQL fallback queries اتشالت تماماً
+    ✅ كل import لـ core.db / core.finance_db اتشال تماماً
+    ✅ invoice_id الآن ObjectId string — serialized بـ default=str
+
+v3.0 Features (unchanged):
+    ✅ /realtime/dashboard + /dashboard + /dashboard/stats
+    ✅ /decisions/history + /history alias
+    ✅ /invoices/overdue + /invoices
+    ✅ Thread-safe SSE client management (asyncio.Lock)
+    ✅ Redis Pub/Sub support للـ multi-worker
+    ✅ Graceful fallback لـ in-memory إذا Redis غير متاح
+    ✅ Client heartbeat + auto-cleanup
+    ✅ Event buffering (آخر 50 event للـ new connections)
+    ✅ /metrics/rebuild endpoint
 """
 
 from __future__ import annotations
@@ -28,8 +31,8 @@ import json
 import logging
 import time
 from collections import deque
-from datetime import datetime, timedelta
-from typing import AsyncGenerator, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator, Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -38,218 +41,228 @@ logger = logging.getLogger(__name__)
 
 finance_realtime_router = APIRouter()
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔌  DB helper
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_db():
+    """Return shared FinanceDB instance (Motor async)."""
+    from core.mongo_connect import get_finance_db
+    return get_finance_db()
+
+
 # ── Client Management (Thread-safe) ──────────────────────────────────────────
 
-_clients_lock: asyncio.Lock = asyncio.Lock()
-_clients: set[asyncio.Queue] = set()
-
-# أخر 50 event للـ new connections (replay buffer)
-_event_buffer: deque = deque(maxlen=50)
+_clients_lock: asyncio.Lock  = asyncio.Lock()
+_clients:      set[asyncio.Queue] = set()
+_event_buffer: deque          = deque(maxlen=50)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔧  Safe DB helpers — تتعامل مع الحالة اللي finance_db مش عندها الـ functions
+# 🔧  Safe async DB helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _safe_get_finance_dashboard_stats() -> dict:
+async def _safe_get_finance_dashboard_stats() -> dict:
     """
-    يحاول يجيب stats من finance_db.
-    لو الـ function مش موجودة → يرجع بيانات فاضية بدل 500 error.
+    يجيب stats من FinanceDB.get_finance_dashboard_stats() (Motor async).
+    بدل SQL GROUP BY queries في core.finance_db.
     """
     try:
-        from core.finance_db import get_finance_dashboard_stats
-        return get_finance_dashboard_stats()
-    except ImportError:
-        pass
-    except AttributeError:
-        pass
+        db = _get_db()
+        return await db.get_finance_dashboard_stats()
     except Exception as e:
         logger.warning("⚠️ get_finance_dashboard_stats() failed: %s", e)
 
-    # ── Fallback: اجمع البيانات يدوياً من الـ DB ─────────────────────────────
-    try:
-        from core.finance_db import get_db as _get_fin_db  # type: ignore
-        with _get_fin_db() as (_, cur):
-            # Invoice counts
-            cur.execute("""
-                SELECT
-                    COUNT(*)                                                    AS total_invoices,
-                    SUM(CASE WHEN status = 'overdue' THEN 1 ELSE 0 END)        AS overdue_invoices,
-                    SUM(CASE WHEN status = 'overdue' THEN amount ELSE 0 END)   AS outstanding_egp,
-                    SUM(CASE WHEN status = 'paid'    THEN amount ELSE 0 END)   AS collected_egp
-                FROM invoices
-            """)
-            row = cur.fetchone() or {}
-
-            # Decision breakdown (last 30 days)
-            cur.execute("""
-                SELECT ai_decision AS decision, COUNT(*) AS count
-                FROM invoices
-                WHERE ai_decision IS NOT NULL
-                  AND updated_at >= NOW() - INTERVAL 30 DAY
-                GROUP BY ai_decision
-                ORDER BY count DESC
-            """)
-            decisions_30d = [dict(r) for r in (cur.fetchall() or [])]
-
-            # Action counts (last 7 days)
-            cur.execute("""
-                SELECT action_type AS action, COUNT(*) AS count
-                FROM collection_action_log
-                WHERE created_at >= NOW() - INTERVAL 7 DAY
-                GROUP BY action_type
-                ORDER BY count DESC
-            """)
-            actions_7d = [dict(r) for r in (cur.fetchall() or [])]
-
-            return {
-                "invoices": {
-                    "total":       int(row.get("total_invoices") or 0),
-                    "overdue":     int(row.get("overdue_invoices") or 0),
-                    "outstanding": float(row.get("outstanding_egp") or 0),
-                    "collected":   float(row.get("collected_egp") or 0),
-                },
-                "decisions_30d": decisions_30d,
-                "actions_7d":    actions_7d,
-            }
-    except Exception as e:
-        logger.warning("⚠️ manual DB stats fallback failed: %s", e)
-
-    # ── Empty safe default ────────────────────────────────────────────────────
+    # Safe empty default
     return {
-        "invoices":      {"total": 0, "overdue": 0, "outstanding": 0, "collected": 0},
+        "invoices": {
+            "total_invoices":     0,
+            "paid":               0,
+            "overdue":            0,
+            "legal":              0,
+            "suspended":          0,
+            "written_off":        0,
+            "payment_plan":       0,
+            "disputed":           0,
+            "total_amount":       0.0,
+            "collected_amount":   0.0,
+            "outstanding_amount": 0.0,
+        },
+        "risk":          {},
         "decisions_30d": [],
         "actions_7d":    [],
+        "timestamp":     datetime.now(timezone.utc).isoformat(),
     }
 
 
-def _safe_get_cashflow_forecast() -> list:
+async def _safe_get_cashflow_forecast() -> dict:
     """
-    يحاول يجيب cashflow forecast من finance_db.
-    لو مش موجودة → يرجع list فاضية بدل 500 error.
+    يجيب cashflow forecast من FinanceDB.get_cashflow_forecast() (Motor async).
+    بدل SQL GROUP BY DATE(due_date).
     """
     try:
-        from core.finance_db import get_cashflow_forecast
-        return get_cashflow_forecast()
-    except (ImportError, AttributeError):
-        pass
+        db = _get_db()
+        return await db.get_cashflow_forecast()
     except Exception as e:
         logger.warning("⚠️ get_cashflow_forecast() failed: %s", e)
 
-    # ── Build simple 7-day forecast from DB ──────────────────────────────────
+    return {
+        "due_7_days":         0.0,
+        "due_30_days":        0.0,
+        "overdue_total":      0.0,
+        "high_risk_overdue":  0.0,
+        "payment_plan_total": 0.0,
+    }
+
+
+async def _safe_get_overdue_invoices(
+    limit:  int = 50,
+    status: Optional[str] = None,
+) -> list:
+    """
+    يجيب invoices من FinanceDB.get_overdue_invoices() أو get_pending_invoices().
+    بدل SQL fallback في core.db.
+
+    لو status محدد وغير overdue → بنفلتر من invoices collection مباشرةً.
+    """
     try:
-        from core.finance_db import get_db as _get_fin_db  # type: ignore
-        with _get_fin_db() as (_, cur):
-            cur.execute("""
-                SELECT
-                    DATE(due_date)          AS day,
-                    SUM(amount)             AS expected,
-                    SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS received
-                FROM invoices
-                WHERE due_date BETWEEN NOW() AND NOW() + INTERVAL 7 DAY
-                GROUP BY DATE(due_date)
-                ORDER BY day
-            """)
-            return [dict(r) for r in (cur.fetchall() or [])]
+        db = _get_db()
+
+        if status and status != "overdue":
+            # فلترة حسب status محدد
+            cursor = db.invoices.find(
+                {"status": status},
+                limit=limit,
+            ).sort("due_date", 1)
+            docs = await cursor.to_list(limit)
+            # serialize ObjectId
+            return [_serialize_doc(d) for d in docs]
+
+        # Default: overdue invoices (بتيجي مع overdue_days_calc)
+        invoices = await db.get_overdue_invoices(min_days=1, limit=limit)
+        return [_serialize_doc(d) for d in invoices]
+
     except Exception as e:
-        logger.warning("⚠️ cashflow forecast DB fallback failed: %s", e)
+        logger.warning("⚠️ _safe_get_overdue_invoices() failed: %s", e)
 
     return []
 
 
-def _safe_get_overdue_invoices(limit: int = 50, status: Optional[str] = None) -> list:
-    try:
-        from core.finance_db import get_overdue_invoices
-        return get_overdue_invoices(limit=limit)  # ← limit بقى مدعوم
-    except (ImportError, AttributeError):
-        pass
-    except Exception as e:
-        logger.warning("⚠️ get_overdue_invoices() import failed: %s", e)
-
-    # Fallback: query مباشر من core.db (مش finance_db)
-    try:
-        from core.db import get_db  # ← هنا كانت المشكلة — core.db مش core.finance_db
-        with get_db() as (_, cur):
-            where_clause = "status = 'overdue'"
-            if status and status != "overdue":
-                where_clause = f"status = '{status}'"
-
-            cur.execute(f"""
-                SELECT
-                    id, invoice_number, customer_name, customer_id,
-                    amount, due_date, status, ai_decision, ai_risk_score,
-                    DATEDIFF(NOW(), due_date) AS overdue_days_calc,
-                    payment_history_paid, payment_history_late,
-                    credit_score, industry_risk, updated_at
-                FROM invoices
-                WHERE {where_clause}
-                ORDER BY DATEDIFF(NOW(), due_date) DESC
-                LIMIT %s
-            """, (limit,))
-            return [dict(r) for r in (cur.fetchall() or [])]
-    except Exception as e:
-        logger.warning("⚠️ overdue invoices DB query failed: %s", e)
-
-    return []
-
-
-def _safe_get_decision_history(days: int = 7) -> list:
+async def _safe_get_decision_history(days: int = 7) -> list:
     """
     يجيب decision history آخر N يوم للـ charts.
+
+    MongoDB: بنعمل aggregation على finance_decisions collection.
+    بدل SQL pivot query في core.finance_db.
+
+    يرجع:
+        list of { day, approve, soft, hard, plan, suspend, legal }
     """
     try:
-        from core.finance_db import get_db as _get_fin_db  # type: ignore
-        with _get_fin_db() as (_, cur):
-            cur.execute("""
-                SELECT
-                    DATE(updated_at)    AS day,
-                    ai_decision         AS decision,
-                    COUNT(*)            AS count
-                FROM invoices
-                WHERE ai_decision IS NOT NULL
-                  AND updated_at >= NOW() - INTERVAL %s DAY
-                GROUP BY DATE(updated_at), ai_decision
-                ORDER BY day ASC
-            """, (days,))
-            raw = cur.fetchall() or []
+        db     = _get_db()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
-            # Pivot: day → {decision: count, ...}
-            pivot: dict[str, dict] = {}
-            for r in raw:
-                d   = str(r.get("day") or "")
-                dec = str(r.get("decision") or "unknown")
-                cnt = int(r.get("count") or 0)
-                if d not in pivot:
-                    pivot[d] = {
-                        "day": d,
-                        "approve": 0, "soft": 0, "hard": 0,
-                        "plan": 0, "suspend": 0, "legal": 0,
-                    }
-                mapping = {
-                    "safe_to_collect": "approve", "approve": "approve",
-                    "soft_follow_up":  "soft",
-                    "hard_follow_up":  "hard",
-                    "payment_plan":    "plan",
-                    "suspend_service": "suspend",
-                    "legal_escalation":"legal",
+        pipeline = [
+            {
+                "$match": {
+                    "created_at": {"$gte": cutoff},
+                    "decision":   {"$ne": None},
                 }
-                key = mapping.get(dec, "approve")
-                pivot[d][key] = pivot[d].get(key, 0) + cnt
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "day":      {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
+                        "decision": "$decision",
+                    },
+                    "count": {"$sum": 1},
+                }
+            },
+            {"$sort": {"_id.day": 1}},
+        ]
 
-            return list(pivot.values())
+        raw = await db.decisions.aggregate(pipeline).to_list(None)
+
+        # Pivot: day → {approve, soft, hard, plan, suspend, legal}
+        DECISION_MAP = {
+            "safe_to_collect":  "approve",
+            "approve":          "approve",
+            "invoice_registered": "approve",
+            "soft_follow_up":   "soft",
+            "hard_follow_up":   "hard",
+            "payment_plan":     "plan",
+            "suspend_service":  "suspend",
+            "legal_escalation": "legal",
+            "write_off":        "legal",
+        }
+
+        pivot: dict[str, dict] = {}
+        for r in raw:
+            d   = r["_id"]["day"]
+            dec = r["_id"]["decision"]
+            cnt = int(r["count"])
+            if d not in pivot:
+                pivot[d] = {
+                    "day":     d,
+                    "approve": 0, "soft": 0, "hard": 0,
+                    "plan":    0, "suspend": 0, "legal": 0,
+                }
+            key = DECISION_MAP.get(dec, "approve")
+            pivot[d][key] = pivot[d].get(key, 0) + cnt
+
+        # لو في أيام مفيهاش data → نضيف صفوف فاضية عشان الـ chart يكون متكامل
+        today = datetime.now(timezone.utc).date()
+        for i in range(days):
+            day_str = str(today - timedelta(days=days - 1 - i))
+            if day_str not in pivot:
+                pivot[day_str] = {
+                    "day":     day_str,
+                    "approve": 0, "soft": 0, "hard": 0,
+                    "plan":    0, "suspend": 0, "legal": 0,
+                }
+
+        return sorted(pivot.values(), key=lambda x: x["day"])
+
     except Exception as e:
-        logger.warning("⚠️ decision history query failed: %s", e)
+        logger.warning("⚠️ _safe_get_decision_history() failed: %s", e)
 
-    # ── Empty 7-day skeleton ──────────────────────────────────────────────────
-    today = datetime.utcnow().date()
+    # Empty N-day skeleton
+    today = datetime.now(timezone.utc).date()
     return [
         {
             "day":     str(today - timedelta(days=days - 1 - i)),
             "approve": 0, "soft": 0, "hard": 0,
-            "plan": 0, "suspend": 0, "legal": 0,
+            "plan":    0, "suspend": 0, "legal": 0,
         }
         for i in range(days)
     ]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔧  Shared serializer
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _serialize_doc(doc: dict) -> dict:
+    """Convert ObjectId + datetime → JSON-safe strings (safe for SSE)."""
+    from bson import ObjectId
+    out = {}
+    for k, v in doc.items():
+        if isinstance(v, ObjectId):
+            out[k] = str(v)
+        elif isinstance(v, datetime):
+            out[k] = v.isoformat()
+        elif isinstance(v, dict):
+            out[k] = _serialize_doc(v)
+        elif isinstance(v, list):
+            out[k] = [
+                _serialize_doc(i) if isinstance(i, dict)
+                else (str(i) if isinstance(i, ObjectId) else i)
+                for i in v
+            ]
+        else:
+            out[k] = v
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -324,6 +337,7 @@ async def _sse_generator(
     client_queue: asyncio.Queue,
 ) -> AsyncGenerator[str, None]:
     try:
+        # Replay آخر 10 events للـ client الجديد
         for buffered in list(_event_buffer)[-10:]:
             event = buffered["event"]
             data  = json.dumps(buffered["data"], default=str)
@@ -352,21 +366,32 @@ async def _sse_generator(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔗  Shared dashboard builder
+# 🔗  Shared dashboard builder (async)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_dashboard_response() -> dict:
+async def _build_dashboard_response() -> dict:
     """
-    يبني الـ dashboard response object مرة واحدة وبيتاستخدم في أكتر من endpoint.
+    يبني الـ dashboard response — async عشان FinanceDB methods كلها async.
     """
-    stats    = _safe_get_finance_dashboard_stats()
-    cashflow = _safe_get_cashflow_forecast()
+    stats, cashflow = await asyncio.gather(
+        _safe_get_finance_dashboard_stats(),
+        _safe_get_cashflow_forecast(),
+        return_exceptions=True,
+    )
+    # لو gather رجع exception → نستخدم empty dict
+    if isinstance(stats, Exception):
+        logger.warning("dashboard stats failed: %s", stats)
+        stats = {}
+    if isinstance(cashflow, Exception):
+        logger.warning("cashflow forecast failed: %s", cashflow)
+        cashflow = {}
+
     return {
         "status":    "ok",
         "stats":     stats,
         "cashflow":  cashflow,
         "clients":   len(_clients),
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
     }
 
 
@@ -396,7 +421,7 @@ async def finance_live_events(request: Request):
         "data":  json.dumps({
             "status":  "ok",
             "clients": len(_clients),
-            "message": "Connected to Finance real-time stream",
+            "message": "Connected to Finance real-time stream (MongoDB v4.0)",
         }),
     })
 
@@ -406,70 +431,55 @@ async def finance_live_events(request: Request):
         _sse_generator(request, client_queue),
         media_type="text/event-stream",
         headers={
-            "Cache-Control":             "no-cache",
-            "Connection":                "keep-alive",
-            "X-Accel-Buffering":         "no",
+            "Cache-Control":               "no-cache",
+            "Connection":                  "keep-alive",
+            "X-Accel-Buffering":           "no",
             "Access-Control-Allow-Origin": "*",
         },
     )
 
 
-# ── Dashboard endpoints (3 routes → same handler) ────────────────────────────
+# ── Dashboard endpoints ───────────────────────────────────────────────────────
 
 @finance_realtime_router.get("/realtime/dashboard", tags=["📡 Finance - Live"])
 async def get_realtime_dashboard():
     """
-    ✅ /finance/realtime/dashboard — كان بييجي 404، اتصلح في v3.0.
-
-    Frontend كان بيطلبه كـ:
-        GET /finance/realtime/dashboard
-    الـ router بيضيف prefix /finance تلقائياً، يعني الـ path هنا = /realtime/dashboard
+    /finance/realtime/dashboard — MongoDB async version.
     """
     try:
-        return _build_dashboard_response()
+        return await _build_dashboard_response()
     except Exception as e:
         logger.error("realtime/dashboard failed: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 @finance_realtime_router.get("/dashboard", tags=["📡 Finance - Live"])
 async def get_dashboard_data():
     """
-    ✅ /finance/dashboard — frontend fallback.
-    نفس البيانات زي /finance/realtime/dashboard.
+    /finance/dashboard — frontend fallback.
     """
     try:
-        return _build_dashboard_response()
+        return await _build_dashboard_response()
     except Exception as e:
         logger.error("dashboard failed: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 @finance_realtime_router.get("/dashboard/stats", tags=["📡 Finance - Live"])
 async def get_dashboard_stats():
     """
-    ✅ /finance/dashboard/stats — كان بييجي 404، اتصلح في v3.0.
-    يرجع stats فقط (بدون cashflow) للـ chart data في الـ frontend.
+    /finance/dashboard/stats — stats فقط بدون cashflow.
     """
     try:
-        stats = _safe_get_finance_dashboard_stats()
+        stats = await _safe_get_finance_dashboard_stats()
         return {
             "status":    "ok",
             "stats":     stats,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
         }
     except Exception as e:
         logger.error("dashboard/stats failed: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 # ── Decision History endpoints ────────────────────────────────────────────────
@@ -477,34 +487,32 @@ async def get_dashboard_stats():
 @finance_realtime_router.get("/decisions/history", tags=["📡 Finance - Live"])
 async def get_decisions_history(days: int = Query(default=7, ge=1, le=90)):
     """
-    ✅ /finance/decisions/history?days=7 — كان بييجي 404، اتصلح في v3.0.
+    /finance/decisions/history?days=7
 
     يرجع:
         history: list of { day, approve, soft, hard, plan, suspend, legal }
     للـ bar chart في الـ frontend.
+
+    MongoDB: aggregation على finance_decisions بدل SQL pivot.
     """
     try:
-        history = _safe_get_decision_history(days=days)
+        history = await _safe_get_decision_history(days=days)
         return {
             "status":    "ok",
             "days":      days,
             "count":     len(history),
             "history":   history,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
         }
     except Exception as e:
         logger.error("decisions/history failed: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 @finance_realtime_router.get("/history", tags=["📡 Finance - Live"])
 async def get_history_alias(days: int = Query(default=7, ge=1, le=90)):
     """
-    ✅ /finance/history — alias لـ /finance/decisions/history.
-    Frontend بيجرب الـ endpoint ده كـ fallback.
+    /finance/history — alias لـ /finance/decisions/history.
     """
     return await get_decisions_history(days=days)
 
@@ -514,23 +522,19 @@ async def get_history_alias(days: int = Query(default=7, ge=1, le=90)):
 @finance_realtime_router.get("/invoices/overdue", tags=["📡 Finance - Live"])
 async def get_overdue_invoices_endpoint(limit: int = Query(default=50, ge=1, le=500)):
     """
-    ✅ /finance/invoices/overdue — يجيب الـ overdue invoices من الـ DB.
-    الـ frontend بيناديه في fetchLiveInvoices().
+    /finance/invoices/overdue — يجيب overdue invoices من MongoDB.
     """
     try:
-        invoices = _safe_get_overdue_invoices(limit=limit)
+        invoices = await _safe_get_overdue_invoices(limit=limit)
         return {
             "status":    "ok",
             "count":     len(invoices),
             "invoices":  invoices,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
         }
     except Exception as e:
         logger.error("invoices/overdue failed: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 @finance_realtime_router.get("/invoices", tags=["📡 Finance - Live"])
@@ -539,23 +543,19 @@ async def get_invoices_endpoint(
     limit:  int           = Query(default=50, ge=1, le=500),
 ):
     """
-    ✅ /finance/invoices?status=overdue&limit=50 — يجيب invoices مع filter.
-    الـ frontend بيناديه كـ fallback لـ /finance/invoices/overdue.
+    /finance/invoices?status=overdue&limit=50 — invoices مع filter.
     """
     try:
-        invoices = _safe_get_overdue_invoices(limit=limit, status=status)
+        invoices = await _safe_get_overdue_invoices(limit=limit, status=status)
         return {
             "status":    "ok",
             "count":     len(invoices),
             "invoices":  invoices,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
         }
     except Exception as e:
         logger.error("invoices failed: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 # ── Metrics Rebuild ───────────────────────────────────────────────────────────
@@ -563,7 +563,7 @@ async def get_invoices_endpoint(
 @finance_realtime_router.post("/metrics/rebuild", tags=["📡 Finance - Live"])
 async def force_metrics_rebuild():
     """
-    Force immediate metrics snapshot rebuild + WS broadcast.
+    Force immediate metrics snapshot rebuild + broadcast.
     POST /finance/metrics/rebuild
     """
     try:
@@ -587,10 +587,7 @@ async def force_metrics_rebuild():
         }
     except Exception as e:
         logger.error("force_metrics_rebuild failed: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -602,5 +599,6 @@ async def realtime_status():
         "sse_clients": len(_clients),
         "buffer_size": len(_event_buffer),
         "status":      "ok",
-        "timestamp":   datetime.utcnow().isoformat() + "Z",
+        "db_engine":   "mongodb_motor",
+        "timestamp":   datetime.now(timezone.utc).isoformat() + "Z",
     }
