@@ -1093,6 +1093,165 @@ function WarehouseInventoryModal({ isOpen, warehouse, products = [], onClose }) 
   );
 }
 
+function ReplenishmentNeedsModal({ isOpen, products = [], onClose }) {
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const fn = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", fn);
+    return () => document.removeEventListener("keydown", fn);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      className={s.modalOverlay}
+      ref={overlayRef}
+      onClick={(e) => {
+        if (e.target === overlayRef.current) onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className={s.modal} style={{ maxWidth: "960px" }}>
+        <div className={s.modalHeader}>
+          <div className={s.modalTitleRow}>
+            <div className={s.modalTitleIcon} aria-hidden="true">
+              <AlertTriangle className={s.modalTitleIconSvg} />
+            </div>
+
+            <div>
+              <h2 className={s.modalTitle}>Replenishment Needs</h2>
+              <p className={s.modalSub}>
+                Products with low units, critical status, or out of stock.
+              </p>
+            </div>
+          </div>
+
+          <button
+            className={s.modalClose}
+            onClick={onClose}
+            aria-label="Close replenishment needs modal"
+            title="Close"
+          >
+            <X aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className={s.modalBody}>
+          {products.length === 0 ? (
+            <div className={s.emptyState}>
+              <FolderOpen className={s.emptyIcon} aria-hidden="true" />
+              <p className={s.emptyTitle}>No replenishment needed</p>
+              <p className={s.emptySub}>
+                All products are currently above their low-stock thresholds.
+              </p>
+            </div>
+          ) : (
+            <div className={s.tableWrap}>
+              <table className={s.table} aria-label="Replenishment products">
+                <thead>
+                  <tr>
+                    <th className={s.th}>Product Name</th>
+                    <th className={s.th}>SKU</th>
+                    <th className={s.th}>Location</th>
+                    <th className={`${s.th} ${s.thCenter}`}>Units</th>
+                    <th className={`${s.th} ${s.thCenter}`}>Threshold</th>
+                    <th className={s.th}>Status</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {products.map((product) => {
+                    const sm = getStatusMeta(product.status);
+
+                    return (
+                      <tr
+                        key={product._id || product.id}
+                        className={s.tableRow}
+                      >
+                        <td className={s.td}>
+                          <div className={s.productCell}>
+                            <div
+                              className={s.productIconWrap}
+                              aria-hidden="true"
+                            >
+                              <Package className={s.productIconSvg} />
+                            </div>
+
+                            <div>
+                              <p className={s.productName}>{product.name}</p>
+                              <p className={s.productCategory}>
+                                {product.category}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className={s.td}>
+                          <span className={s.skuBadge}>{product.sku}</span>
+                        </td>
+
+                        <td className={s.td}>
+                          <span className={s.locationText}>
+                            {product.location}
+                          </span>
+                        </td>
+
+                        <td className={`${s.td} ${s.tdCenter}`}>
+                          <span className={s.numberText}>
+                            {Number(product.units || 0).toLocaleString()}
+                          </span>
+                        </td>
+
+                        <td className={`${s.td} ${s.tdCenter}`}>
+                          <span className={s.numberText}>
+                            {Number(product.threshold || 0).toLocaleString()}
+                          </span>
+                        </td>
+
+                        <td className={s.td}>
+                          <span
+                            className={s.statusBadge}
+                            style={{
+                              background: sm.bg,
+                              color: sm.color,
+                            }}
+                          >
+                            {product.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className={s.modalFooter}>
+          <p className={s.modalFooterNote}>
+            Total products needing replenishment: {products.length}
+          </p>
+
+          <div className={s.modalFooterActions}>
+            <button className={s.btnGhost} onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const StatCard = memo(({ stat, loading, delay=0 }) => {
   const anim = useAnimateIn(delay);
   const changeColor = stat?.changeType==="up" ? "#2F9E44" : "#C92A2A";
@@ -1165,7 +1324,7 @@ function ProductRow({ product, delay = 0, onSelect = () => {} }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ── SIDE PANELS
 // ─────────────────────────────────────────────────────────────────────────────
-const CriticalAlertsPanel = memo(({ loading, alerts = [] }) => {
+const CriticalAlertsPanel = memo(({ loading, alerts = [], onViewAll = () => {} }) => {
   const anim = useAnimateIn(200);
   const [pulse, setPulse] = useState(true);
   useEffect(() => { const id = setInterval(() => setPulse((p) => !p), 1100); return () => clearInterval(id); }, []);
@@ -1221,7 +1380,13 @@ const CriticalAlertsPanel = memo(({ loading, alerts = [] }) => {
           ))}
         </div>
       )}
-      <button className={s.sideCardLink}>View all replenishment needs</button>
+      <button
+        className={s.sideCardLink}
+        onClick={onViewAll}
+        disabled={loading}
+      >
+        View all replenishment needs
+      </button>
     </div>
   );
 });
@@ -1381,6 +1546,7 @@ export default function InventoryPage() {
   const [showAddProduct,  setShowAddProduct]  = useState(false);   // Add modal
   const [selectedWarehouse, setSelectedWarehouse] = useState(null);
   const [showWarehouseInventory, setShowWarehouseInventory] = useState(false);
+  const [showReplenishmentNeeds, setShowReplenishmentNeeds] = useState(false);
   const [submitting,      setSubmitting]      = useState(false);
   const [importingCsv,    setImportingCsv]    = useState(false);
   const [rowMenu,         setRowMenu]         = useState({ open:false, product:null, top:0, left:0 });
@@ -1599,7 +1765,7 @@ export default function InventoryPage() {
     };
   }, [rowMenu.open]);
 
-  const criticalAlerts = useMemo(() => {
+  const replenishmentProducts = useMemo(() => {
     return products
       .filter((product) => {
         const units = Number(product.units || 0);
@@ -1621,9 +1787,12 @@ export default function InventoryPage() {
         if (unitsA !== unitsB) return unitsA - unitsB;
 
         return Number(a.stockPct || 0) - Number(b.stockPct || 0);
-      })
-      .slice(0, 5);
+      });
   }, [products]);
+
+  const criticalAlerts = useMemo(() => {
+    return replenishmentProducts.slice(0, 5);
+  }, [replenishmentProducts]);
 
   const warehouseSummary = useMemo(() => {
     const grouped = products.reduce((acc, product) => {
@@ -1949,7 +2118,11 @@ export default function InventoryPage() {
 
               {/* Right sidebar */}
               <aside className={s.rightSidebar}>
-                <CriticalAlertsPanel loading={loading} alerts={criticalAlerts} />
+                <CriticalAlertsPanel
+                  loading={loading}
+                  alerts={criticalAlerts}
+                  onViewAll={() => setShowReplenishmentNeeds(true)}
+                />
                 <WarehouseMapPanel
                   loading={loading}
                   warehouses={warehouseSummary}
@@ -2013,6 +2186,12 @@ export default function InventoryPage() {
           setShowWarehouseInventory(false);
           setSelectedWarehouse(null);
         }}
+      />
+
+      <ReplenishmentNeedsModal
+        isOpen={showReplenishmentNeeds}
+        products={replenishmentProducts}
+        onClose={() => setShowReplenishmentNeeds(false)}
       />
     </>
   );

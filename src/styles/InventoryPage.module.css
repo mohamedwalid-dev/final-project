@@ -436,6 +436,10 @@
   border-bottom: 1.5px solid #F1F3F5;
 }
 
+.thCenter {
+  text-align: center;
+}
+
 .tableRow {
   border-bottom: 1px solid #F8F9FA;
   transition: background 0.15s;
@@ -448,6 +452,16 @@
 .td {
   padding: 14px 14px;
   vertical-align: middle;
+}
+
+.tdCenter {
+  text-align: center;
+}
+
+.tdCenter .numberText {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
 }
 
 /* ── Product Cell ── */
