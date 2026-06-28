@@ -7,8 +7,7 @@
 // Customers & Orders table
 // Same Sidebar + Header structure as all other pages
 
-import { useState, useRef, useCallback, useMemo, useEffect, memo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend,
@@ -17,6 +16,7 @@ import Sidebar from "../components/Finance/Layout/Sidebar";
 import Header from "../components/Finance/Layout/Header";
 import s from "../styles/SalesPage.module.css";
 import shell from "../styles/AppShell.module.css";
+import leadService from "../utils/leadService";
 import {
   ChartNoAxesCombined,
   CheckCircle2,
@@ -43,6 +43,7 @@ import {
   UserRoundPlus,
   Users,
   Wrench,
+  X,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,6 +121,94 @@ const INITIAL_PRODUCTS = [
 
 const PRODUCT_CATEGORIES = ["All", "Software", "Hardware", "Cloud", "Services"];
 
+const EMPTY_NEW_LEAD = {
+  clientName: "",
+  email: "",
+  address: "",
+  dealValue: "",
+  priority: "Medium",
+  stage: "New",
+  status: "Open",
+  phone: "",
+};
+
+const LEAD_PRIORITY_OPTIONS = ["Low", "Medium", "High"];
+const LEAD_STAGE_OPTIONS = ["New", "Contacted", "Proposal", "Negotiation", "Closed"];
+const LEAD_STATUS_OPTIONS = ["Open", "Won", "Lost"];
+
+const PIPELINE_STAGE_TO_FORM_STAGE = {
+  prospecting: "New",
+  qualification: "Contacted",
+  proposal: "Proposal",
+  negotiation: "Negotiation",
+  closed_won: "Closed",
+};
+
+const FORM_STAGE_TO_PIPELINE_STAGE = {
+  New: "prospecting",
+  Contacted: "qualification",
+  Proposal: "proposal",
+  Negotiation: "negotiation",
+  Closed: "closed_won",
+};
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^\+?[0-9()\-\s]{7,20}$/;
+
+const mapPipelineStage = (stage, status) => {
+  const normalizedStage = String(stage || "").trim();
+
+  if (status === "Won" || normalizedStage === "Closed Won" || normalizedStage === "Closed") {
+    return "closed_won";
+  }
+
+  if (status === "Lost" || normalizedStage === "Closed Lost") {
+    return "negotiation";
+  }
+
+  const stageMap = {
+    New: "prospecting",
+    Contacted: "qualification",
+    Proposal: "proposal",
+    Negotiation: "negotiation",
+  };
+
+  return stageMap[normalizedStage] || "prospecting";
+};
+
+const mapLeadToPipeline = (lead) => {
+  const name = lead?.clientName || lead?.companyName || "Untitled lead";
+  const amount = Number(lead?.dealValue ?? 0);
+
+  return {
+    id: lead?._id || lead?.id,
+    company: name,
+    amount,
+    priority: String(lead?.priority || "Medium").toUpperCase(),
+    days: Math.max(0, Math.ceil((Date.now() - new Date(lead?.createdAt || Date.now()).getTime()) / (1000 * 60 * 60 * 24))),
+    stage: mapPipelineStage(lead?.stage, lead?.status),
+    assignee: initialsFromName(name),
+    assigneeColor: "#3B5BDB",
+    email: lead?.email || "",
+    address: lead?.address || "",
+    status: lead?.status || "Open",
+    phone: lead?.phone || "",
+    rawLead: lead,
+  };
+};
+
+const buildLeadPayload = (lead) => ({
+  clientName: lead.clientName,
+  companyName: lead.clientName,
+  email: lead.email,
+  address: lead.address,
+  phone: lead.phone,
+  dealValue: lead.dealValue,
+  priority: lead.priority,
+  stage: lead.stage,
+  status: lead.status,
+});
+
 // ── Customers Mock ────────────────────────────────────────────────────────────
 const CUSTOMERS = [
   { id: "c1", company: "Acme Dynamics",    contact: "John Porter",    email: "john@acme.com",    totalOrders: 14, totalSpend: 124500, lastOrder: "Oct 15, 2024", status: "VIP",    avatar: "AD", color: "#3B5BDB" },
@@ -142,10 +231,302 @@ const fmt = (n) =>
 const fmtFull = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "EGP", maximumFractionDigits: 0 }).format(n);
 
+const initialsFromName = (name) => {
+  const initials = name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+
+  return initials || "NL";
+};
+
+function NewLeadModal({ initialValues = EMPTY_NEW_LEAD, onClose, onSubmit }) {
+  const [form, setForm] = useState(() => ({ ...EMPTY_NEW_LEAD, ...initialValues }));
+  const [errors, setErrors] = useState({});
+  const firstInputRef = useRef(null);
+
+  useEffect(() => {
+    firstInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const updateField = (field) => (e) => {
+    setForm((prev) => ({ ...prev, [field]: e.target.value }));
+    setErrors((prev) => (prev[field] ? { ...prev, [field]: "" } : prev));
+  };
+
+  const validate = () => {
+    const nextErrors = {};
+    const email = form.email.trim();
+    const phone = form.phone.trim();
+    const parsedDealValue = Number(form.dealValue);
+
+    if (!form.clientName.trim()) {
+      nextErrors.clientName = "Client name is required.";
+    }
+
+    if (!email) {
+      nextErrors.email = "Email is required.";
+    } else if (!EMAIL_RE.test(email)) {
+      nextErrors.email = "Enter a valid email address.";
+    }
+
+    if (form.dealValue !== "" && (!Number.isFinite(parsedDealValue) || parsedDealValue < 0)) {
+      nextErrors.dealValue = "Enter a valid deal value.";
+    }
+
+    if (phone && !PHONE_RE.test(phone)) {
+      nextErrors.phone = "Enter a valid phone number.";
+    }
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!validate()) return;
+
+    const newLead = {
+      id: `lead-${Date.now()}`,
+      clientName: form.clientName.trim(),
+      email: form.email.trim(),
+      address: form.address.trim(),
+      dealValue: form.dealValue === "" ? 0 : Number(form.dealValue),
+      priority: form.priority,
+      stage: form.stage,
+      status: form.status,
+      phone: form.phone.trim(),
+    };
+
+    onSubmit(newLead);
+    onClose();
+  };
+
+  const formattedDealValue =
+    form.dealValue !== "" && Number.isFinite(Number(form.dealValue))
+      ? fmtFull(Number(form.dealValue))
+      : "";
+
+  return (
+    <div className={s.modalOverlay} role="presentation" onMouseDown={onClose}>
+      <section
+        className={s.leadModal}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-lead-title"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className={s.modalHeader}>
+          <div>
+            <h2 id="new-lead-title" className={s.modalTitle}>New Lead</h2>
+            <p className={s.modalSub}>Create a new sales opportunity.</p>
+          </div>
+          <button
+            type="button"
+            className={s.modalCloseButton}
+            onClick={onClose}
+            aria-label="Close new lead form"
+          >
+            <X aria-hidden="true" />
+          </button>
+        </div>
+
+        <form className={s.leadForm} onSubmit={handleSubmit} noValidate>
+          <div className={s.leadFormGrid}>
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="lead-client-name">
+                Client Name *
+              </label>
+              <input
+                id="lead-client-name"
+                ref={firstInputRef}
+                className={s.addLeadInput}
+                type="text"
+                value={form.clientName}
+                onChange={updateField("clientName")}
+                required
+                aria-invalid={Boolean(errors.clientName)}
+                aria-describedby={errors.clientName ? "lead-client-name-error" : undefined}
+                placeholder="e.g. Acme Dynamics"
+              />
+              {errors.clientName && (
+                <span id="lead-client-name-error" className={s.fieldError} role="alert">
+                  {errors.clientName}
+                </span>
+              )}
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="lead-email">
+                Email *
+              </label>
+              <input
+                id="lead-email"
+                className={s.addLeadInput}
+                type="email"
+                value={form.email}
+                onChange={updateField("email")}
+                required
+                aria-invalid={Boolean(errors.email)}
+                aria-describedby={errors.email ? "lead-email-error" : undefined}
+                placeholder="name@company.com"
+              />
+              {errors.email && (
+                <span id="lead-email-error" className={s.fieldError} role="alert">
+                  {errors.email}
+                </span>
+              )}
+            </div>
+
+            <div className={`${s.addLeadField} ${s.fieldFull}`}>
+              <label className={s.addLeadLabel} htmlFor="lead-address">
+                Address
+              </label>
+              <input
+                id="lead-address"
+                className={s.addLeadInput}
+                type="text"
+                value={form.address}
+                onChange={updateField("address")}
+                placeholder="Street, city, country"
+              />
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="lead-deal-value">
+                Deal Value
+              </label>
+              <input
+                id="lead-deal-value"
+                className={s.addLeadInput}
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={form.dealValue}
+                onChange={updateField("dealValue")}
+                aria-invalid={Boolean(errors.dealValue)}
+                aria-describedby={
+                  errors.dealValue
+                    ? "lead-deal-value-error"
+                    : formattedDealValue
+                      ? "lead-deal-value-hint"
+                      : undefined
+                }
+                placeholder="25000"
+              />
+              {formattedDealValue && (
+                <span id="lead-deal-value-hint" className={s.fieldHint}>
+                  {formattedDealValue}
+                </span>
+              )}
+              {errors.dealValue && (
+                <span id="lead-deal-value-error" className={s.fieldError} role="alert">
+                  {errors.dealValue}
+                </span>
+              )}
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="lead-priority">
+                Priority
+              </label>
+              <select
+                id="lead-priority"
+                className={s.addLeadInput}
+                value={form.priority}
+                onChange={updateField("priority")}
+              >
+                {LEAD_PRIORITY_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="lead-stage">
+                Stage
+              </label>
+              <select
+                id="lead-stage"
+                className={s.addLeadInput}
+                value={form.stage}
+                onChange={updateField("stage")}
+              >
+                {LEAD_STAGE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="lead-status">
+                Status
+              </label>
+              <select
+                id="lead-status"
+                className={s.addLeadInput}
+                value={form.status}
+                onChange={updateField("status")}
+              >
+                {LEAD_STATUS_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className={`${s.addLeadField} ${s.fieldFull}`}>
+              <label className={s.addLeadLabel} htmlFor="lead-phone">
+                Phone Number
+              </label>
+              <input
+                id="lead-phone"
+                className={s.addLeadInput}
+                type="tel"
+                value={form.phone}
+                onChange={updateField("phone")}
+                aria-invalid={Boolean(errors.phone)}
+                aria-describedby={errors.phone ? "lead-phone-error" : undefined}
+                placeholder="+20 100 123 4567"
+              />
+              {errors.phone && (
+                <span id="lead-phone-error" className={s.fieldError} role="alert">
+                  {errors.phone}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className={s.modalActions}>
+            <button type="button" className={s.btnGhost} onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className={s.btnPrimary}>
+              Create Lead
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ── SHARED: Stat Card
 // ─────────────────────────────────────────────────────────────────────────────
-function SalesStatCard({ icon: Icon, label, value, change, changeType, featured = false }) {
+function SalesStatCard({ icon, label, value, change, changeType, featured = false }) {
+  const Icon = icon;
   const changeClass = changeType === "up" ? s.chUp : changeType === "down" ? s.chDown : s.chNeutral;
   return (
     <div className={s.salesStatCard}>
@@ -168,7 +549,7 @@ function SalesStatCard({ icon: Icon, label, value, change, changeType, featured 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── TAB 1: LEAD PIPELINE (KANBAN)
 // ─────────────────────────────────────────────────────────────────────────────
-function LeadCard({ lead, onDragStart, onStageChange }) {
+function LeadCard({ lead, onDragStart, onStageChange, onDeleteLead }) {
   const pm = PRIORITY_META[lead.priority];
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef(null);
@@ -217,7 +598,13 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
                 </button>
               ))}
               <hr className={s.leadDropDivider} />
-              <button className={`${s.leadDropItem} ${s.leadDropDanger}`}>
+              <button
+                className={`${s.leadDropItem} ${s.leadDropDanger}`}
+                onClick={() => {
+                  onDeleteLead?.(lead.id);
+                  setShowMenu(false);
+                }}
+              >
                 <Trash2 aria-hidden="true" />
                 Delete Lead
               </button>
@@ -250,11 +637,8 @@ function LeadCard({ lead, onDragStart, onStageChange }) {
   );
 }
 
-function PipelineTab() {
-  const [leads, setLeads] = useState(INITIAL_LEADS);
+function PipelineTab({ leads, setLeads, onOpenNewLead, onUpdateLeadStage, onDeleteLead }) {
   const [draggingId, setDraggingId] = useState(null);
-  const [showAddLead, setShowAddLead] = useState(false);
-  const [newLead, setNewLead] = useState({ company: "", amount: "", priority: "MEDIUM", stage: "prospecting" });
 
   const handleDragStart = useCallback((e, id) => {
     setDraggingId(id);
@@ -264,32 +648,18 @@ function PipelineTab() {
   const handleDrop = useCallback((e, stageId) => {
     e.preventDefault();
     if (!draggingId) return;
+
     setLeads((prev) =>
       prev.map((l) => (l.id === draggingId ? { ...l, stage: stageId } : l))
     );
+    onUpdateLeadStage?.(draggingId, stageId);
     setDraggingId(null);
-  }, [draggingId]);
+  }, [draggingId, onUpdateLeadStage, setLeads]);
 
   const handleStageChange = useCallback((leadId, newStage) => {
     setLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, stage: newStage } : l)));
-  }, []);
-
-  const handleAddLead = () => {
-    if (!newLead.company.trim() || !newLead.amount) return;
-    const id = `l${Date.now()}`;
-    setLeads((prev) => [...prev, {
-      id,
-      company: newLead.company.trim(),
-      amount: parseFloat(newLead.amount) || 0,
-      priority: newLead.priority,
-      stage: newLead.stage,
-      days: 0,
-      assignee: "AS",
-      assigneeColor: "#3B5BDB",
-    }]);
-    setNewLead({ company: "", amount: "", priority: "MEDIUM", stage: "prospecting" });
-    setShowAddLead(false);
-  };
+    onUpdateLeadStage?.(leadId, newStage);
+  }, [onUpdateLeadStage, setLeads]);
 
   // Stats
   const totalPipeline = leads.reduce((a, l) => a + l.amount, 0);
@@ -312,63 +682,7 @@ function PipelineTab() {
           <h2 className={s.pipelineTitle}>Lead Pipeline</h2>
           <p className={s.pipelineSub}>Drag cards between stages to update status.</p>
         </div>
-        <button className={s.btnPrimary} onClick={() => setShowAddLead(true)}>+ New Lead</button>
       </div>
-
-      {/* Add Lead Form */}
-      {showAddLead && (
-        <div className={s.addLeadForm}>
-          <div className={s.addLeadGrid}>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Company Name *</label>
-              <input
-                className={s.addLeadInput}
-                value={newLead.company}
-                onChange={(e) => setNewLead((p) => ({ ...p, company: e.target.value }))}
-                placeholder="e.g. Acme Corp"
-              />
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Deal Value (EGP)</label>
-              <input
-                type="number"
-                className={s.addLeadInput}
-                value={newLead.amount}
-                onChange={(e) => setNewLead((p) => ({ ...p, amount: e.target.value }))}
-                placeholder="e.g. 25000"
-              />
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Priority</label>
-              <select
-                className={s.addLeadInput}
-                value={newLead.priority}
-                onChange={(e) => setNewLead((p) => ({ ...p, priority: e.target.value }))}
-              >
-                <option value="HIGH">HIGH</option>
-                <option value="MEDIUM">MEDIUM</option>
-                <option value="LOW">LOW</option>
-              </select>
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Stage</label>
-              <select
-                className={s.addLeadInput}
-                value={newLead.stage}
-                onChange={(e) => setNewLead((p) => ({ ...p, stage: e.target.value }))}
-              >
-                {PIPELINE_COLS.map((c) => (
-                  <option key={c.id} value={c.id}>{c.label}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className={s.addLeadActions}>
-            <button className={s.btnGhost} onClick={() => setShowAddLead(false)}>Cancel</button>
-            <button className={s.btnPrimary} onClick={handleAddLead}>Add Lead</button>
-          </div>
-        </div>
-      )}
 
       {/* Kanban Board */}
       <div className={s.kanbanBoard}>
@@ -391,7 +705,7 @@ function PipelineTab() {
                 </div>
                 <button
                   className={s.colAddBtn}
-                  onClick={() => { setNewLead((p) => ({ ...p, stage: col.id })); setShowAddLead(true); }}
+                  onClick={() => onOpenNewLead({ stage: PIPELINE_STAGE_TO_FORM_STAGE[col.id] || "New" })}
                   aria-label={`Add lead to ${col.label}`}
                 >
                   +
@@ -412,6 +726,7 @@ function PipelineTab() {
                       lead={lead}
                       onDragStart={handleDragStart}
                       onStageChange={handleStageChange}
+                      onDeleteLead={onDeleteLead}
                     />
                   ))
                 )}
@@ -583,12 +898,6 @@ function ProductCatalogTab() {
     setNewProduct({ name: "", category: "Software", price: "", sku: "", description: "" });
     setShowAdd(false);
   };
-
-  const statusClass = (s) => ({
-    Active: styles => styles.prodStatusActive,
-    Draft: styles => styles.prodStatusDraft,
-    "Low Stock": styles => styles.prodStatusLow,
-  }[s] || (() => ""));
 
   return (
     <div>
@@ -830,7 +1139,93 @@ const TABS = [
 export default function SalesPage() {
   const [activeNav, setActiveNav] = useState("sales");
   const [activeTab, setActiveTab] = useState("pipeline");
-  const navigate = useNavigate();
+  const [leads, setLeads] = useState([]);
+  const [newLeadDefaults, setNewLeadDefaults] = useState(null);
+  const [leadError, setLeadError] = useState("");
+  const [isLoadingLeads, setIsLoadingLeads] = useState(true);
+
+  const openNewLeadModal = useCallback((defaults = {}) => {
+    setNewLeadDefaults({ ...EMPTY_NEW_LEAD, ...defaults });
+  }, []);
+
+  const closeNewLeadModal = useCallback(() => {
+    setNewLeadDefaults(null);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadLeads = async () => {
+      setIsLoadingLeads(true);
+      setLeadError("");
+
+      const result = await leadService.fetchLeads();
+      if (!isMounted) return;
+
+      if (result.error) {
+        setLeadError(result.error);
+        setLeads(INITIAL_LEADS);
+        setIsLoadingLeads(false);
+        return;
+      }
+
+      const loadedLeads = Array.isArray(result.data) ? result.data : [];
+      setLeads(loadedLeads.map(mapLeadToPipeline));
+      setIsLoadingLeads(false);
+    };
+
+    loadLeads();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleCreateLead = useCallback(async (newLead) => {
+    const result = await leadService.createLead(buildLeadPayload(newLead));
+
+    if (result.error) {
+      setLeadError(result.error);
+      return;
+    }
+
+    const createdLead = result.data;
+    setLeads((prev) => [mapLeadToPipeline(createdLead), ...prev]);
+    setActiveTab("pipeline");
+    setLeadError("");
+  }, []);
+
+  const handleUpdateLeadStage = useCallback(async (leadId, newStage) => {
+    const lead = leads.find((item) => item.id === leadId);
+    if (!lead || !lead.id) return;
+
+    const payload = {
+      ...buildLeadPayload(lead.rawLead || lead),
+      stage: PIPELINE_STAGE_TO_FORM_STAGE[newStage] || "New",
+      status: lead.rawLead?.status || "Open",
+    };
+
+    const result = await leadService.updateLead(leadId, payload);
+    if (result.error) {
+      setLeadError(result.error);
+      return;
+    }
+
+    setLeadError("");
+  }, [leads]);
+
+  const handleDeleteLead = useCallback(async (leadId) => {
+    if (!leadId) return;
+
+    const result = await leadService.deleteLead(leadId);
+    if (result.error) {
+      setLeadError(result.error);
+      return;
+    }
+
+    setLeads((prev) => prev.filter((lead) => lead.id !== leadId));
+    setLeadError("");
+  }, []);
 
   return (
     <div className={shell.appShell}>
@@ -851,12 +1246,20 @@ export default function SalesPage() {
                 <ShoppingCart className={s.btnIcon} aria-hidden="true" />
                 Product Catalog
               </button>
-              <button className={s.btnPrimary} onClick={() => setActiveTab("pipeline")}>
+              <button className={s.btnPrimary} onClick={() => openNewLeadModal()}>
                 <Plus className={s.btnIcon} aria-hidden="true" />
                 New Lead
               </button>
             </div>
           </header>
+
+          {newLeadDefaults && (
+            <NewLeadModal
+              initialValues={newLeadDefaults}
+              onClose={closeNewLeadModal}
+              onSubmit={handleCreateLead}
+            />
+          )}
 
           {/* Tab Bar */}
           <div className={s.tabBar} role="tablist">
@@ -881,7 +1284,15 @@ export default function SalesPage() {
 
           {/* Tab Content */}
           <div key={activeTab} className={s.tabContent}>
-            {activeTab === "pipeline"  && <PipelineTab />}
+            {activeTab === "pipeline"  && (
+              <PipelineTab
+                leads={leads}
+                setLeads={setLeads}
+                onOpenNewLead={openNewLeadModal}
+                onUpdateLeadStage={handleUpdateLeadStage}
+                onDeleteLead={handleDeleteLead}
+              />
+            )}
             {activeTab === "analytics" && <SalesAnalyticsTab />}
             {activeTab === "catalog"   && <ProductCatalogTab />}
             {activeTab === "customers" && <CustomersTab />}

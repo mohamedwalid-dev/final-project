@@ -348,6 +348,110 @@
   gap: 8px;
 }
 
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.leadModal {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #E9ECEF;
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.modalHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #F1F3F5;
+}
+
+.modalTitle {
+  font-size: 18px;
+  font-weight: 800;
+  color: #1A1A2E;
+  margin: 0;
+}
+
+.modalSub {
+  font-size: 12.5px;
+  color: #868E96;
+  margin: 3px 0 0;
+}
+
+.modalCloseButton {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #E9ECEF;
+  border-radius: 8px;
+  background: #fff;
+  color: #6C757D;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+
+.modalCloseButton:hover {
+  background: #F8F9FA;
+  border-color: #D0D7DE;
+  color: #1A1A2E;
+}
+
+.modalCloseButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.leadForm {
+  padding: 20px;
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+}
+
+.leadFormGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  min-width: 0;
+}
+
+.fieldFull {
+  grid-column: 1 / -1;
+}
+
+.fieldHint {
+  font-size: 11.5px;
+  color: #868E96;
+}
+
+.fieldError {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #C92A2A;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 18px;
+}
+
 /* ── Kanban Board ────────────────────────────────────────────────────────────*/
 .kanbanBoard {
   display: flex;
@@ -1215,8 +1319,18 @@
   .pipelineStats,
   .analyticsKpiGrid,
   .productGrid,
+  .leadFormGrid,
   .addLeadGrid {
     grid-template-columns: 1fr;
+  }
+
+  .modalOverlay {
+    align-items: flex-start;
+    padding: 16px;
+  }
+
+  .leadModal {
+    max-height: calc(100vh - 32px);
   }
 
   .tabBar {

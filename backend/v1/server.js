@@ -55,4 +55,4 @@ Router(app);
 app.use(notFound);
 app.use(errorHandler);
 
-httpServer.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+httpServer.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}/v1`));

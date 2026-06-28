@@ -9,7 +9,7 @@ export const handleValidation = (req, res, next) => {
     return res.status(400).json({
       status: "failed",
       data: errors.array(),
-      message: "Validation error"
+      message: "Validation error",
     });
   }
 

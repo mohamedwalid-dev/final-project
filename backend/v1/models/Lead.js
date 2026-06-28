@@ -1,32 +1,71 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
-const LeadSchema = new mongoose.Schema({
-  companyName: {
-    type: String,
-    required: true,
-    trim: true
+const leadSchema = new mongoose.Schema(
+  {
+    companyName: {
+      type: String,
+      trim: true,
+    },
+    clientName: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    email: {
+      type: String,
+      trim: true,
+      required: true,
+      lowercase: true,
+    },
+    phone: {
+      type: String,
+      trim: true,
+    },
+    address: {
+      type: String,
+      trim: true,
+    },
+    dealValue: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
+    },
+    priority: {
+      type: String,
+      enum: ["Low", "Medium", "High"],
+      default: "Medium",
+    },
+    stage: {
+      type: String,
+      enum: ["New", "Contacted", "Proposal", "Negotiation", "Closed", "Closed Won", "Closed Lost"],
+      default: "New",
+    },
+    status: {
+      type: String,
+      enum: ["Open", "Won", "Lost"],
+      default: "Open",
+    },
+    notes: {
+      type: String,
+      trim: true,
+    },
   },
+  {
+    timestamps: true,
+  }
+);
 
-  dealValue: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-
-  priority: {
-    type: String,
-    required: true,
-    enum: ["Low", "Medium", "High"]
-  },
-
-  stage: {
-    type: String,
-    required: true,
-    enum: ["New", "Contacted", "Qualified", "Proposal", "Closed Won", "Closed Lost"]
+leadSchema.pre("validate", function setNameDefaults(next) {
+  if (!this.companyName && this.clientName) {
+    this.companyName = this.clientName;
   }
 
-}, {
-  timestamps: true // adds createdAt & updatedAt
+  if (!this.clientName && this.companyName) {
+    this.clientName = this.companyName;
+  }
+
+  next();
 });
 
-export default mongoose.model("Lead", LeadSchema);
+export default mongoose.model("Lead", leadSchema);
