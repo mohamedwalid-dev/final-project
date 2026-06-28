@@ -56,16 +56,4 @@ const leadSchema = new mongoose.Schema(
   }
 );
 
-leadSchema.pre("validate", function setNameDefaults(next) {
-  if (!this.companyName && this.clientName) {
-    this.companyName = this.clientName;
-  }
-
-  if (!this.clientName && this.companyName) {
-    this.clientName = this.companyName;
-  }
-
-  next();
-});
-
 export default mongoose.model("Lead", leadSchema);

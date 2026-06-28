@@ -293,7 +293,7 @@ function NewLeadModal({ initialValues = EMPTY_NEW_LEAD, onClose, onSubmit }) {
     return Object.keys(nextErrors).length === 0;
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validate()) return;
 
@@ -309,8 +309,10 @@ function NewLeadModal({ initialValues = EMPTY_NEW_LEAD, onClose, onSubmit }) {
       phone: form.phone.trim(),
     };
 
-    onSubmit(newLead);
-    onClose();
+    const didSubmit = await onSubmit(newLead);
+    if (didSubmit !== false) {
+      onClose();
+    }
   };
 
   const formattedDealValue =
@@ -1186,13 +1188,14 @@ export default function SalesPage() {
 
     if (result.error) {
       setLeadError(result.error);
-      return;
+      return false;
     }
 
     const createdLead = result.data;
     setLeads((prev) => [mapLeadToPipeline(createdLead), ...prev]);
     setActiveTab("pipeline");
     setLeadError("");
+    return true;
   }, []);
 
   const handleUpdateLeadStage = useCallback(async (leadId, newStage) => {
@@ -1252,6 +1255,12 @@ export default function SalesPage() {
               </button>
             </div>
           </header>
+
+          {leadError && (
+            <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 8, background: "#fff4f4", color: "#c92a2a", border: "1px solid #ffd8d8" }}>
+              {leadError}
+            </div>
+          )}
 
           {newLeadDefaults && (
             <NewLeadModal

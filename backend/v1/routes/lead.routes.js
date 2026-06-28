@@ -6,7 +6,7 @@ import {
   getAllLeads,
   getLeadById,
   updateLead,
-  deleteLead
+  deleteLead,
 } from "../controllers/lead.controller.js";
 
 import { validateLead } from "../middleware/lead.validator.js";
@@ -16,9 +16,12 @@ const router = express.Router();
 
 router.post("/", validateLead, handleValidation, createLead);
 router.get("/", getAllLeads);
-router.get("/:id", getLeadById);
-router.put("/:id", validateLead, handleValidation, updateLead);
-router.patch("/:id", validateLead, handleValidation, updateLead);
-router.delete("/:id", deleteLead);
+
+router
+  .route("/:id")
+  .get(getLeadById)
+  .put(validateLead, handleValidation, updateLead)
+  .patch(validateLead, handleValidation, updateLead)
+  .delete(deleteLead);
 
 export default router;

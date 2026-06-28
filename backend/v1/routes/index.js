@@ -18,7 +18,7 @@ const Router = (server) => {
 
   server.use("/v1/employees", Verify, EmployeeRoutes);
 
-  server.use("/v1/leads", Verify, LeadRoutes);
+  server.use("/v1/leads", LeadRoutes);
 
   server.use("/v1/invoices", Verify, InvoiceRoutes);
 
