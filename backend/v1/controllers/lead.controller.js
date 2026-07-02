@@ -61,6 +61,10 @@ const buildLeadPayload = (payload = {}, { forCreate = false } = {}) => {
     nextPayload.phone = payload.phone.trim();
   }
 
+  if (typeof payload.assignedTo === "string") {
+    nextPayload.assignedTo = payload.assignedTo.trim() || "Unassigned";
+  }
+
   if (payload.dealValue !== undefined) {
     const parsedValue = Number(payload.dealValue);
     nextPayload.dealValue = Number.isFinite(parsedValue) ? parsedValue : 0;
@@ -95,6 +99,163 @@ const buildLeadPayload = (payload = {}, { forCreate = false } = {}) => {
   }
 
   return nextPayload;
+};
+
+const buildLeadAnalytics = async (LeadModel) => {
+  const [analyticsResult] = await LeadModel.aggregate([
+    {
+      $facet: {
+        summary: [
+          {
+            $group: {
+              _id: null,
+              totalLeads: { $sum: 1 },
+              totalRevenue: { $sum: "$dealValue" },
+              wonDeals: {
+                $sum: { $cond: [{ $eq: ["$status", "Won"] }, 1, 0] },
+              },
+              lostDeals: {
+                $sum: { $cond: [{ $eq: ["$status", "Lost"] }, 1, 0] },
+              },
+              activeOpportunities: {
+                $sum: { $cond: [{ $eq: ["$status", "Open"] }, 1, 0] },
+              },
+              qualifiedLeads: {
+                $sum: {
+                  $cond: [{ $in: ["$stage", ["Contacted", "Proposal", "Negotiation", "Closed", "Closed Won", "Closed Lost"]] }, 1, 0],
+                },
+              },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              totalLeads: 1,
+              totalRevenue: 1,
+              wonDeals: 1,
+              lostDeals: 1,
+              activeOpportunities: 1,
+              qualifiedLeads: 1,
+            },
+          },
+        ],
+        monthlyRevenue: [
+          { $match: { status: "Won", dealValue: { $gt: 0 } } },
+          {
+            $group: {
+              _id: {
+                month: { $dateToString: { format: "%Y-%m", date: "$updatedAt" } },
+              },
+              revenue: { $sum: "$dealValue" },
+            },
+          },
+          { $project: { _id: 0, month: "$_id.month", revenue: 1 } },
+          { $sort: { month: 1 } },
+        ],
+        winLoss: [
+          {
+            $group: {
+              _id: "$status",
+              count: { $sum: 1 },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              name: {
+                $cond: [{ $eq: ["$_id", "Won"] }, "Won", { $cond: [{ $eq: ["$_id", "Lost"] }, "Lost", "Open"] }],
+              },
+              count: 1,
+            },
+          },
+          { $sort: { name: 1 } },
+        ],
+        pipelineByStage: [
+          {
+            $group: {
+              _id: "$stage",
+              count: { $sum: 1 },
+              value: { $sum: "$dealValue" },
+            },
+          },
+          { $project: { _id: 0, stage: "$_id", count: 1, value: 1 } },
+          { $sort: { value: -1 } },
+        ],
+        topReps: [
+          {
+            $group: {
+              _id: { $ifNull: ["$assignedTo", "Unassigned"] },
+              deals: { $sum: 1 },
+              revenue: { $sum: "$dealValue" },
+            },
+          },
+          { $project: { _id: 0, name: "$_id", deals: 1, revenue: 1 } },
+          { $sort: { revenue: -1 } },
+          { $limit: 5 },
+        ],
+      },
+    },
+  ]);
+
+  const summary = analyticsResult?.summary?.[0] || {};
+  const totalLeads = Number(summary.totalLeads || 0);
+  const totalRevenue = Number(summary.totalRevenue || 0);
+  const wonDeals = Number(summary.wonDeals || 0);
+  const lostDeals = Number(summary.lostDeals || 0);
+  const activeOpportunities = Number(summary.activeOpportunities || 0);
+  const qualifiedLeads = Number(summary.qualifiedLeads || 0);
+  const conversionRate = totalLeads > 0 ? (wonDeals / totalLeads) * 100 : 0;
+  const averageDealSize = totalLeads > 0 ? totalRevenue / totalLeads : 0;
+
+  const monthlyRevenue = (analyticsResult?.monthlyRevenue || []).map((entry) => ({
+    month: entry.month,
+    revenue: Number(entry.revenue || 0),
+  }));
+
+  const winLossData = (analyticsResult?.winLoss || [])
+    .filter((entry) => entry.name === "Won" || entry.name === "Lost")
+    .map((entry) => ({
+      name: entry.name,
+      value: Number(entry.count || 0),
+    }));
+
+  const totalClosedDeals = wonDeals + lostDeals;
+  const winLoss = [
+    {
+      name: "Won",
+      value: totalClosedDeals > 0 ? Number(((wonDeals / totalClosedDeals) * 100).toFixed(1)) : 0,
+    },
+    {
+      name: "Lost",
+      value: totalClosedDeals > 0 ? Number(((lostDeals / totalClosedDeals) * 100).toFixed(1)) : 0,
+    },
+  ];
+
+  return {
+    summary: {
+      totalLeads,
+      totalRevenue,
+      wonDeals,
+      lostDeals,
+      activeOpportunities,
+      qualifiedLeads,
+      conversionRate: Number(conversionRate.toFixed(1)),
+      averageDealSize: Number(averageDealSize.toFixed(0)),
+    },
+    monthlyRevenue,
+    winLoss,
+    pipelineByStage: (analyticsResult?.pipelineByStage || []).map((entry) => ({
+      stage: entry.stage,
+      count: Number(entry.count || 0),
+      value: Number(entry.value || 0),
+    })),
+    topReps: (analyticsResult?.topReps || []).map((entry) => ({
+      name: entry.name,
+      deals: Number(entry.deals || 0),
+      revenue: Number(entry.revenue || 0),
+    })),
+    winLossData,
+  };
 };
 
 export const addProductToLead = async (req, res, next) => {
@@ -278,11 +439,15 @@ export const createLead = async (req, res, next) => {
 
 export const getAllLeads = async (req, res, next) => {
   try {
-    const leads = await Lead.find().sort({ createdAt: -1 });
+    const [leads, analytics] = await Promise.all([
+      Lead.find().sort({ createdAt: -1 }).lean(),
+      buildLeadAnalytics(Lead),
+    ]);
 
     return res.status(200).json({
       status: "success",
       data: leads,
+      analytics,
       message: "Leads fetched successfully",
     });
   } catch (error) {

@@ -99,6 +99,14 @@ export const validateLead = [
     .isIn(allowedStatus)
     .withMessage("status must be Open, Won, or Lost"),
 
+  body("assignedTo")
+    .optional({ values: "falsy" })
+    .trim()
+    .isString()
+    .withMessage("assignedTo must be a string")
+    .isLength({ max: 100 })
+    .withMessage("assignedTo must be at most 100 characters"),
+
   body().custom((_, { req }) => {
     const hasClientName = Boolean(req.body.clientName?.trim());
     const hasCompanyName = Boolean(req.body.companyName?.trim());

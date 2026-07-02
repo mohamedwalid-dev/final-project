@@ -8,6 +8,7 @@
 // Same Sidebar + Header structure as all other pages
 
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend,
@@ -79,35 +80,32 @@ const PRIORITY_META = {
 };
 
 // ── Analytics Mock Data ───────────────────────────────────────────────────────
-const MONTHLY_REVENUE = [
-  { month: "Jan", revenue: 124000, target: 110000, deals: 18 },
-  { month: "Feb", revenue: 138000, target: 120000, deals: 22 },
-  { month: "Mar", revenue: 152000, target: 130000, deals: 25 },
-  { month: "Apr", revenue: 141000, target: 140000, deals: 20 },
-  { month: "May", revenue: 178000, target: 150000, deals: 29 },
-  { month: "Jun", revenue: 195000, target: 160000, deals: 32 },
-];
+const SALES_TARGET_MONTHLY = 140000;
+const PIPELINE_STAGE_COLORS = {
+  New: "#3B5BDB",
+  Contacted: "#F59F00",
+  Proposal: "#845EF7",
+  Negotiation: "#F76707",
+  "Closed Won": "#2F9E44",
+  "Closed Lost": "#FA5252",
+};
 
-const PIPELINE_VALUE_BY_STAGE = [
-  { stage: "Prospecting",   value: 45000,  fill: "#3B5BDB" },
-  { stage: "Qualification", value: 72000,  fill: "#F59F00" },
-  { stage: "Proposal",      value: 38000,  fill: "#845EF7" },
-  { stage: "Negotiation",   value: 110000, fill: "#F76707" },
-  { stage: "Closed Won",    value: 245000, fill: "#2F9E44" },
-];
-
-const WIN_LOSS_DATA = [
-  { name: "Won", value: 68, fill: "#2F9E44" },
-  { name: "Lost", value: 32, fill: "#FA5252" },
-];
-
-const TOP_REPS = [
-  { name: "Alex Sterling",    deals: 24, revenue: 284000, quota: 92, avatar: "AS", color: "#3B5BDB" },
-  { name: "Marcus Thompson",  deals: 19, revenue: 218000, quota: 87, avatar: "MT", color: "#F59F00" },
-  { name: "Sarah Jenkins",    deals: 17, revenue: 196000, quota: 82, avatar: "SJ", color: "#845EF7" },
-  { name: "David Chen",       deals: 14, revenue: 164000, quota: 71, avatar: "DC", color: "#2F9E44" },
-  { name: "Elena Rodriguez",  deals: 11, revenue: 138000, quota: 65, avatar: "ER", color: "#FA5252" },
-];
+const EMPTY_ANALYTICS = {
+  summary: {
+    totalLeads: 0,
+    totalRevenue: 0,
+    wonDeals: 0,
+    lostDeals: 0,
+    activeOpportunities: 0,
+    qualifiedLeads: 0,
+    conversionRate: 0,
+    averageDealSize: 0,
+  },
+  monthlyRevenue: [],
+  winLoss: [],
+  pipelineByStage: [],
+  topReps: [],
+};
 
 // ── Product Catalog Mock ──────────────────────────────────────────────────────
 const INITIAL_PRODUCTS = [
@@ -132,6 +130,7 @@ const EMPTY_NEW_LEAD = {
   stage: "New",
   status: "Open",
   phone: "",
+  assignedTo: "Unassigned",
 };
 
 const LEAD_PRIORITY_OPTIONS = ["Low", "Medium", "High"];
@@ -209,6 +208,7 @@ const buildLeadPayload = (lead) => ({
   priority: lead.priority,
   stage: lead.stage,
   status: lead.status,
+  assignedTo: lead.assignedTo || "Unassigned",
 });
 
 // ── Customers Mock ────────────────────────────────────────────────────────────
@@ -309,6 +309,7 @@ function NewLeadModal({ initialValues = EMPTY_NEW_LEAD, onClose, onSubmit }) {
       stage: form.stage,
       status: form.status,
       phone: form.phone.trim(),
+      assignedTo: form.assignedTo.trim() || "Unassigned",
     };
 
     const didSubmit = await onSubmit(newLead);
@@ -488,6 +489,20 @@ function NewLeadModal({ initialValues = EMPTY_NEW_LEAD, onClose, onSubmit }) {
                   <option key={option} value={option}>{option}</option>
                 ))}
               </select>
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="lead-assigned-to">
+                Assigned Rep
+              </label>
+              <input
+                id="lead-assigned-to"
+                className={s.addLeadInput}
+                type="text"
+                value={form.assignedTo}
+                onChange={updateField("assignedTo")}
+                placeholder="e.g. John Smith"
+              />
             </div>
 
             <div className={`${s.addLeadField} ${s.fieldFull}`}>
@@ -760,17 +775,90 @@ const ChartTooltip = ({ active, payload, label }) => {
   );
 };
 
-function SalesAnalyticsTab() {
+function SalesAnalyticsTab({ analytics = EMPTY_ANALYTICS, isLoading = false, error = "" }) {
+  const summary = analytics?.summary || EMPTY_ANALYTICS.summary;
+  const monthlySeries = useMemo(() => {
+    const entries = Array.isArray(analytics?.monthlyRevenue) ? analytics.monthlyRevenue : [];
+    const monthMap = new Map(entries.map((entry) => [entry.month, Number(entry.revenue || 0)]));
+    const series = [];
+
+    for (let index = 11; index >= 0; index -= 1) {
+      const current = new Date();
+      current.setDate(1);
+      current.setMonth(current.getMonth() - index);
+      const monthKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}`;
+      const monthLabel = current.toLocaleString("en-US", { month: "short" });
+      series.push({
+        month: monthLabel,
+        revenue: monthMap.get(monthKey) || 0,
+        target: SALES_TARGET_MONTHLY,
+      });
+    }
+
+    return series;
+  }, [analytics?.monthlyRevenue]);
+
+  const winLossData = useMemo(() => {
+    const values = Array.isArray(analytics?.winLoss) ? analytics.winLoss : [];
+    const total = values.reduce((acc, item) => acc + Number(item.value || 0), 0);
+    return values
+      .filter((item) => item.name === "Won" || item.name === "Lost")
+      .map((item) => ({
+        name: item.name,
+        value: total > 0 ? Number(((Number(item.value || 0) / total) * 100).toFixed(1)) : 0,
+        fill: item.name === "Won" ? "#2F9E44" : "#FA5252",
+      }));
+  }, [analytics?.winLoss]);
+
+  const stageData = useMemo(() => {
+    return (analytics?.pipelineByStage || []).map((item) => ({
+      stage: item.stage || "Unassigned",
+      value: Number(item.value || 0),
+      fill: PIPELINE_STAGE_COLORS[item.stage] || "#3B5BDB",
+    }));
+  }, [analytics?.pipelineByStage]);
+
+  const repData = useMemo(() => {
+    const reps = Array.isArray(analytics?.topReps) ? analytics.topReps : [];
+    const maxRevenue = reps.reduce((acc, item) => Math.max(acc, Number(item.revenue || 0)), 0);
+    return reps.map((rep, index) => ({
+      ...rep,
+      quota: maxRevenue > 0 ? Math.max(25, Math.min(100, Math.round((Number(rep.revenue || 0) / maxRevenue) * 100))) : 0,
+      avatar: initialsFromName(rep.name || "Rep"),
+      color: index % 2 === 0 ? "#3B5BDB" : "#F59F00",
+    }));
+  }, [analytics?.topReps]);
+
+  if (isLoading) {
+    return (
+      <div className={s.emptyState}>
+        <LoaderCircle className={s.emptyIcon} aria-hidden="true" />
+        <p className={s.emptyTitle}>Loading analytics…</p>
+        <p className={s.emptySub}>Fetching the latest lead data from the backend.</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={s.emptyState}>
+        <Target className={s.emptyIcon} aria-hidden="true" />
+        <p className={s.emptyTitle}>Analytics unavailable</p>
+        <p className={s.emptySub}>{error}</p>
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* KPI Row */}
       <div className={s.analyticsKpiGrid}>
-        <SalesStatCard icon={CircleDollarSign} label="Total Revenue (YTD)"  value="EGP 928,000"  change="+18.4%" changeType="up" featured />
-        <SalesStatCard icon={ChartNoAxesCombined} label="Avg Deal Size"        value="EGP 32,400"   change="+6.2%"  changeType="up"   />
-        <SalesStatCard icon={Clock3} label="Sales Cycle (days)"   value="24d"       change="-3d"    changeType="up"   />
-        <SalesStatCard icon={Target} label="Quota Attainment"     value="87%"       change="+5%"    changeType="up"   />
-        <SalesStatCard icon={RefreshCcw} label="Churn Rate"           value="4.2%"      change="+0.3%"  changeType="down" />
-        <SalesStatCard icon={UserRoundPlus} label="New MQLs"             value="142"       change="+21"    changeType="up"   />
+        <SalesStatCard icon={CircleDollarSign} label="Total Revenue" value={fmtFull(Number(summary.totalRevenue || 0))} change="Live" changeType="up" featured />
+        <SalesStatCard icon={ChartNoAxesCombined} label="Average Deal Size" value={fmtFull(Number(summary.averageDealSize || 0))} change="Backend" changeType="up" />
+        <SalesStatCard icon={ClipboardList} label="Qualified Leads" value={Number(summary.qualifiedLeads || 0)} change="Current" changeType="up" />
+        <SalesStatCard icon={Target} label="Conversion Rate" value={`${Number(summary.conversionRate || 0).toFixed(1)}%`} change="Live" changeType="up" />
+        <SalesStatCard icon={CheckCircle2} label="Won Deals" value={Number(summary.wonDeals || 0)} change="Closed" changeType="up" />
+        <SalesStatCard icon={RefreshCcw} label="Lost Deals" value={Number(summary.lostDeals || 0)} change="Closed" changeType="down" />
       </div>
 
       {/* Charts Row 1 */}
@@ -778,45 +866,61 @@ function SalesAnalyticsTab() {
         {/* Revenue vs Target */}
         <div className={s.analyticsCard} style={{ flex: 2 }}>
           <h3 className={s.analyticsCardTitle}>Monthly Revenue vs Target</h3>
-          <p className={s.analyticsCardSub}>6-month performance comparison</p>
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={MONTHLY_REVENUE} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gradSalesRev" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3B5BDB" stopOpacity={0.15} />
-                  <stop offset="95%" stopColor="#3B5BDB" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F1F3F5" />
-              <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#ADB5BD" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `EGP ${v / 1000}k`} />
-              <Tooltip content={<ChartTooltip />} />
-              <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#3B5BDB" strokeWidth={2.5} fill="url(#gradSalesRev)" dot={false} />
-              <Area type="monotone" dataKey="target"  name="Target"  stroke="#CED4DA" strokeWidth={2} fill="none" strokeDasharray="4 4" dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
+          <p className={s.analyticsCardSub}>Last 12 months from won deals</p>
+          {monthlySeries.length === 0 ? (
+            <div className={s.emptyState} style={{ padding: 24 }}>
+              <Target className={s.emptyIcon} aria-hidden="true" />
+              <p className={s.emptyTitle}>No revenue history yet</p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={monthlySeries} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="gradSalesRev" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3B5BDB" stopOpacity={0.15} />
+                    <stop offset="95%" stopColor="#3B5BDB" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#F1F3F5" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#ADB5BD" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `EGP ${v / 1000}k`} />
+                <Tooltip content={<ChartTooltip />} />
+                <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#3B5BDB" strokeWidth={2.5} fill="url(#gradSalesRev)" dot={false} />
+                <Area type="monotone" dataKey="target" name="Target" stroke="#CED4DA" strokeWidth={2} fill="none" strokeDasharray="4 4" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         {/* Win/Loss Donut */}
         <div className={s.analyticsCard} style={{ flex: 1, minWidth: 220 }}>
           <h3 className={s.analyticsCardTitle}>Win/Loss Ratio</h3>
-          <p className={s.analyticsCardSub}>Last 12 months</p>
-          <div style={{ display: "flex", justifyContent: "center", marginTop: 8 }}>
-            <PieChart width={160} height={160}>
-              <Pie data={WIN_LOSS_DATA} cx={75} cy={75} innerRadius={50} outerRadius={72} paddingAngle={3} dataKey="value">
-                {WIN_LOSS_DATA.map((e, i) => <Cell key={i} fill={e.fill} />)}
-              </Pie>
-            </PieChart>
-          </div>
-          <div className={s.winLossLegend}>
-            {WIN_LOSS_DATA.map((e) => (
-              <div key={e.name} className={s.winLossItem}>
-                <span className={s.winLossDot} style={{ background: e.fill }} />
-                <span className={s.winLossLabel}>{e.name}</span>
-                <span className={s.winLossVal}>{e.value}%</span>
+          <p className={s.analyticsCardSub}>Based on closed lead status</p>
+          {winLossData.length === 0 ? (
+            <div className={s.emptyState} style={{ padding: 24 }}>
+              <Target className={s.emptyIcon} aria-hidden="true" />
+              <p className={s.emptyTitle}>No closed deals yet</p>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 8 }}>
+                <PieChart width={160} height={160}>
+                  <Pie data={winLossData} cx={75} cy={75} innerRadius={50} outerRadius={72} paddingAngle={3} dataKey="value">
+                    {winLossData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                  </Pie>
+                </PieChart>
               </div>
-            ))}
-          </div>
+              <div className={s.winLossLegend}>
+                {winLossData.map((e) => (
+                  <div key={e.name} className={s.winLossItem}>
+                    <span className={s.winLossDot} style={{ background: e.fill }} />
+                    <span className={s.winLossLabel}>{e.name}</span>
+                    <span className={s.winLossVal}>{e.value}%</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -826,42 +930,56 @@ function SalesAnalyticsTab() {
         <div className={s.analyticsCard} style={{ flex: 1 }}>
           <h3 className={s.analyticsCardTitle}>Pipeline Value by Stage</h3>
           <p className={s.analyticsCardSub}>Current deals in each stage</p>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={PIPELINE_VALUE_BY_STAGE} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F1F3F5" />
-              <XAxis dataKey="stage" tick={{ fontSize: 10, fill: "#ADB5BD" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `EGP ${v / 1000}k`} />
-              <Tooltip formatter={(v) => [`EGP ${v.toLocaleString()}`, "Value"]} />
-              <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                {PIPELINE_VALUE_BY_STAGE.map((e, i) => <Cell key={i} fill={e.fill} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+          {stageData.length === 0 ? (
+            <div className={s.emptyState} style={{ padding: 24 }}>
+              <ClipboardList className={s.emptyIcon} aria-hidden="true" />
+              <p className={s.emptyTitle}>No pipeline data yet</p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={stageData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#F1F3F5" />
+                <XAxis dataKey="stage" tick={{ fontSize: 10, fill: "#ADB5BD" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: "#ADB5BD" }} axisLine={false} tickLine={false} tickFormatter={(v) => `EGP ${v / 1000}k`} />
+                <Tooltip formatter={(v) => [`EGP ${v.toLocaleString()}`, "Value"]} />
+                <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                  {stageData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         {/* Top Reps */}
         <div className={s.analyticsCard} style={{ flex: 1 }}>
           <h3 className={s.analyticsCardTitle}>Top Sales Reps</h3>
-          <p className={s.analyticsCardSub}>By quota attainment this quarter</p>
-          <div className={s.topRepsList}>
-            {TOP_REPS.map((rep, i) => (
-              <div key={rep.name} className={s.topRepRow}>
-                <span className={s.topRepRank}>#{i + 1}</span>
-                <div className={s.topRepAvatar} style={{ background: rep.color }}>{rep.avatar}</div>
-                <div className={s.topRepInfo}>
-                  <p className={s.topRepName}>{rep.name}</p>
-                  <div className={s.topRepBar}>
-                    <div className={s.topRepBarFill} style={{ width: `${rep.quota}%`, background: rep.color }} />
+          <p className={s.analyticsCardSub}>By revenue from the current lead set</p>
+          {repData.length === 0 ? (
+            <div className={s.emptyState} style={{ padding: 24 }}>
+              <Users className={s.emptyIcon} aria-hidden="true" />
+              <p className={s.emptyTitle}>No rep activity yet</p>
+            </div>
+          ) : (
+            <div className={s.topRepsList}>
+              {repData.map((rep, i) => (
+                <div key={`${rep.name}-${i}`} className={s.topRepRow}>
+                  <span className={s.topRepRank}>#{i + 1}</span>
+                  <div className={s.topRepAvatar} style={{ background: rep.color }}>{rep.avatar}</div>
+                  <div className={s.topRepInfo}>
+                    <p className={s.topRepName}>{rep.name}</p>
+                    <div className={s.topRepBar}>
+                      <div className={s.topRepBarFill} style={{ width: `${rep.quota}%`, background: rep.color }} />
+                    </div>
                   </div>
+                  <div className={s.topRepStats}>
+                    <span className={s.topRepRevenue}>{fmt(rep.revenue)}</span>
+                    <span className={s.topRepDeals}>{rep.deals} deals</span>
+                  </div>
+                  <span className={s.topRepQuota} style={{ color: rep.color }}>{rep.quota}%</span>
                 </div>
-                <div className={s.topRepStats}>
-                  <span className={s.topRepRevenue}>{fmt(rep.revenue)}</span>
-                  <span className={s.topRepDeals}>{rep.deals} deals</span>
-                </div>
-                <span className={s.topRepQuota} style={{ color: rep.color }}>{rep.quota}%</span>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -883,6 +1001,13 @@ function ProductModal({
   onSubmit,
   error,
   success,
+  leadOptions = [],
+  leadSearchValue = "",
+  onLeadSearchChange,
+  onLeadSelect,
+  selectedLeadId,
+  leadLoading = false,
+  leadError = "",
   title = "Add Product",
   submitLabel = "Save Product",
 }) {
@@ -920,6 +1045,49 @@ function ProductModal({
           {success && <div className={`${s.toast} ${s.toastSuccess}`}>{success}</div>}
 
           <div className={s.leadFormGrid}>
+            <div className={`${s.addLeadField} ${s.fieldFull}`}>
+              <label className={s.addLeadLabel} htmlFor="lead-selector">Lead *</label>
+              <div className={s.autocompleteWrap}>
+                <input
+                  id="lead-selector"
+                  className={s.addLeadInput}
+                  type="text"
+                  value={leadSearchValue}
+                  onChange={(e) => onLeadSearchChange?.(e.target.value)}
+                  placeholder="Search leads by name, company, or email"
+                  autoComplete="off"
+                />
+                {leadLoading && <span className={s.fieldHint}>Loading leads…</span>}
+                {leadError && <span className={s.fieldError}>{leadError}</span>}
+                {!leadLoading && leadOptions.length > 0 && (
+                  <div className={s.suggestionList} role="listbox">
+                    {leadOptions.map((lead) => {
+                      const leadId = lead?._id || lead?.id;
+                      const label = [lead?.clientName, lead?.companyName].filter(Boolean).join(" — ");
+                      const meta = [lead?.email, lead?.stage, lead?.status].filter(Boolean).join(" • ");
+                      return (
+                        <button
+                          key={leadId}
+                          type="button"
+                          className={`${s.suggestionItem} ${selectedLeadId === leadId ? s.suggestionItemActive : ""}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            onLeadSelect?.(lead);
+                          }}
+                        >
+                          <span className={s.suggestionTitle}>{label || "Untitled lead"}</span>
+                          <span className={s.suggestionMeta}>{meta || "Open lead"}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {!leadLoading && !leadError && leadOptions.length === 0 && (
+                  <span className={s.fieldHint}>No leads available yet.</span>
+                )}
+              </div>
+            </div>
+
             <div className={s.addLeadField}>
               <label className={s.addLeadLabel} htmlFor="product-name">Product Name *</label>
               <div className={s.autocompleteWrap}>
@@ -1032,6 +1200,11 @@ function ProductCatalogTab({ currentLead, onLeadUpdated }) {
   const [productToast, setProductToast] = useState(null);
   const [editingProductId, setEditingProductId] = useState(null);
   const [deletingProductId, setDeletingProductId] = useState(null);
+  const [leadOptions, setLeadOptions] = useState([]);
+  const [leadSearchValue, setLeadSearchValue] = useState("");
+  const [selectedLeadId, setSelectedLeadId] = useState("");
+  const [isLoadingLeads, setIsLoadingLeads] = useState(false);
+  const [leadFetchError, setLeadFetchError] = useState("");
 
   const currentLeadId = currentLead?._id || currentLead?.id || "";
   const leadProducts = useMemo(() => {
@@ -1070,6 +1243,36 @@ function ProductCatalogTab({ currentLead, onLeadUpdated }) {
   }, [productToast]);
 
   useEffect(() => {
+    if (!productModal || isLoadingLeads || leadOptions.length > 0) return;
+
+    const loadLeads = async () => {
+      setIsLoadingLeads(true);
+      setLeadFetchError("");
+
+      const result = await leadService.fetchLeads();
+      setIsLoadingLeads(false);
+
+      if (result.error) {
+        setLeadFetchError(result.error);
+        return;
+      }
+
+      const leads = Array.isArray(result.data) ? result.data : [];
+      setLeadOptions(leads);
+
+      if (currentLeadId) {
+        const matchingLead = leads.find((lead) => String(lead?._id || lead?.id) === String(currentLeadId));
+        if (matchingLead) {
+          setSelectedLeadId(String(matchingLead._id || matchingLead.id));
+          setLeadSearchValue([matchingLead.clientName, matchingLead.companyName].filter(Boolean).join(" — "));
+        }
+      }
+    };
+
+    loadLeads();
+  }, [productModal, isLoadingLeads, leadOptions.length, currentLeadId]);
+
+  useEffect(() => {
     if (!productModal) return;
 
     const handleKeyDown = (e) => {
@@ -1099,6 +1302,9 @@ function ProductCatalogTab({ currentLead, onLeadUpdated }) {
     setHighlightedSuggestion(-1);
     setIsSavingProduct(false);
     setEditingProductId(null);
+    setSelectedLeadId(currentLeadId || "");
+    setLeadSearchValue(currentLead ? [currentLead.clientName, currentLead.companyName].filter(Boolean).join(" — ") : "");
+    setLeadFetchError("");
   };
 
   const handleCloseProductModal = () => {
@@ -1138,6 +1344,32 @@ function ProductCatalogTab({ currentLead, onLeadUpdated }) {
     setProductModal(true);
   };
 
+  const handleLeadSearchChange = (value) => {
+    setLeadSearchValue(value);
+    if (!value.trim()) {
+      setSelectedLeadId("");
+      return;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    const match = leadOptions.find((lead) => {
+      const label = [lead?.clientName, lead?.companyName, lead?.email].filter(Boolean).join(" ").toLowerCase();
+      return label.includes(normalized);
+    });
+
+    if (match) {
+      setSelectedLeadId(String(match._id || match.id));
+    } else {
+      setSelectedLeadId("");
+    }
+  };
+
+  const handleLeadSelect = (lead) => {
+    const leadId = String(lead?._id || lead?.id || "");
+    setSelectedLeadId(leadId);
+    setLeadSearchValue([lead?.clientName, lead?.companyName].filter(Boolean).join(" — "));
+  };
+
   const handleSuggestionKeyDown = (e) => {
     if (!suggestions.length) return;
 
@@ -1159,8 +1391,10 @@ function ProductCatalogTab({ currentLead, onLeadUpdated }) {
   };
 
   const handleProductSubmit = async () => {
-    if (!currentLeadId || !productForm.productName.trim() || !productForm.category || !productForm.price || !productForm.sku.trim()) {
-      setProductToast({ type: "error", message: "Please complete all required product fields." });
+    const targetLeadId = selectedLeadId || currentLeadId;
+
+    if (!targetLeadId || !productForm.productName.trim() || !productForm.category || !productForm.price || !productForm.sku.trim()) {
+      setProductToast({ type: "error", message: "Please select a lead and complete all required product fields." });
       return;
     }
 
@@ -1173,8 +1407,8 @@ function ProductCatalogTab({ currentLead, onLeadUpdated }) {
     };
 
     const result = editingProductId
-      ? await leadService.updateLeadProduct(currentLeadId, editingProductId, payload)
-      : await leadService.addProductToLead(currentLeadId, payload);
+      ? await leadService.updateLeadProduct(targetLeadId, editingProductId, payload)
+      : await leadService.addProductToLead(targetLeadId, payload);
 
     setIsSavingProduct(false);
 
@@ -1239,28 +1473,43 @@ function ProductCatalogTab({ currentLead, onLeadUpdated }) {
         </button>
       </div>
 
-      <ProductModal
-        open={productModal}
-        onClose={handleCloseProductModal}
-        form={productForm}
-        onFormChange={handleProductFormChange}
-        suggestions={suggestions}
-        highlightedSuggestion={highlightedSuggestion}
-        onSuggestionSelect={handleSuggestionSelect}
-        onSuggestionKeyDown={handleSuggestionKeyDown}
-        onInputFocus={() => {
-          if (productForm.productName.trim().length >= 2) {
-            setSuggestions((prev) => prev);
-          }
-        }}
-        onInputBlur={() => setTimeout(() => setSuggestions([]), 120)}
-        isSaving={isSavingProduct}
-        onSubmit={handleProductSubmit}
-        error={productToast?.type === "error" ? productToast.message : ""}
-        success={productToast?.type === "success" ? productToast.message : ""}
-        title={editingProductId ? "Edit Product" : "Add Product"}
-        submitLabel={editingProductId ? "Save Changes" : "Save Product"}
-      />
+      {productModal && createPortal(
+        <ProductModal
+          open={productModal}
+          onClose={handleCloseProductModal}
+          form={productForm}
+          onFormChange={handleProductFormChange}
+          suggestions={suggestions}
+          highlightedSuggestion={highlightedSuggestion}
+          onSuggestionSelect={handleSuggestionSelect}
+          onSuggestionKeyDown={handleSuggestionKeyDown}
+          onInputFocus={() => {
+            if (productForm.productName.trim().length >= 2) {
+              setSuggestions((prev) => prev);
+            }
+          }}
+          onInputBlur={() => setTimeout(() => setSuggestions([]), 120)}
+          isSaving={isSavingProduct}
+          onSubmit={handleProductSubmit}
+          error={productToast?.type === "error" ? productToast.message : ""}
+          success={productToast?.type === "success" ? productToast.message : ""}
+          leadOptions={leadOptions.filter((lead) => {
+            const term = leadSearchValue.trim().toLowerCase();
+            if (!term) return true;
+            const haystack = [lead?.clientName, lead?.companyName, lead?.email].filter(Boolean).join(" ").toLowerCase();
+            return haystack.includes(term);
+          })}
+          leadSearchValue={leadSearchValue}
+          onLeadSearchChange={handleLeadSearchChange}
+          onLeadSelect={handleLeadSelect}
+          selectedLeadId={selectedLeadId}
+          leadLoading={isLoadingLeads}
+          leadError={leadFetchError}
+          title={editingProductId ? "Edit Product" : "Add Product"}
+          submitLabel={editingProductId ? "Save Changes" : "Save Product"}
+        />,
+        document.body
+      )}
 
       {/* Product Grid */}
       <div className={s.productGrid}>
@@ -1471,10 +1720,14 @@ export default function SalesPage() {
   const [activeNav, setActiveNav] = useState("sales");
   const [activeTab, setActiveTab] = useState("pipeline");
   const [leads, setLeads] = useState([]);
+  const [analytics, setAnalytics] = useState(EMPTY_ANALYTICS);
   const [activeLeadId, setActiveLeadId] = useState("");
   const [newLeadDefaults, setNewLeadDefaults] = useState(null);
   const [leadError, setLeadError] = useState("");
+  const [analyticsError, setAnalyticsError] = useState("");
   const [isLoadingLeads, setIsLoadingLeads] = useState(true);
+  const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(true);
+  const mountedRef = useRef(true);
 
   const openNewLeadModal = useCallback((defaults = {}) => {
     setNewLeadDefaults({ ...EMPTY_NEW_LEAD, ...defaults });
@@ -1485,35 +1738,42 @@ export default function SalesPage() {
   }, []);
 
   useEffect(() => {
-    let isMounted = true;
+    mountedRef.current = true;
 
     const loadLeads = async () => {
       setIsLoadingLeads(true);
+      setIsLoadingAnalytics(true);
       setLeadError("");
+      setAnalyticsError("");
 
       const result = await leadService.fetchLeads();
-      if (!isMounted) return;
+      if (!mountedRef.current) return;
 
       if (result.error) {
         setLeadError(result.error);
+        setAnalyticsError(result.error);
         setLeads(INITIAL_LEADS);
+        setAnalytics(EMPTY_ANALYTICS);
         setIsLoadingLeads(false);
+        setIsLoadingAnalytics(false);
         return;
       }
 
       const loadedLeads = Array.isArray(result.data) ? result.data : [];
       const mappedLeads = loadedLeads.map(mapLeadToPipeline);
       setLeads(mappedLeads);
+      setAnalytics(result.analytics || EMPTY_ANALYTICS);
       if (!activeLeadId && mappedLeads.length) {
         setActiveLeadId(mappedLeads[0].id || "");
       }
       setIsLoadingLeads(false);
+      setIsLoadingAnalytics(false);
     };
 
     loadLeads();
 
     return () => {
-      isMounted = false;
+      mountedRef.current = false;
     };
   }, [activeLeadId]);
 
@@ -1531,6 +1791,7 @@ export default function SalesPage() {
     setActiveLeadId(mappedLead.id || createdLead?._id || createdLead?.id || "");
     setActiveTab("pipeline");
     setLeadError("");
+    setAnalyticsError("");
     return true;
   }, []);
 
@@ -1551,6 +1812,7 @@ export default function SalesPage() {
     }
 
     setLeadError("");
+    setAnalyticsError("");
   }, [leads]);
 
   const handleDeleteLead = useCallback(async (leadId) => {
@@ -1564,6 +1826,7 @@ export default function SalesPage() {
 
     setLeads((prev) => prev.filter((lead) => lead.id !== leadId));
     setLeadError("");
+    setAnalyticsError("");
   }, []);
 
   const handleLeadProductUpdate = useCallback((updatedLead) => {
@@ -1650,7 +1913,7 @@ export default function SalesPage() {
                 onDeleteLead={handleDeleteLead}
               />
             )}
-            {activeTab === "analytics" && <SalesAnalyticsTab />}
+            {activeTab === "analytics" && <SalesAnalyticsTab analytics={analytics} isLoading={isLoadingAnalytics} error={analyticsError} />}
             {activeTab === "catalog"   && <ProductCatalogTab currentLead={leads.find((lead) => lead.id === activeLeadId)?.rawLead || null} onLeadUpdated={handleLeadProductUpdate} />}
             {activeTab === "customers" && <CustomersTab />}
           </div>

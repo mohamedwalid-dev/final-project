@@ -7,11 +7,12 @@ const leadService = {
   fetchLeads: async (signal) => {
     try {
       const result = await http.get(ENDPOINTS.LEADS.LIST, { signal });
-      if (result.error) return { data: null, error: result.error };
+      if (result.error) return { data: null, analytics: null, error: result.error };
       const leads = Array.isArray(result.data?.data) ? result.data.data : [];
-      return { data: leads, error: null };
+      const analytics = result.data?.analytics || null;
+      return { data: leads, analytics, error: null };
     } catch (err) {
-      return { data: null, error: err.message || "Failed to fetch leads" };
+      return { data: null, analytics: null, error: err.message || "Failed to fetch leads" };
     }
   },
 

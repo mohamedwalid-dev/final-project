@@ -46,6 +46,11 @@ const leadSchema = new mongoose.Schema(
       enum: ["Open", "Won", "Lost"],
       default: "Open",
     },
+    assignedTo: {
+      type: String,
+      trim: true,
+      default: "Unassigned",
+    },
     products: [
       {
         productName: {

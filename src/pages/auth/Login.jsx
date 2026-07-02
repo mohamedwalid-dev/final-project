@@ -93,7 +93,7 @@ export default function Login() {
                 className={`${s.input} ${validationErrors.email ? s.inputError : ""}`}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder="Email Address"
                 disabled={loading}
               />
               {validationErrors.email && (
@@ -116,7 +116,7 @@ export default function Login() {
                 className={`${s.input} ${validationErrors.password ? s.inputError : ""}`}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Password"
                 disabled={loading}
               />
               {validationErrors.password && (
