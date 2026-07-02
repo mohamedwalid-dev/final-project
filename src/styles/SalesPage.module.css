@@ -452,6 +452,87 @@
   padding-top: 18px;
 }
 
+.productModal {
+  width: min(720px, 100%);
+}
+
+.autocompleteWrap {
+  position: relative;
+}
+
+.suggestionList {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: #fff;
+  border: 1px solid #E9ECEF;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+}
+
+.suggestionItem {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: #1A1A2E;
+}
+
+.suggestionItem:hover,
+.suggestionItemActive {
+  background: #F3F6FF;
+}
+
+.suggestionTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.suggestionMeta {
+  font-size: 11px;
+  color: #868E96;
+  white-space: nowrap;
+}
+
+.toast {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.toastSuccess {
+  background: #EBFBEE;
+  color: #2F9E44;
+}
+
+.toastError {
+  background: #FFF0F0;
+  color: #C92A2A;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* ── Kanban Board ────────────────────────────────────────────────────────────*/
 .kanbanBoard {
   display: flex;
@@ -986,21 +1067,22 @@
 @media (max-width: 1100px) { .productGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .productCard {
-  background: #fff;
+  background: linear-gradient(180deg, #fff 0%, #fcfdff 100%);
   border: 1.5px solid #E9ECEF;
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  transition: box-shadow 0.15s, border-color 0.15s, transform 0.1s;
+  gap: 10px;
+  transition: box-shadow 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
   min-width: 0;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
 }
 
 .productCard:hover {
-  box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
   border-color: #D0D7DE;
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .productCardTop {
@@ -1058,6 +1140,7 @@
   align-items: center;
   min-width: 0;
   flex-wrap: wrap;
+  margin-top: 2px;
 }
 
 .productCat {
@@ -1081,6 +1164,7 @@
   align-items: center;
   padding-top: 8px;
   border-top: 1px solid #F1F3F5;
+  margin-top: auto;
 }
 
 .productPrice {
@@ -1096,24 +1180,49 @@
 }
 
 .prodActionBtn {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
   border: 1px solid #E9ECEF;
   background: #F8F9FA;
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s, border-color 0.12s;
-  color: #6C757D;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, color 0.15s ease;
+  color: #3B5BDB;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+  overflow: visible;
 }
 
-.prodActionBtn:hover { background: #EEF2FF; border-color: #3B5BDB; }
+.prodActionBtn:hover {
+  background: #EEF2FF;
+  border-color: #3B5BDB;
+  color: #3B5BDB;
+  transform: translateY(-1px);
+}
 
-.prodActionBtn svg {
-  width: 15px;
-  height: 15px;
+.prodActionBtn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.prodActionBtn svg,
+.prodActionIcon {
+  display: block !important;
+  width: 16px;
+  height: 16px;
+  opacity: 1 !important;
+  visibility: visible !important;
+  color: currentColor;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  flex-shrink: 0;
+  pointer-events: none;
 }
 
 /* ── Customers ───────────────────────────────────────────────────────────────*/

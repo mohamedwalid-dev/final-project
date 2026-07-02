@@ -29,12 +29,14 @@ import {
   Eye,
   HardDrive,
   Laptop,
+  LoaderCircle,
   Mail,
   MoreHorizontal,
   Package,
   Pencil,
   Plus,
   RefreshCcw,
+  Save,
   Search,
   ShoppingCart,
   SlidersHorizontal,
@@ -866,39 +868,345 @@ function SalesAnalyticsTab() {
   );
 }
 
+function ProductModal({
+  open,
+  onClose,
+  form,
+  onFormChange,
+  suggestions,
+  highlightedSuggestion,
+  onSuggestionSelect,
+  onSuggestionKeyDown,
+  onInputFocus,
+  onInputBlur,
+  isSaving,
+  onSubmit,
+  error,
+  success,
+  title = "Add Product",
+  submitLabel = "Save Product",
+}) {
+  const nameInputRef = useRef(null);
+
+  useEffect(() => {
+    if (open) {
+      nameInputRef.current?.focus();
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className={s.modalOverlay} role="presentation" onMouseDown={onClose}>
+      <section
+        className={`${s.leadModal} ${s.productModal}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-product-title"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className={s.modalHeader}>
+          <div>
+            <h2 id="add-product-title" className={s.modalTitle}>{title}</h2>
+            <p className={s.modalSub}>Attach a product to the current lead using inventory suggestions.</p>
+          </div>
+          <button type="button" className={s.modalCloseButton} onClick={onClose} aria-label="Close add product modal">
+            <X aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className={s.leadForm}>
+          {error && <div className={`${s.toast} ${s.toastError}`}>{error}</div>}
+          {success && <div className={`${s.toast} ${s.toastSuccess}`}>{success}</div>}
+
+          <div className={s.leadFormGrid}>
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="product-name">Product Name *</label>
+              <div className={s.autocompleteWrap}>
+                <input
+                  id="product-name"
+                  ref={nameInputRef}
+                  className={s.addLeadInput}
+                  type="text"
+                  value={form.productName}
+                  onChange={(e) => onFormChange("productName", e.target.value)}
+                  onKeyDown={onSuggestionKeyDown}
+                  onFocus={onInputFocus}
+                  onBlur={onInputBlur}
+                  placeholder="Type a product or SKU"
+                  autoComplete="off"
+                />
+                {suggestions.length > 0 && (
+                  <div className={s.suggestionList} role="listbox">
+                    {suggestions.map((suggestion, index) => (
+                      <button
+                        key={suggestion._id || `${suggestion.sku}-${index}`}
+                        type="button"
+                        className={`${s.suggestionItem} ${index === highlightedSuggestion ? s.suggestionItemActive : ""}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          onSuggestionSelect(suggestion);
+                        }}
+                      >
+                        <span className={s.suggestionTitle}>{suggestion.productName}</span>
+                        <span className={s.suggestionMeta}>{suggestion.sku}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="product-category">Category *</label>
+              <select id="product-category" className={s.addLeadInput} value={form.category} onChange={(e) => onFormChange("category", e.target.value)}>
+                {PRODUCT_CATEGORIES.filter((c) => c !== "All").map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className={s.addLeadField}>
+              <label className={s.addLeadLabel} htmlFor="product-price">Price (EGP) *</label>
+              <input
+                id="product-price"
+                className={s.addLeadInput}
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.price}
+                onChange={(e) => onFormChange("price", e.target.value)}
+                placeholder="12000"
+              />
+            </div>
+
+            <div className={`${s.addLeadField} ${s.fieldFull}`}>
+              <label className={s.addLeadLabel} htmlFor="product-sku">SKU *</label>
+              <input
+                id="product-sku"
+                className={s.addLeadInput}
+                type="text"
+                value={form.sku}
+                onChange={(e) => onFormChange("sku", e.target.value)}
+                placeholder="e.g. SW-001"
+              />
+            </div>
+          </div>
+
+          <div className={s.modalActions}>
+            <button type="button" className={s.btnGhost} onClick={onClose}>
+              <X className={s.btnIcon} aria-hidden="true" />
+              Cancel
+            </button>
+            <button type="button" className={s.btnPrimary} onClick={onSubmit} disabled={isSaving}>
+              {isSaving ? (
+                <>
+                  <LoaderCircle className={s.spinner} aria-hidden="true" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save className={s.btnIcon} aria-hidden="true" />
+                  {submitLabel}
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ── TAB 3: PRODUCT CATALOG
 // ─────────────────────────────────────────────────────────────────────────────
-function ProductCatalogTab() {
-  const [products, setProducts] = useState(INITIAL_PRODUCTS);
-  const [search, setSearch]     = useState("");
+function ProductCatalogTab({ currentLead, onLeadUpdated }) {
+  const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
-  const [showAdd, setShowAdd]   = useState(false);
-  const [newProduct, setNewProduct] = useState({ name: "", category: "Software", price: "", sku: "", description: "" });
+  const [productModal, setProductModal] = useState(false);
+  const [productForm, setProductForm] = useState({ productName: "", category: "Software", price: "", sku: "" });
+  const [suggestions, setSuggestions] = useState([]);
+  const [highlightedSuggestion, setHighlightedSuggestion] = useState(-1);
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [productToast, setProductToast] = useState(null);
+  const [editingProductId, setEditingProductId] = useState(null);
+  const [deletingProductId, setDeletingProductId] = useState(null);
+
+  const currentLeadId = currentLead?._id || currentLead?.id || "";
+  const leadProducts = useMemo(() => {
+    if (!Array.isArray(currentLead?.products)) return [];
+    return currentLead.products;
+  }, [currentLead]);
+
+  useEffect(() => {
+    if (!productModal) return;
+
+    const query = productForm.productName.trim();
+    if (!query || query.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const result = await leadService.getProductSuggestions(query);
+      if (result.error) {
+        setSuggestions([]);
+        setProductToast({ type: "error", message: result.error });
+        return;
+      }
+
+      setSuggestions(Array.isArray(result.data) ? result.data : []);
+      setHighlightedSuggestion(-1);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [productForm.productName, productModal]);
+
+  useEffect(() => {
+    if (!productToast) return;
+    const timer = setTimeout(() => setProductToast(null), 3000);
+    return () => clearTimeout(timer);
+  }, [productToast]);
+
+  useEffect(() => {
+    if (!productModal) return;
+
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setProductModal(false);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [productModal]);
 
   const filtered = useMemo(() =>
-    products.filter((p) => {
-      const matchCat = category === "All" || p.category === category;
-      const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());
+    leadProducts.filter((p) => {
+      const productName = String(p?.productName || "").toLowerCase();
+      const productSku = String(p?.sku || "").toLowerCase();
+      const matchCat = category === "All" || p?.category === category;
+      const matchSearch = !search || productName.includes(search.toLowerCase()) || productSku.includes(search.toLowerCase());
       return matchCat && matchSearch;
     }),
-    [products, category, search]
+    [leadProducts, category, search]
   );
 
-  const handleAddProduct = () => {
-    if (!newProduct.name.trim() || !newProduct.price) return;
-    setProducts((prev) => [...prev, {
-      id: `p${Date.now()}`,
-      name: newProduct.name.trim(),
-      category: newProduct.category,
-      price: parseFloat(newProduct.price) || 0,
-      sku: newProduct.sku.trim() || `SKU-${Date.now()}`,
-      stock: "∞",
-      status: "Active",
-      description: newProduct.description,
-    }]);
-    setNewProduct({ name: "", category: "Software", price: "", sku: "", description: "" });
-    setShowAdd(false);
+  const resetProductModal = () => {
+    setProductForm({ productName: "", category: "Software", price: "", sku: "" });
+    setSuggestions([]);
+    setHighlightedSuggestion(-1);
+    setIsSavingProduct(false);
+    setEditingProductId(null);
+  };
+
+  const handleCloseProductModal = () => {
+    setProductModal(false);
+    resetProductModal();
+  };
+
+  const handleProductFormChange = (field, value) => {
+    setProductForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleSuggestionSelect = (suggestion) => {
+    setProductForm({
+      productName: suggestion.productName || "",
+      category: suggestion.category || "Software",
+      price: suggestion.price != null ? String(suggestion.price) : "",
+      sku: suggestion.sku || "",
+    });
+    setSuggestions([]);
+    setHighlightedSuggestion(-1);
+  };
+
+  const openAddProductModal = () => {
+    resetProductModal();
+    setProductModal(true);
+  };
+
+  const openEditProductModal = (product) => {
+    resetProductModal();
+    setEditingProductId(product?._id || product?.id || null);
+    setProductForm({
+      productName: product?.productName || product?.name || "",
+      category: product?.category || "Software",
+      price: String(product?.price ?? ""),
+      sku: product?.sku || "",
+    });
+    setProductModal(true);
+  };
+
+  const handleSuggestionKeyDown = (e) => {
+    if (!suggestions.length) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightedSuggestion((prev) => (prev + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedSuggestion((prev) => (prev <= 0 ? suggestions.length - 1 : prev - 1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (highlightedSuggestion >= 0) {
+        handleSuggestionSelect(suggestions[highlightedSuggestion]);
+      }
+    } else if (e.key === "Escape") {
+      setSuggestions([]);
+      setHighlightedSuggestion(-1);
+    }
+  };
+
+  const handleProductSubmit = async () => {
+    if (!currentLeadId || !productForm.productName.trim() || !productForm.category || !productForm.price || !productForm.sku.trim()) {
+      setProductToast({ type: "error", message: "Please complete all required product fields." });
+      return;
+    }
+
+    setIsSavingProduct(true);
+    const payload = {
+      productName: productForm.productName.trim(),
+      category: productForm.category,
+      price: Number(productForm.price),
+      sku: productForm.sku.trim().toUpperCase(),
+    };
+
+    const result = editingProductId
+      ? await leadService.updateLeadProduct(currentLeadId, editingProductId, payload)
+      : await leadService.addProductToLead(currentLeadId, payload);
+
+    setIsSavingProduct(false);
+
+    if (result.error) {
+      setProductToast({ type: "error", message: result.error });
+      return;
+    }
+
+    const savedLead = result.data;
+    onLeadUpdated?.(savedLead);
+    setProductToast({ type: "success", message: editingProductId ? "Product updated successfully." : "Product added to lead successfully." });
+    handleCloseProductModal();
+  };
+
+  const handleDeleteProduct = async (product) => {
+    const productId = product?._id || product?.id;
+    if (!currentLeadId || !productId) return;
+
+    const confirmed = window.confirm(`Delete ${product?.productName || product?.name || "this product"}?`);
+    if (!confirmed) return;
+
+    setDeletingProductId(productId);
+    const result = await leadService.deleteLeadProduct(currentLeadId, productId);
+    setDeletingProductId(null);
+
+    if (result.error) {
+      setProductToast({ type: "error", message: result.error });
+      return;
+    }
+
+    onLeadUpdated?.(result.data);
+    setProductToast({ type: "success", message: "Product deleted successfully." });
   };
 
   return (
@@ -925,69 +1233,90 @@ function ProductCatalogTab() {
             </button>
           ))}
         </div>
-        <button className={s.btnPrimary} onClick={() => setShowAdd(true)}>+ Add Product</button>
+        <button className={s.btnPrimary} onClick={openAddProductModal}>
+          <Plus className={s.btnIcon} aria-hidden="true" />
+          Add Product
+        </button>
       </div>
 
-      {/* Add Product Form */}
-      {showAdd && (
-        <div className={s.addLeadForm}>
-          <div className={s.addLeadGrid} style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr" }}>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Product Name *</label>
-              <input className={s.addLeadInput} value={newProduct.name} onChange={(e) => setNewProduct((p) => ({ ...p, name: e.target.value }))} placeholder="Product name" />
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Category</label>
-              <select className={s.addLeadInput} value={newProduct.category} onChange={(e) => setNewProduct((p) => ({ ...p, category: e.target.value }))}>
-                {PRODUCT_CATEGORIES.filter((c) => c !== "All").map((c) => <option key={c}>{c}</option>)}
-              </select>
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>Price (EGP) *</label>
-              <input type="number" className={s.addLeadInput} value={newProduct.price} onChange={(e) => setNewProduct((p) => ({ ...p, price: e.target.value }))} placeholder="0.00" />
-            </div>
-            <div className={s.addLeadField}>
-              <label className={s.addLeadLabel}>SKU</label>
-              <input className={s.addLeadInput} value={newProduct.sku} onChange={(e) => setNewProduct((p) => ({ ...p, sku: e.target.value }))} placeholder="e.g. SW-001" />
-            </div>
-          </div>
-          <div className={s.addLeadActions}>
-            <button className={s.btnGhost} onClick={() => setShowAdd(false)}>Cancel</button>
-            <button className={s.btnPrimary} onClick={handleAddProduct}>Add Product</button>
-          </div>
-        </div>
-      )}
+      <ProductModal
+        open={productModal}
+        onClose={handleCloseProductModal}
+        form={productForm}
+        onFormChange={handleProductFormChange}
+        suggestions={suggestions}
+        highlightedSuggestion={highlightedSuggestion}
+        onSuggestionSelect={handleSuggestionSelect}
+        onSuggestionKeyDown={handleSuggestionKeyDown}
+        onInputFocus={() => {
+          if (productForm.productName.trim().length >= 2) {
+            setSuggestions((prev) => prev);
+          }
+        }}
+        onInputBlur={() => setTimeout(() => setSuggestions([]), 120)}
+        isSaving={isSavingProduct}
+        onSubmit={handleProductSubmit}
+        error={productToast?.type === "error" ? productToast.message : ""}
+        success={productToast?.type === "success" ? productToast.message : ""}
+        title={editingProductId ? "Edit Product" : "Add Product"}
+        submitLabel={editingProductId ? "Save Changes" : "Save Product"}
+      />
 
       {/* Product Grid */}
       <div className={s.productGrid}>
-        {filtered.map((prod) => {
+        {filtered.map((prod, index) => {
           const statusMeta = {
             Active:     { cls: s.prodStatusActive, color: "#2F9E44", bg: "#EBFBEE" },
             Draft:      { cls: s.prodStatusDraft,  color: "#6C757D", bg: "#F1F3F5" },
             "Low Stock":{ cls: s.prodStatusLow,    color: "#E67700", bg: "#FFF3BF" },
-          }[prod.status] || { color: "#6C757D", bg: "#F1F3F5" };
-          const CategoryIcon = { Software: Laptop, Hardware: HardDrive, Cloud, Services: Wrench }[prod.category] || Package;
+          }[prod?.status] || { color: "#6C757D", bg: "#F1F3F5" };
+          const CategoryIcon = { Software: Laptop, Hardware: HardDrive, Cloud, Services: Wrench }[prod?.category] || Package;
           return (
-            <div key={prod.id} className={s.productCard}>
+            <div key={prod?._id || `${prod?.sku || "product"}-${index}`} className={s.productCard}>
               <div className={s.productCardTop}>
                 <div className={s.productIcon} aria-hidden="true">
                   <CategoryIcon className={s.productIconSvg} />
                 </div>
                 <span className={s.productStatus} style={{ background: statusMeta.bg, color: statusMeta.color }}>
-                  {prod.status}
+                  {prod?.status || "Active"}
                 </span>
               </div>
-              <p className={s.productName}>{prod.name}</p>
-              <p className={s.productDesc}>{prod.description}</p>
+              <p className={s.productName}>{prod?.productName || prod?.name || "Unnamed product"}</p>
               <div className={s.productMeta}>
-                <span className={s.productCat}>{prod.category}</span>
-                <span className={s.productSku}>{prod.sku}</span>
+                <span className={s.productCat}>{prod?.category || "Uncategorized"}</span>
+                <span className={s.productSku}>{prod?.sku || ""}</span>
               </div>
               <div className={s.productFooter}>
-                <span className={s.productPrice}>{fmtFull(prod.price)}</span>
+                <span className={s.productPrice}>{fmtFull(Number(prod?.price ?? 0))}</span>
                 <div className={s.productActions}>
-                  <button className={s.prodActionBtn} aria-label="Edit"><Pencil aria-hidden="true" /></button>
-                  <button className={s.prodActionBtn} aria-label="More"><MoreHorizontal aria-hidden="true" /></button>
+                  <button
+                    className={s.prodActionBtn}
+                    aria-label="Edit product"
+                    title="Edit product"
+                    onClick={() => openEditProductModal(prod)}
+                    disabled={isSavingProduct || deletingProductId === (prod?._id || prod?.id)}
+                    type="button"
+                  >
+                    {deletingProductId === (prod?._id || prod?.id) ? (
+                      <LoaderCircle className={s.prodActionIcon} aria-hidden="true" />
+                    ) : (
+                      <Pencil className={s.prodActionIcon} aria-hidden="true" />
+                    )}
+                  </button>
+                  <button
+                    className={s.prodActionBtn}
+                    aria-label="Delete product"
+                    title="Delete product"
+                    onClick={() => handleDeleteProduct(prod)}
+                    disabled={isSavingProduct || deletingProductId === (prod?._id || prod?.id)}
+                    type="button"
+                  >
+                    {deletingProductId === (prod?._id || prod?.id) ? (
+                      <LoaderCircle className={s.prodActionIcon} aria-hidden="true" />
+                    ) : (
+                      <Trash2 className={s.prodActionIcon} aria-hidden="true" />
+                    )}
+                  </button>
                 </div>
               </div>
             </div>
@@ -1142,6 +1471,7 @@ export default function SalesPage() {
   const [activeNav, setActiveNav] = useState("sales");
   const [activeTab, setActiveTab] = useState("pipeline");
   const [leads, setLeads] = useState([]);
+  const [activeLeadId, setActiveLeadId] = useState("");
   const [newLeadDefaults, setNewLeadDefaults] = useState(null);
   const [leadError, setLeadError] = useState("");
   const [isLoadingLeads, setIsLoadingLeads] = useState(true);
@@ -1172,7 +1502,11 @@ export default function SalesPage() {
       }
 
       const loadedLeads = Array.isArray(result.data) ? result.data : [];
-      setLeads(loadedLeads.map(mapLeadToPipeline));
+      const mappedLeads = loadedLeads.map(mapLeadToPipeline);
+      setLeads(mappedLeads);
+      if (!activeLeadId && mappedLeads.length) {
+        setActiveLeadId(mappedLeads[0].id || "");
+      }
       setIsLoadingLeads(false);
     };
 
@@ -1181,7 +1515,7 @@ export default function SalesPage() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [activeLeadId]);
 
   const handleCreateLead = useCallback(async (newLead) => {
     const result = await leadService.createLead(buildLeadPayload(newLead));
@@ -1192,7 +1526,9 @@ export default function SalesPage() {
     }
 
     const createdLead = result.data;
-    setLeads((prev) => [mapLeadToPipeline(createdLead), ...prev]);
+    const mappedLead = mapLeadToPipeline(createdLead);
+    setLeads((prev) => [mappedLead, ...prev]);
+    setActiveLeadId(mappedLead.id || createdLead?._id || createdLead?.id || "");
     setActiveTab("pipeline");
     setLeadError("");
     return true;
@@ -1228,6 +1564,18 @@ export default function SalesPage() {
 
     setLeads((prev) => prev.filter((lead) => lead.id !== leadId));
     setLeadError("");
+  }, []);
+
+  const handleLeadProductUpdate = useCallback((updatedLead) => {
+    if (!updatedLead) return;
+
+    const mappedLead = mapLeadToPipeline(updatedLead);
+    setLeads((prev) => prev.map((lead) => {
+      const matchesLeadId = lead.id === updatedLead?._id || lead.id === updatedLead?.id || lead.id === mappedLead.id;
+      if (!matchesLeadId) return lead;
+
+      return { ...lead, ...mappedLead, rawLead: updatedLead };
+    }));
   }, []);
 
   return (
@@ -1303,7 +1651,7 @@ export default function SalesPage() {
               />
             )}
             {activeTab === "analytics" && <SalesAnalyticsTab />}
-            {activeTab === "catalog"   && <ProductCatalogTab />}
+            {activeTab === "catalog"   && <ProductCatalogTab currentLead={leads.find((lead) => lead.id === activeLeadId)?.rawLead || null} onLeadUpdated={handleLeadProductUpdate} />}
             {activeTab === "customers" && <CustomersTab />}
           </div>
         </main>

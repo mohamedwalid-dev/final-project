@@ -6,6 +6,37 @@ const allowedPriority = ["Low", "Medium", "High"];
 const allowedStage = ["New", "Contacted", "Proposal", "Negotiation", "Closed", "Closed Won", "Closed Lost"];
 const allowedStatus = ["Open", "Won", "Lost"];
 
+export const validateLeadProduct = [
+  body("productName")
+    .trim()
+    .notEmpty()
+    .withMessage("productName is required")
+    .isString()
+    .withMessage("productName must be a string"),
+
+  body("category")
+    .trim()
+    .notEmpty()
+    .withMessage("category is required")
+    .isString()
+    .withMessage("category must be a string"),
+
+  body("price")
+    .notEmpty()
+    .withMessage("price is required")
+    .isFloat({ gt: 0 })
+    .withMessage("price must be greater than 0"),
+
+  body("sku")
+    .trim()
+    .notEmpty()
+    .withMessage("sku is required")
+    .isString()
+    .withMessage("sku must be a string")
+    .isLength({ min: 2 })
+    .withMessage("sku must be at least 2 characters"),
+];
+
 export const validateLead = [
   body("clientName")
     .optional({ values: "falsy" })

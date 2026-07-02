@@ -32,6 +32,9 @@ export const ENDPOINTS = {
     DETAIL: (id) => `/leads/${id}`,
     UPDATE: (id) => `/leads/${id}`,
     DELETE: (id) => `/leads/${id}`,
+    PRODUCT_SUGGESTIONS: "/leads/products/suggestions",
+    PRODUCTS: (id) => `/leads/${id}/products`,
+    PRODUCT_DETAIL: (leadId, productId) => `/leads/${leadId}/products/${productId}`,
   },
 };
 

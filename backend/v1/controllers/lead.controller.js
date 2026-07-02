@@ -1,6 +1,7 @@
 // controllers/lead.controller.js
 
 import Lead from "../models/Lead.js";
+import Inventory from "../models/inventoryModel.js";
 import AppError from "../utils/AppError.js";
 
 const normalizePriority = (value) => {
@@ -94,6 +95,171 @@ const buildLeadPayload = (payload = {}, { forCreate = false } = {}) => {
   }
 
   return nextPayload;
+};
+
+export const addProductToLead = async (req, res, next) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+
+    if (!lead) {
+      throw new AppError("Lead not found", 404);
+    }
+
+    const productPayload = {
+      productName: req.body.productName?.trim(),
+      category: req.body.category?.trim(),
+      price: Number(req.body.price),
+      sku: req.body.sku?.trim().toUpperCase(),
+    };
+
+    if (!productPayload.productName) {
+      throw new AppError("productName is required", 400);
+    }
+
+    if (!productPayload.category) {
+      throw new AppError("category is required", 400);
+    }
+
+    if (!Number.isFinite(productPayload.price) || productPayload.price <= 0) {
+      throw new AppError("price must be greater than 0", 400);
+    }
+
+    if (!productPayload.sku) {
+      throw new AppError("sku is required", 400);
+    }
+
+    lead.products = lead.products || [];
+    lead.products.push({
+      ...productPayload,
+      createdAt: new Date(),
+    });
+
+    await lead.save();
+
+    return res.status(200).json({
+      status: "success",
+      data: lead,
+      message: "Product added to lead successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const updateProductInLead = async (req, res, next) => {
+  try {
+    const lead = await Lead.findById(req.params.leadId);
+
+    if (!lead) {
+      throw new AppError("Lead not found", 404);
+    }
+
+    const product = lead.products?.id(req.params.productId);
+
+    if (!product) {
+      throw new AppError("Product not found", 404);
+    }
+
+    const productPayload = {
+      productName: req.body.productName?.trim(),
+      category: req.body.category?.trim(),
+      price: Number(req.body.price),
+      sku: req.body.sku?.trim().toUpperCase(),
+    };
+
+    if (!productPayload.productName) {
+      throw new AppError("productName is required", 400);
+    }
+
+    if (!productPayload.category) {
+      throw new AppError("category is required", 400);
+    }
+
+    if (!Number.isFinite(productPayload.price) || productPayload.price <= 0) {
+      throw new AppError("price must be greater than 0", 400);
+    }
+
+    if (!productPayload.sku) {
+      throw new AppError("sku is required", 400);
+    }
+
+    product.set(productPayload);
+    await lead.save();
+
+    return res.status(200).json({
+      status: "success",
+      data: lead,
+      message: "Product updated successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const deleteProductFromLead = async (req, res, next) => {
+  try {
+    const lead = await Lead.findById(req.params.leadId);
+
+    if (!lead) {
+      throw new AppError("Lead not found", 404);
+    }
+
+    const hasProduct = lead.products?.some((item) => String(item._id) === String(req.params.productId));
+
+    if (!hasProduct) {
+      throw new AppError("Product not found", 404);
+    }
+
+    lead.products = (lead.products || []).filter((item) => String(item._id) !== String(req.params.productId));
+    await lead.save();
+
+    return res.status(200).json({
+      status: "success",
+      data: lead,
+      message: "Product removed successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const getInventorySuggestions = async (req, res, next) => {
+  try {
+    const query = req.query.q?.trim() || "";
+
+    if (!query) {
+      return res.status(200).json({
+        status: "success",
+        data: [],
+        message: "No suggestions",
+      });
+    }
+
+    const searchRegex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const suggestions = await Inventory.find({
+      $or: [{ name: searchRegex }, { sku: searchRegex }],
+    })
+      .select("name category price sku")
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+
+    const formattedSuggestions = suggestions.map((item) => ({
+      _id: item._id,
+      productName: item.name,
+      category: item.category,
+      price: item.price,
+      sku: item.sku,
+    }));
+
+    return res.status(200).json({
+      status: "success",
+      data: formattedSuggestions,
+      message: "Product suggestions fetched successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
 };
 
 export const createLead = async (req, res, next) => {

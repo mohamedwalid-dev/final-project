@@ -48,6 +48,46 @@ const leadService = {
     }
   },
 
+  getProductSuggestions: async (query) => {
+    try {
+      const result = await http.get(ENDPOINTS.LEADS.PRODUCT_SUGGESTIONS, { params: { q: query } });
+      if (result.error) return { data: null, error: result.error };
+      return { data: result.data?.data || [], error: null };
+    } catch (err) {
+      return { data: null, error: err.message || "Failed to fetch suggestions" };
+    }
+  },
+
+  addProductToLead: async (id, payload) => {
+    try {
+      const result = await http.post(ENDPOINTS.LEADS.PRODUCTS(id), payload);
+      if (result.error) return { data: null, error: result.error, errorData: result.errorData };
+      return { data: result.data?.data, error: null };
+    } catch (err) {
+      return { data: null, error: err.message || "Failed to add product to lead" };
+    }
+  },
+
+  updateLeadProduct: async (leadId, productId, payload) => {
+    try {
+      const result = await http.put(ENDPOINTS.LEADS.PRODUCT_DETAIL(leadId, productId), payload);
+      if (result.error) return { data: null, error: result.error, errorData: result.errorData };
+      return { data: result.data?.data, error: null };
+    } catch (err) {
+      return { data: null, error: err.message || "Failed to update product" };
+    }
+  },
+
+  deleteLeadProduct: async (leadId, productId) => {
+    try {
+      const result = await http.delete(ENDPOINTS.LEADS.PRODUCT_DETAIL(leadId, productId));
+      if (result.error) return { data: null, error: result.error, errorData: result.errorData };
+      return { data: result.data?.data, error: null };
+    } catch (err) {
+      return { data: null, error: err.message || "Failed to delete product" };
+    }
+  },
+
   // Delete lead
   deleteLead: async (id) => {
     try {
