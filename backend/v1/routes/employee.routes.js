@@ -15,15 +15,15 @@ import {
   deleteEmployeeValidator,
 } from "../middleware/employee.validator.js";
 
-import { validate } from "../middleware/employee.middleware.js";
+import { sanitizeEmployeePayload, validate } from "../middleware/employee.middleware.js";
 
 const router = express.Router();
 
-router.post("/", createEmployeeValidator, validate, createEmployee);
+router.post("/", sanitizeEmployeePayload, createEmployeeValidator, validate, createEmployee);
 router.get("/", getAllEmployees);
 router.get("/:id", getEmployeeValidator, validate, getEmployeeById);
-router.put("/:id", updateEmployeeValidator, validate, updateEmployee);
-router.patch("/:id", updateEmployeeValidator, validate, updateEmployee);
+router.put("/:id", sanitizeEmployeePayload, updateEmployeeValidator, validate, updateEmployee);
+router.patch("/:id", sanitizeEmployeePayload, updateEmployeeValidator, validate, updateEmployee);
 router.delete("/:id", deleteEmployeeValidator, validate, deleteEmployee);
 
 export default router;

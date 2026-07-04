@@ -93,7 +93,7 @@ function Avatar({ emp, size = 56 }) {
   );
 }
 
-function EmployeeCard({ emp }) {
+function EmployeeCard({ emp, onEdit, onDelete }) {
   const deptColors = {
     Engineering: "#3B5BDB", Design: "#845EF7", Marketing: "#F59F00",
     Finance: "#2F9E44", HR: "#FA5252", Sales: "#4DABF7",
@@ -114,18 +114,18 @@ function EmployeeCard({ emp }) {
         </div>
       </div>
       <div className={s.empActions}>
-        <button className={s.empActionBtn} onClick={() => {}} aria-label={`Message ${emp.name}`}>
-          Message
+        <button className={s.empActionBtn} onClick={() => onEdit(emp)} aria-label={`Edit ${emp.name}`}>
+          Edit
         </button>
-        <button className={s.empActionBtn} onClick={() => {}} aria-label={`Schedule with ${emp.name}`}>
-          Schedule
+        <button className={s.empActionBtn} onClick={() => onDelete(emp)} aria-label={`Delete ${emp.name}`}>
+          Delete
         </button>
       </div>
     </div>
   );
 }
 
-function EmployeeRow({ emp }) {
+function EmployeeRow({ emp, onEdit, onDelete }) {
   const statusLabel = emp.status === "active" ? "Active" : emp.status === "leave" ? "On Leave" : "Inactive";
   const statusClass = emp.status === "active" ? s.badgeActive : emp.status === "leave" ? s.badgeLeave : s.badgeInactive;
 
@@ -145,8 +145,8 @@ function EmployeeRow({ emp }) {
       <td className={s.td}><span className={`${s.badge} ${statusClass}`}>{statusLabel}</span></td>
       <td className={s.td}>
         <div className={s.rowActionBtns}>
-          <button className={s.empActionBtn} onClick={() => {}} aria-label={`Message ${emp.name}`}>Message</button>
-          <button className={s.empActionBtn} onClick={() => {}} aria-label={`Schedule with ${emp.name}`}>Schedule</button>
+          <button className={s.empActionBtn} onClick={() => onEdit(emp)} aria-label={`Edit ${emp.name}`}>Edit</button>
+          <button className={s.empActionBtn} onClick={() => onDelete(emp)} aria-label={`Delete ${emp.name}`}>Delete</button>
         </div>
       </td>
     </tr>
@@ -231,11 +231,57 @@ function CapacityBar({ dept, pct, color }) {
 
 const DEPT_OPTIONS = ["Engineering", "Design", "Marketing", "Finance", "HR", "Sales", "Support", "Product"];
 
-function AddEmployeeModal({ onClose, onSubmit }) {
-  const [form,     setForm]     = useState({ name: "", title: "", dept: "Engineering", location: "", email: "" });
-  const [errors,   setErrors]   = useState({});
-  const [loading,  setLoading]  = useState(false);
+function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLabel = "Add Employee", title = "Add New Employee" }) {
+  const initialForm = {
+    name: "",
+    title: "",
+    dept: "Engineering",
+    location: "",
+    email: "",
+    salary: "",
+    phoneNumber: "",
+    startDate: "",
+    dateOfBirth: "",
+    gender: "",
+  };
+
+  const [form, setForm] = useState(() => {
+    if (!initialEmployee) return initialForm;
+    return {
+      name: initialEmployee.fullName || initialEmployee.name || "",
+      title: initialEmployee.jobTitle || initialEmployee.title || "",
+      dept: initialEmployee.department || initialEmployee.dept || "Engineering",
+      location: initialEmployee.location || "",
+      email: initialEmployee.workEmail || initialEmployee.email || "",
+      salary: initialEmployee.salary ?? "",
+      phoneNumber: initialEmployee.phoneNumber || "",
+      startDate: initialEmployee.startDate ? initialEmployee.startDate.slice(0, 10) : "",
+      dateOfBirth: initialEmployee.dateOfBirth ? initialEmployee.dateOfBirth.slice(0, 10) : "",
+      gender: initialEmployee.gender || "",
+    };
+  });
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(false);
   const overlayRef = useRef(null);
+
+  useEffect(() => {
+    if (!initialEmployee) {
+      setForm(initialForm);
+      return;
+    }
+    setForm({
+      name: initialEmployee.fullName || initialEmployee.name || "",
+      title: initialEmployee.jobTitle || initialEmployee.title || "",
+      dept: initialEmployee.department || initialEmployee.dept || "Engineering",
+      location: initialEmployee.location || "",
+      email: initialEmployee.workEmail || initialEmployee.email || "",
+      salary: initialEmployee.salary ?? "",
+      phoneNumber: initialEmployee.phoneNumber || "",
+      startDate: initialEmployee.startDate ? initialEmployee.startDate.slice(0, 10) : "",
+      dateOfBirth: initialEmployee.dateOfBirth ? initialEmployee.dateOfBirth.slice(0, 10) : "",
+      gender: initialEmployee.gender || "",
+    });
+  }, [initialEmployee]);
 
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
@@ -250,19 +296,41 @@ function AddEmployeeModal({ onClose, onSubmit }) {
 
   const validate = () => {
     const errs = {};
-    if (!form.name.trim())     errs.name     = "Name is required";
-    if (!form.title.trim())    errs.title    = "Job title is required";
+    if (!form.name.trim()) errs.name = "Name is required";
+    if (!form.title.trim()) errs.title = "Job title is required";
     if (!form.location.trim()) errs.location = "Location is required";
-    if (!form.email.trim())    errs.email    = "Email is required";
+    if (!form.email.trim()) errs.email = "Email is required";
     else if (!/\S+@\S+\.\S+/.test(form.email)) errs.email = "Invalid email";
+    if (form.salary === "" || form.salary === null) errs.salary = "Salary is required";
+    else if (Number(form.salary) < 0) errs.salary = "Salary must be greater than or equal to 0";
+    if (!form.phoneNumber.trim()) errs.phoneNumber = "Phone number is required";
+    else if (!/^\+?[0-9\s()-]{7,15}$/.test(form.phoneNumber)) errs.phoneNumber = "Invalid phone number";
+    if (!form.startDate) errs.startDate = "Start date is required";
+    if (!form.dateOfBirth) errs.dateOfBirth = "Date of birth is required";
+    if (!form.gender) errs.gender = "Gender is required";
     return errs;
   };
 
   const handleSubmit = async () => {
     const errs = validate();
-    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+    if (Object.keys(errs).length > 0) {
+      setErrors(errs);
+      return;
+    }
     setLoading(true);
-    const { error } = await onSubmit(form);
+    const payload = {
+      fullName: form.name.trim(),
+      jobTitle: form.title.trim(),
+      department: form.dept,
+      location: form.location.trim(),
+      workEmail: form.email.trim(),
+      salary: Number(form.salary),
+      phoneNumber: form.phoneNumber.trim(),
+      startDate: form.startDate,
+      dateOfBirth: form.dateOfBirth,
+      gender: form.gender,
+    };
+    const { error } = await onSubmit(payload);
     if (error) setErrors({ _form: error });
     setLoading(false);
   };
@@ -278,7 +346,7 @@ function AddEmployeeModal({ onClose, onSubmit }) {
     >
       <div className={s.modal}>
         <div className={s.modalHeader}>
-          <h2 className={s.modalTitle}>Add New Employee</h2>
+          <h2 className={s.modalTitle}>{title}</h2>
           <button className={s.modalClose} onClick={onClose} aria-label="Close">
             <X className={s.btnIcon} aria-hidden="true" />
           </button>
@@ -326,13 +394,54 @@ function AddEmployeeModal({ onClose, onSubmit }) {
                 placeholder="e.g. sarah@Prime.com" />
               {errors.email && <p className={s.fieldError}>{errors.email}</p>}
             </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Salary *</label>
+              <input type="number" min="0" className={`${s.input} ${errors.salary ? s.inputError : ""}`}
+                value={form.salary} onChange={(e) => setField("salary", e.target.value)}
+                placeholder="e.g. 85000" />
+              {errors.salary && <p className={s.fieldError}>{errors.salary}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Phone Number *</label>
+              <input type="tel" className={`${s.input} ${errors.phoneNumber ? s.inputError : ""}`}
+                value={form.phoneNumber} onChange={(e) => setField("phoneNumber", e.target.value)}
+                placeholder="e.g. +1 555 123 4567" />
+              {errors.phoneNumber && <p className={s.fieldError}>{errors.phoneNumber}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Start Date *</label>
+              <input type="date" className={`${s.input} ${errors.startDate ? s.inputError : ""}`}
+                value={form.startDate} onChange={(e) => setField("startDate", e.target.value)} />
+              {errors.startDate && <p className={s.fieldError}>{errors.startDate}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Date of Birth *</label>
+              <input type="date" className={`${s.input} ${errors.dateOfBirth ? s.inputError : ""}`}
+                value={form.dateOfBirth} onChange={(e) => setField("dateOfBirth", e.target.value)} />
+              {errors.dateOfBirth && <p className={s.fieldError}>{errors.dateOfBirth}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Gender *</label>
+              <select className={`${s.input} ${errors.gender ? s.inputError : ""}`} value={form.gender} onChange={(e) => setField("gender", e.target.value)}>
+                <option value="">Select gender</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Prefer not to say">Prefer not to say</option>
+              </select>
+              {errors.gender && <p className={s.fieldError}>{errors.gender}</p>}
+            </div>
           </div>
         </div>
 
         <div className={s.modalFooter}>
           <button className={s.btnGhost} onClick={onClose}>Cancel</button>
           <button className={s.btnPrimary} onClick={handleSubmit} disabled={loading}>
-            {loading ? <><span className={s.miniSpinner} /> Adding...</> : "Add Employee"}
+            {loading ? <><span className={s.miniSpinner} /> {submitLabel === "Update Employee" ? "Updating..." : "Adding..."}</> : submitLabel}
           </button>
         </div>
       </div>
@@ -489,6 +598,8 @@ export default function HRPage() {
   const [activeNav, setActiveNav] = useState("hr");
   const [showCalendar,   setShowCalendar]   = useState(false);
   const [showCompliance, setShowCompliance] = useState(false);
+  const [editingEmployee, setEditingEmployee] = useState(null);
+  const [employeeNotice, setEmployeeNotice] = useState("");
   const calendarRef = useRef(null);
   const navigate = useNavigate();
 
@@ -510,8 +621,54 @@ export default function HRPage() {
     leaveResponding,
     handleLeaveAction,
     handleAddEmployee,
+    handleUpdateEmployee,
+    handleDeleteEmployee,
     reload,
   } = useHRPage();
+
+  const openEmployeeModal = () => {
+    setEditingEmployee(null);
+    setEmployeeNotice("");
+    setShowAddEmployee(true);
+  };
+
+  const handleEmployeeSubmit = async (payload) => {
+    if (editingEmployee) {
+      const result = await handleUpdateEmployee(editingEmployee.id || editingEmployee._id, payload);
+      if (!result.error) {
+        setEmployeeNotice("Employee updated successfully");
+        setEditingEmployee(null);
+        setShowAddEmployee(false);
+        return { error: null };
+      }
+      return result;
+    }
+
+    const result = await handleAddEmployee(payload);
+    if (!result.error) {
+      setEmployeeNotice("Employee created successfully");
+      setShowAddEmployee(false);
+      return { error: null };
+    }
+    return result;
+  };
+
+  const handleEmployeeDelete = async (emp) => {
+    const confirmed = window.confirm(`Delete ${emp.name || emp.fullName}?`);
+    if (!confirmed) return;
+    const result = await handleDeleteEmployee(emp.id || emp._id);
+    if (!result.error) {
+      setEmployeeNotice("Employee deleted successfully");
+    } else {
+      setEmployeeNotice(result.error);
+    }
+  };
+
+  useEffect(() => {
+    if (!employeeNotice) return;
+    const timeout = window.setTimeout(() => setEmployeeNotice(""), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [employeeNotice]);
 
   return (
     <div className={shell.appShell}>
@@ -521,6 +678,12 @@ export default function HRPage() {
         <Header breadcrumbs={["Prime ERP", "Human Resources", "Employee Directory"]} />
 
         <main className={s.page}>
+
+          {employeeNotice && (
+            <div className={s.errorCard} role="status" style={{ background: "#ECFDF3", borderColor: "#A7F3D0", color: "#0F766E" }}>
+              <span>{employeeNotice}</span>
+            </div>
+          )}
 
           {error && (
             <div className={s.errorCard} role="alert">
@@ -566,7 +729,7 @@ export default function HRPage() {
 
                   <button
                     className={s.btnPrimary}
-                    onClick={() => setShowAddEmployee(true)}
+                    onClick={openEmployeeModal}
                     aria-label="Add new employee"
                   >
                     <UserPlus className={s.btnIcon} aria-hidden="true" />
@@ -634,7 +797,7 @@ export default function HRPage() {
                           <p className={s.emptySub}>Try adjusting your filters or search query.</p>
                         </div>
                       )
-                      : employees.map((emp) => <EmployeeCard key={emp.id} emp={emp} />)
+                      : employees.map((emp) => <EmployeeCard key={emp.id || emp._id} emp={emp} onEdit={(selected) => { setEditingEmployee(selected); setEmployeeNotice(""); setShowAddEmployee(true); }} onDelete={handleEmployeeDelete} />)
                   }
                 </div>
               )}
@@ -662,7 +825,7 @@ export default function HRPage() {
                             ))}
                           </tr>
                         ))
-                        : employees.map((emp) => <EmployeeRow key={emp.id} emp={emp} />)
+                        : employees.map((emp) => <EmployeeRow key={emp.id || emp._id} emp={emp} onEdit={(selected) => { setEditingEmployee(selected); setEmployeeNotice(""); setShowAddEmployee(true); }} onDelete={handleEmployeeDelete} />)
                       }
                     </tbody>
                   </table>
@@ -773,8 +936,14 @@ export default function HRPage() {
 
       {showAddEmployee && (
         <AddEmployeeModal
-          onClose={() => setShowAddEmployee(false)}
-          onSubmit={handleAddEmployee}
+          onClose={() => {
+            setShowAddEmployee(false);
+            setEditingEmployee(null);
+          }}
+          onSubmit={handleEmployeeSubmit}
+          initialEmployee={editingEmployee}
+          submitLabel={editingEmployee ? "Update Employee" : "Add Employee"}
+          title={editingEmployee ? "Edit Employee" : "Add New Employee"}
         />
       )}
 

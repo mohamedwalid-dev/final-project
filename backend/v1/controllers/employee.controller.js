@@ -35,11 +35,31 @@ export const getEmployeeById = async (req, res, next) => {
 
 export const updateEmployee = async (req, res, next) => {
   try {
-    const employee = await Employee.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
+    const allowedFields = [
+      "fullName",
+      "department",
+      "jobTitle",
+      "location",
+      "workEmail",
+      "salary",
+      "phoneNumber",
+      "startDate",
+      "dateOfBirth",
+      "gender",
+    ];
+
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([key]) => allowedFields.includes(key))
     );
+
+    if (Object.keys(updates).length === 0) {
+      return sendSuccess(res, [], "No fields were updated", 200);
+    }
+
+    const employee = await Employee.findByIdAndUpdate(req.params.id, updates, {
+      new: true,
+      runValidators: true,
+    });
 
     if (!employee) {
       throw new AppError("Employee not found", 404);

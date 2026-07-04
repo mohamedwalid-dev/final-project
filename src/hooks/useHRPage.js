@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import hrService from "../utils/hrService";
+import employeeService from "../utils/employeeService";
 
 export const VIEW_MODES = ["grid", "list"];
 
@@ -51,12 +52,22 @@ export default function useHRPage() {
 
     // Employees + departments
     Promise.all([
-      hrService.fetchEmployees({}, signal),
+      employeeService.fetchEmployees(signal),
       hrService.fetchDepartments(signal),
     ]).then(([emp, depts]) => {
       if (emp.error) setError(emp.error);
-      else setEmployees(emp.data ?? []);
-      if (!depts.error) setDepartments(depts.data ?? []);
+      else {
+        const mappedEmployees = (Array.isArray(emp.data) ? emp.data : []).map((item) => buildEmployeeViewModel(item));
+        setEmployees(mappedEmployees);
+
+        const departmentNames = ["All Departments", ...new Set(
+          [
+            ...(Array.isArray(depts?.data) ? depts.data : []),
+            ...mappedEmployees.map((employee) => employee.dept).filter(Boolean),
+          ].filter(Boolean)
+        )];
+        setDepartments(departmentNames);
+      }
       setLoadingEmployees(false);
     });
 
@@ -114,19 +125,58 @@ export default function useHRPage() {
     });
   }, []);
 
+  const buildEmployeeViewModel = useCallback((data, fallbackName = "") => {
+    const colors = ["#3B5BDB", "#F59F00", "#2F9E44", "#845EF7", "#FA5252", "#4DABF7"];
+    const name = data?.fullName || data?.name || fallbackName || "Employee";
+    const normalized = {
+      ...data,
+      id: data?._id || data?.id,
+      name,
+      fullName: data?.fullName || name,
+      dept: data?.department || data?.dept || "Engineering",
+      title: data?.jobTitle || data?.title || "Employee",
+      location: data?.location || "Unknown",
+      email: data?.workEmail || data?.email || "",
+      salary: data?.salary,
+      phoneNumber: data?.phoneNumber || "",
+      startDate: data?.startDate || "",
+      dateOfBirth: data?.dateOfBirth || "",
+      gender: data?.gender || "",
+      avatar: (name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2) || "EM"),
+      color: colors[Math.floor(Math.random() * colors.length)],
+      status: data?.status || "active",
+    };
+
+    return normalized;
+  }, []);
+
   // ── Add Employee ──────────────────────────────────────────────────────────────
   const handleAddEmployee = useCallback(async (formData) => {
-    const { data, error } = await hrService.addEmployee(formData);
+    const { data, error } = await employeeService.createEmployee(formData);
     if (!error && data) {
-      const colors = ["#3B5BDB","#F59F00","#2F9E44","#845EF7","#FA5252","#4DABF7"];
-      const newEmp = {
-        ...data,
-        avatar: formData.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2),
-        color:  colors[Math.floor(Math.random() * colors.length)],
-        status: "active",
-      };
-      setEmployees((prev) => [newEmp, ...prev]);
+      const normalized = buildEmployeeViewModel(data, formData.fullName || formData.name);
+      setEmployees((prev) => [normalized, ...prev]);
       setShowAddEmployee(false);
+      return { error: null };
+    }
+    return { error };
+  }, [buildEmployeeViewModel]);
+
+  const handleUpdateEmployee = useCallback(async (id, formData) => {
+    const { data, error } = await employeeService.updateEmployee(id, formData);
+    if (!error && data) {
+      const normalized = buildEmployeeViewModel(data, formData.fullName || formData.name);
+      setEmployees((prev) => prev.map((item) => (item.id === id || item._id === id ? normalized : item)));
+      return { error: null };
+    }
+    return { error };
+  }, [buildEmployeeViewModel]);
+
+  const handleDeleteEmployee = useCallback(async (id) => {
+    const { error } = await employeeService.deleteEmployee(id);
+    if (!error) {
+      setEmployees((prev) => prev.filter((item) => item.id !== id && item._id !== id));
+      return { error: null };
     }
     return { error };
   }, []);
@@ -154,6 +204,8 @@ export default function useHRPage() {
     // Actions
     handleLeaveAction,
     handleAddEmployee,
+    handleUpdateEmployee,
+    handleDeleteEmployee,
     reload: loadAll,
   };
 }
