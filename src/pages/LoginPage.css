@@ -1,0 +1,721 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   LoginPage.css  —  ERP Auth · Production-ready stylesheet
+   Compatible with: React 17+, modern browsers (ES2020 baseline)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* ── 1. Design Tokens ─────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --erp-primary: #2563eb;
+  --erp-primary-hover: #1d4ed8;
+  --erp-primary-active: #1e40af;
+  --erp-primary-light: #eff6ff;
+  --erp-primary-ring: rgba(37, 99, 235, 0.3);
+
+  /* Neutrals */
+  --erp-gray-50: #f8fafc;
+  --erp-gray-100: #f1f5f9;
+  --erp-gray-200: #e2e8f0;
+  --erp-gray-300: #cbd5e1;
+  --erp-gray-400: #94a3b8;
+  --erp-gray-500: #64748b;
+  --erp-gray-600: #475569;
+  --erp-gray-700: #334155;
+  --erp-gray-800: #1e293b;
+  --erp-gray-900: #0f172a;
+
+  /* Semantic */
+  --erp-error: #dc2626;
+  --erp-error-bg: #fef2f2;
+  --erp-error-border: #fecaca;
+  --erp-success: #16a34a;
+  --erp-border: var(--erp-gray-200);
+  --erp-border-focus: var(--erp-primary);
+
+  /* Surface */
+  --erp-surface: #ffffff;
+  --erp-page-bg: #f0f4f8;
+
+  /* Typography */
+  --erp-font: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --erp-font-mono: ui-monospace, "Cascadia Code", monospace;
+
+  /* Radius */
+  --erp-radius-sm: 6px;
+  --erp-radius-md: 10px;
+  --erp-radius-lg: 16px;
+  --erp-radius-full: 9999px;
+
+  /* Shadow */
+  --erp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --erp-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --erp-shadow-card: 0 8px 32px rgba(15, 23, 42, 0.08), 0 2px 8px rgba(15, 23, 42, 0.04);
+
+  /* Transition */
+  --erp-duration: 180ms;
+  --erp-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── 2. Reset & Base ──────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+input {
+  font-family: inherit;
+}
+
+/* ── 3. Page Shell ────────────────────────────────────────────────────────── */
+.erp-page {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px 60px;
+  background-color: var(--erp-page-bg);
+  /* Subtle gradient background */
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% 10%, rgba(219, 234, 254, 0.6) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 90%, rgba(239, 246, 255, 0.5) 0%, transparent 55%);
+  overflow: hidden;
+}
+
+/* Decorative blobs */
+.erp-page__blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.erp-page__blob--1 {
+  width: 500px;
+  height: 500px;
+  top: -160px;
+  left: -180px;
+  background: radial-gradient(circle, rgba(147, 197, 253, 0.25) 0%, transparent 70%);
+  animation: erp-blob-float 8s ease-in-out infinite alternate;
+}
+
+.erp-page__blob--2 {
+  width: 400px;
+  height: 400px;
+  bottom: -100px;
+  right: -120px;
+  background: radial-gradient(circle, rgba(196, 181, 253, 0.12) 0%, transparent 70%);
+  animation: erp-blob-float 11s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes erp-blob-float {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(20px, 15px) scale(1.06); }
+}
+
+/* ── 4. Container ─────────────────────────────────────────────────────────── */
+.erp-container {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  animation: erp-fade-up 0.45s var(--erp-ease) both;
+}
+
+@keyframes erp-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── 5. Brand Header ──────────────────────────────────────────────────────── */
+.erp-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.erp-brand__logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--erp-radius-md);
+  background: linear-gradient(135deg, var(--erp-primary) 0%, #3b82f6 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+  flex-shrink: 0;
+}
+
+.erp-brand__name {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--erp-gray-800);
+  letter-spacing: -0.02em;
+}
+
+/* ── 6. Hero Text ─────────────────────────────────────────────────────────── */
+.erp-hero {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.erp-hero__title {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--erp-gray-900);
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  margin-bottom: 8px;
+}
+
+.erp-hero__subtitle {
+  font-size: 14.5px;
+  color: var(--erp-gray-500);
+  line-height: 1.6;
+  font-weight: 400;
+}
+
+/* ── 7. Card ──────────────────────────────────────────────────────────────── */
+.erp-card {
+  width: 100%;
+  background: var(--erp-surface);
+  border-radius: var(--erp-radius-lg);
+  padding: 32px 36px;
+  box-shadow: var(--erp-shadow-card);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  margin-bottom: 16px;
+}
+
+.erp-card__footer-text {
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--erp-gray-500);
+  margin-top: 20px;
+  line-height: 1.5;
+}
+
+/* ── 8. Alert ─────────────────────────────────────────────────────────────── */
+.erp-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--erp-radius-md);
+  font-size: 13.5px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.erp-alert--error {
+  background: var(--erp-error-bg);
+  border: 1px solid var(--erp-error-border);
+  color: var(--erp-error);
+}
+
+.erp-alert svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ── 9. Form Fields ───────────────────────────────────────────────────────── */
+.erp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 18px;
+}
+
+.erp-field__label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--erp-gray-700);
+  letter-spacing: 0.01em;
+  user-select: none;
+}
+
+.erp-field__wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.erp-field__icon {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--erp-gray-400);
+  pointer-events: none;
+  z-index: 1;
+  transition: color var(--erp-duration) var(--erp-ease);
+}
+
+.erp-field__icon--left  { left: 12px; }
+.erp-field__icon--right { right: 10px; pointer-events: auto; }
+
+.erp-field__input {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  font-size: 14px;
+  color: var(--erp-gray-800);
+  background: var(--erp-surface);
+  border: 1.5px solid var(--erp-border);
+  border-radius: var(--erp-radius-md);
+  outline: none;
+  transition:
+    border-color var(--erp-duration) var(--erp-ease),
+    box-shadow var(--erp-duration) var(--erp-ease),
+    background var(--erp-duration) var(--erp-ease);
+  -webkit-appearance: none;
+}
+
+.erp-field__input--with-left-icon  { padding-left: 40px; }
+.erp-field__input--with-right-icon { padding-right: 44px; }
+
+.erp-field__input::placeholder { color: var(--erp-gray-400); }
+
+/* Focus */
+.erp-field__input:focus {
+  border-color: var(--erp-border-focus);
+  box-shadow: 0 0 0 3px var(--erp-primary-ring);
+  background: #fafcff;
+}
+
+.erp-field__input:focus + .erp-field__icon--left,
+.erp-field__wrapper:focus-within .erp-field__icon--left {
+  color: var(--erp-primary);
+}
+
+/* Error state */
+.erp-field--error .erp-field__input {
+  border-color: var(--erp-error);
+}
+
+.erp-field--error .erp-field__input:focus {
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.2);
+}
+
+.erp-field__error {
+  font-size: 12.5px;
+  color: var(--erp-error);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.4;
+  animation: erp-error-in 0.2s var(--erp-ease) both;
+}
+
+@keyframes erp-error-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Disabled */
+.erp-field__input:disabled {
+  background: var(--erp-gray-50);
+  color: var(--erp-gray-400);
+  border-color: var(--erp-gray-200);
+}
+
+/* ── 10. Password Toggle ──────────────────────────────────────────────────── */
+.erp-field__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--erp-radius-sm);
+  color: var(--erp-gray-400);
+  transition:
+    color var(--erp-duration) var(--erp-ease),
+    background var(--erp-duration) var(--erp-ease);
+}
+
+.erp-field__toggle:hover:not(:disabled) {
+  color: var(--erp-gray-600);
+  background: var(--erp-gray-100);
+}
+
+.erp-field__toggle:focus-visible {
+  outline: 2px solid var(--erp-primary);
+  outline-offset: 1px;
+}
+
+.erp-field__toggle:disabled {
+  opacity: 0.5;
+}
+
+/* ── 11. Options Row ──────────────────────────────────────────────────────── */
+.erp-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+/* ── 12. Checkbox ─────────────────────────────────────────────────────────── */
+.erp-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.erp-checkbox__input {
+  /* Hidden — replaced by custom box */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.erp-checkbox__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border: 1.5px solid var(--erp-gray-300);
+  border-radius: 4px;
+  background: var(--erp-surface);
+  flex-shrink: 0;
+  transition:
+    border-color var(--erp-duration) var(--erp-ease),
+    background var(--erp-duration) var(--erp-ease);
+  position: relative;
+}
+
+/* Checked state */
+.erp-checkbox__input:checked ~ .erp-checkbox__box {
+  background: var(--erp-primary);
+  border-color: var(--erp-primary);
+}
+
+.erp-checkbox__input:checked ~ .erp-checkbox__box::after {
+  content: "";
+  position: absolute;
+  width: 4px;
+  height: 7px;
+  border: 2px solid #fff;
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+/* Focus ring */
+.erp-checkbox__input:focus-visible ~ .erp-checkbox__box {
+  outline: 2px solid var(--erp-primary);
+  outline-offset: 2px;
+}
+
+.erp-checkbox__label {
+  font-size: 13.5px;
+  color: var(--erp-gray-600);
+}
+
+/* Disabled */
+.erp-checkbox__input:disabled ~ .erp-checkbox__box,
+.erp-checkbox__input:disabled ~ .erp-checkbox__label {
+  opacity: 0.5;
+}
+
+/* ── 13. Links ────────────────────────────────────────────────────────────── */
+.erp-link {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--erp-primary);
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color var(--erp-duration) var(--erp-ease);
+}
+
+.erp-link:hover:not(:disabled) {
+  color: var(--erp-primary-hover);
+  text-decoration: underline;
+}
+
+.erp-link:focus-visible {
+  outline: 2px solid var(--erp-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.erp-link:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.erp-link--muted {
+  color: var(--erp-gray-500);
+  font-weight: 400;
+}
+
+.erp-link--muted:hover:not(:disabled) {
+  color: var(--erp-gray-700);
+}
+
+/* ── 14. Buttons ──────────────────────────────────────────────────────────── */
+.erp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14.5px;
+  font-weight: 600;
+  border-radius: var(--erp-radius-md);
+  border: 1.5px solid transparent;
+  transition:
+    background var(--erp-duration) var(--erp-ease),
+    color var(--erp-duration) var(--erp-ease),
+    border-color var(--erp-duration) var(--erp-ease),
+    box-shadow var(--erp-duration) var(--erp-ease),
+    transform 100ms var(--erp-ease),
+    opacity var(--erp-duration) var(--erp-ease);
+  user-select: none;
+  white-space: nowrap;
+  position: relative;
+  overflow: hidden;
+  letter-spacing: 0.01em;
+}
+
+.erp-btn:focus-visible {
+  outline: 2px solid var(--erp-primary);
+  outline-offset: 2px;
+}
+
+/* Primary */
+.erp-btn--primary {
+  width: 100%;
+  height: 46px;
+  background: linear-gradient(135deg, var(--erp-primary) 0%, #3b82f6 100%);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35);
+}
+
+.erp-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--erp-primary-hover) 0%, var(--erp-primary) 100%);
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.45);
+  transform: translateY(-1px);
+}
+
+.erp-btn--primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.3);
+}
+
+.erp-btn--primary:disabled {
+  opacity: 0.65;
+}
+
+/* SSO */
+.erp-btn--sso {
+  flex: 1;
+  height: 42px;
+  background: var(--erp-surface);
+  color: var(--erp-gray-700);
+  border-color: var(--erp-border);
+  box-shadow: var(--erp-shadow-sm);
+  font-size: 14px;
+}
+
+.erp-btn--sso:hover:not(:disabled) {
+  background: var(--erp-gray-50);
+  border-color: var(--erp-gray-300);
+  box-shadow: var(--erp-shadow-md);
+  transform: translateY(-1px);
+}
+
+.erp-btn--sso:active:not(:disabled) {
+  transform: translateY(0);
+  background: var(--erp-gray-100);
+}
+
+.erp-btn--sso:disabled {
+  opacity: 0.6;
+}
+
+/* Loading state */
+.erp-btn--loading {
+  pointer-events: none;
+}
+
+/* Spinner */
+.erp-btn__spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: erp-spin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+
+.erp-btn__spinner--dark {
+  border-color: rgba(15, 23, 42, 0.15);
+  border-top-color: var(--erp-gray-600);
+}
+
+@keyframes erp-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* SSO group */
+.erp-sso {
+  display: flex;
+  gap: 10px;
+}
+
+/* ── 15. Divider ──────────────────────────────────────────────────────────── */
+.erp-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 22px 0;
+  color: var(--erp-gray-400);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.erp-divider::before,
+.erp-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--erp-gray-200);
+}
+
+/* ── 16. Security Note ────────────────────────────────────────────────────── */
+.erp-security-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--erp-gray-400);
+  margin-top: 6px;
+}
+
+/* ── 17. Footer ───────────────────────────────────────────────────────────── */
+.erp-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12.5px;
+  color: var(--erp-gray-400);
+  margin-top: 20px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.erp-footer .erp-link--muted {
+  font-size: 12.5px;
+}
+
+/* ── 18. Responsive ───────────────────────────────────────────────────────── */
+@media (max-width: 520px) {
+  .erp-page {
+    padding: 28px 12px 48px;
+    align-items: flex-start;
+  }
+
+  .erp-card {
+    padding: 24px 20px;
+    border-radius: var(--erp-radius-md);
+  }
+
+  .erp-hero__title { font-size: 24px; }
+  .erp-hero__subtitle { font-size: 13.5px; }
+
+  .erp-sso {
+    flex-direction: column;
+  }
+
+  .erp-options {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+}
+
+@media (max-width: 360px) {
+  .erp-card { padding: 20px 16px; }
+  .erp-hero__title { font-size: 22px; }
+}
+
+/* ── 19. Reduced Motion ───────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── 20. High Contrast ────────────────────────────────────────────────────── */
+@media (forced-colors: active) {
+  .erp-btn--primary {
+    background: ButtonFace;
+    color: ButtonText;
+    border-color: ButtonText;
+  }
+
+  .erp-field__input {
+    border-color: ButtonText;
+  }
+}
+
+/* ── 21. Dark Mode (opt-in class: .erp-page--dark) ───────────────────────── */
+.erp-page--dark {
+  --erp-page-bg: #0c1120;
+  --erp-surface: #111827;
+  --erp-border: #1f2d3d;
+  --erp-gray-50: #0f172a;
+  --erp-gray-100: #1e293b;
+  --erp-gray-200: #1f2d3d;
+  --erp-gray-300: #2d3f52;
+  --erp-gray-400: #64748b;
+  --erp-gray-500: #94a3b8;
+  --erp-gray-600: #b2bfcd;
+  --erp-gray-700: #cbd5e1;
+  --erp-gray-800: #e2e8f0;
+  --erp-gray-900: #f1f5f9;
+  --erp-shadow-card: 0 8px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.erp-page--dark .erp-field__input:focus {
+  background: #131d2e;
+}

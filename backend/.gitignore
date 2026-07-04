@@ -1,0 +1,9 @@
+# node modules
+node_modules/
+
+# env files (IMPORTANT)
+.env
+.env.local
+.env.development
+.env.production
+

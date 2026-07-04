@@ -1,0 +1,268 @@
+.topHeader {
+  height: 52px;
+  background: #fff;
+  border-bottom: 1px solid #E9ECEF;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: #ADB5BD;
+  flex-shrink: 0;
+}
+
+.bcItem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bcSep {
+  color: #CED4DA;
+}
+
+.bcActive {
+  color: #495057;
+  font-weight: 500;
+}
+
+.hdrSearch {
+  flex: 1;
+  max-width: 360px;
+  margin: 0 auto;
+  position: relative;
+}
+
+.hdrSearchIcon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #CED4DA;
+  width: 16px;
+  height: 16px;
+}
+
+.hdrSearch input {
+  width: 100%;
+  padding: 7px 12px 7px 32px;
+  border: 1px solid #E9ECEF;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: #495057;
+  background: #F8F9FA;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.hdrSearch input:focus {
+  border-color: #3B5BDB;
+  background: #fff;
+}
+
+.hdrSearch input::placeholder {
+  color: #CED4DA;
+}
+
+.hdrRight {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.hdrBell {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid #E9ECEF;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.hdrBellIcon {
+  width: 16px;
+  height: 16px;
+  color: #495057;
+}
+
+.bellDot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  background: #C92A2A;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+}
+
+.userProfile {
+  position: relative;
+}
+
+.userProfileButton {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 12px;
+  transition: background 0.2s ease;
+  font-family: inherit;
+}
+
+.userProfileButton:hover {
+  background: #f3f4f6;
+}
+
+.userAvatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3b5bdb, #4a6fdc);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.userInfo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.userName {
+  max-width: 150px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userRole {
+  font-size: 11px;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  line-height: 1.25;
+}
+
+.dropdownArrow {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.profileDropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 240px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.16);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.profileDropdownHeader {
+  padding: 14px 16px;
+}
+
+.profileDropdownName {
+  font-size: 14px;
+  font-weight: 800;
+  color: #111827;
+}
+
+.profileDropdownEmail {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #6b7280;
+  word-break: break-all;
+}
+
+.profileDropdownMeta {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #3b5bdb;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+
+.profileDropdownDivider {
+  height: 1px;
+  background: #eef2f7;
+}
+
+.logoutButton {
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: #ffffff;
+  color: #dc2626;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  font-family: inherit;
+}
+
+.logoutButton:hover {
+  background: #fef2f2;
+}
+
+@media (max-width: 760px) {
+  .topHeader {
+    padding: 0 14px;
+    gap: 10px;
+  }
+
+  .hdrSearch {
+    display: none;
+  }
+
+  .userInfo {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .breadcrumb {
+    display: none;
+  }
+
+  .profileDropdown {
+    right: -4px;
+    width: min(240px, calc(100vw - 24px));
+  }
+}

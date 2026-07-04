@@ -1,0 +1,32 @@
+.appShell {
+  display: flex;
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background: #f8f9fb;
+}
+
+.mainArea {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  background: #f8f9fb;
+}
+
+.mainArea > :first-child {
+  flex-shrink: 0;
+}
+
+.page {
+  flex: 1;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  background: #f8f9fb;
+}
