@@ -66,25 +66,19 @@ export default function SmartHRPanel({ employees = [] }) {
   return (
     <>
       <div className={p.panel}>
-        {/* Header */}
         <div className={p.panelHeader}>
           <span className={p.aiDot} />
           <span className={p.panelTitle}>Smart HR Operations Center</span>
         </div>
 
-        {/* Cards */}
         <div className={p.cards}>
           {CARDS.map((card) => {
             const Icon = card.icon;
             return (
-              <div key={card.key} className={p.card}
-                style={{ background: card.grad }}>
-                {/* Pattern overlay */}
-                <div className={p.cardPattern} style={{ background: card.pattern }} />
-
+              <div key={card.key} className={p.card} style={{ "--accent": card.accent }}>
                 <div className={p.cardContent}>
                   <div className={p.cardTop}>
-                    <div className={p.cardIcon} style={{ background: `${card.accent}22`, border: `1px solid ${card.accent}44` }}>
+                    <div className={p.cardIcon} style={{ background: `${card.accent}16`, border: `1px solid ${card.accent}30` }}>
                       <Icon className={p.cardIconSvg} aria-hidden="true" />
                     </div>
                     <div className={p.cardText}>

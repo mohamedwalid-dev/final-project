@@ -248,7 +248,14 @@ function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmploy
   const [form, setForm] = useState(initialForm);
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
+  const [employeeQuery, setEmployeeQuery] = useState(initialEmployee?.fullName || initialEmployee?.name || initialLeaveRequest?.fullName || "");
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const overlayRef = useRef(null);
+  const autocompleteRef = useRef(null);
+
+  const normalizeText = (value = "") => String(value || "").trim().toLowerCase();
 
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
@@ -257,25 +264,139 @@ function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmploy
   }, [onClose]);
 
   useEffect(() => {
+    const nextName = initialEmployee?.fullName || initialEmployee?.name || initialLeaveRequest?.fullName || "";
     setForm({
       employeeId: initialEmployee?.employeeId || initialLeaveRequest?.employeeId || "",
-      fullName: initialEmployee?.fullName || initialEmployee?.name || initialLeaveRequest?.fullName || "",
+      fullName: nextName,
       leaveType: initialLeaveRequest?.type || initialLeaveRequest?.leaveType || "Annual Leave",
       leaveBalance: initialLeaveRequest?.balance ?? initialLeaveRequest?.leaveBalance ?? "",
       leaveStartDate: initialLeaveRequest?.startDate || initialLeaveRequest?.leaveStartDate ? (initialLeaveRequest?.startDate || initialLeaveRequest?.leaveStartDate).slice(0, 10) : "",
       leaveEndDate: initialLeaveRequest?.endDate || initialLeaveRequest?.leaveEndDate ? (initialLeaveRequest?.endDate || initialLeaveRequest?.leaveEndDate).slice(0, 10) : "",
       reason: initialLeaveRequest?.reason || "",
     });
+    setEmployeeQuery(nextName);
+    setSelectedEmployee(null);
+    setShowSuggestions(false);
+    setHighlightedIndex(-1);
   }, [initialEmployee, initialLeaveRequest]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (autocompleteRef.current && !autocompleteRef.current.contains(event.target)) {
+        setShowSuggestions(false);
+        setHighlightedIndex(-1);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const setField = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }));
     setErrors((prev) => { const next = { ...prev }; delete next[field]; return next; });
   };
 
+  const filteredSuggestions = useMemo(() => {
+    if (isEditing || selectedEmployee) return [];
+    const query = normalizeText(employeeQuery);
+    if (query.length < 2) return [];
+
+    return employees
+      .filter((employee) => {
+        const name = normalizeText(employee.fullName || employee.name || "");
+        const id = normalizeText(employee.employeeId || "");
+        return name.includes(query) || id.includes(query);
+      })
+      .slice(0, 6);
+  }, [employees, employeeQuery, selectedEmployee, isEditing]);
+
+  const handleEmployeeInputChange = (value) => {
+    setEmployeeQuery(value);
+    setErrors((prev) => ({ ...prev, employeeId: undefined, fullName: undefined }));
+
+    if (selectedEmployee && value !== (selectedEmployee.fullName || selectedEmployee.name || "")) {
+      setSelectedEmployee(null);
+      setForm((prev) => ({ ...prev, fullName: "", employeeId: "", leaveBalance: "" }));
+    }
+
+    setShowSuggestions(value.trim().length >= 2);
+    setHighlightedIndex(-1);
+  };
+
+  const selectEmployee = (employee) => {
+    const name = employee.fullName || employee.name || "";
+    setSelectedEmployee(employee);
+    setEmployeeQuery(name);
+    setForm((prev) => ({
+      ...prev,
+      fullName: name,
+      employeeId: employee.employeeId || "",
+      leaveBalance: employee.leaveBalance ?? employee.leave_balance ?? prev.leaveBalance,
+    }));
+    setShowSuggestions(false);
+    setHighlightedIndex(-1);
+    setErrors((prev) => ({ ...prev, employeeId: undefined, fullName: undefined }));
+  };
+
+  const handleEmployeeKeyDown = (event) => {
+    if (isEditing) return;
+
+    if (!showSuggestions || filteredSuggestions.length === 0) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setShowSuggestions(false);
+        setHighlightedIndex(-1);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlightedIndex((prev) => (prev + 1) % filteredSuggestions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlightedIndex((prev) => (prev <= 0 ? filteredSuggestions.length - 1 : prev - 1));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (highlightedIndex >= 0) {
+        selectEmployee(filteredSuggestions[highlightedIndex]);
+      }
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setShowSuggestions(false);
+      setHighlightedIndex(-1);
+    }
+  };
+
   const validate = () => {
     const errs = {};
-    if (!form.employeeId.trim()) errs.employeeId = "Employee ID is required";
+    const query = employeeQuery.trim();
+    if (!query) {
+      errs.employeeId = "Employee is required";
+      return { errs, matchedEmployee: null };
+    }
+
+    const matchedEmployee = employees.find((employee) => {
+      const name = normalizeText(employee.fullName || employee.name || "");
+      const id = normalizeText(employee.employeeId || "");
+      return name === normalizeText(query) || id === normalizeText(query);
+    });
+
+    if (!matchedEmployee) {
+      errs.employeeId = "Please select an existing employee";
+      return { errs, matchedEmployee: null };
+    }
+
+    setSelectedEmployee(matchedEmployee);
+    setEmployeeQuery(matchedEmployee.fullName || matchedEmployee.name || query);
+    setForm((prev) => ({
+      ...prev,
+      fullName: matchedEmployee.fullName || matchedEmployee.name || prev.fullName,
+      employeeId: matchedEmployee.employeeId || prev.employeeId,
+      leaveBalance: matchedEmployee.leaveBalance ?? matchedEmployee.leave_balance ?? prev.leaveBalance,
+    }));
+
     if (!form.fullName.trim()) errs.fullName = "Employee name is required";
     if (!form.leaveType) errs.leaveType = "Leave type is required";
     if (form.leaveBalance === "" || Number(form.leaveBalance) < 0) errs.leaveBalance = "Leave balance is required";
@@ -285,11 +406,11 @@ function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmploy
       errs.leaveEndDate = "End date cannot be earlier than start date";
     }
     if (!form.reason.trim()) errs.reason = "Reason is required";
-    return errs;
+    return { errs, matchedEmployee };
   };
 
   const handleSubmit = async () => {
-    const errs = validate();
+    const { errs, matchedEmployee } = validate();
     if (Object.keys(errs).length > 0) {
       setErrors(errs);
       return;
@@ -297,10 +418,10 @@ function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmploy
 
     setLoading(true);
     const payload = {
-      fullName: form.fullName.trim(),
-      employeeId: form.employeeId.trim(),
+      fullName: matchedEmployee ? (matchedEmployee.fullName || matchedEmployee.name || form.fullName.trim()) : form.fullName.trim(),
+      employeeId: matchedEmployee ? (matchedEmployee.employeeId || form.employeeId.trim()) : form.employeeId.trim(),
       leaveType: form.leaveType,
-      leaveBalance: Number(form.leaveBalance),
+      leaveBalance: Number(matchedEmployee?.leaveBalance ?? matchedEmployee?.leave_balance ?? form.leaveBalance),
       leaveStartDate: form.leaveStartDate,
       leaveEndDate: form.leaveEndDate,
       reason: form.reason.trim(),
@@ -332,26 +453,45 @@ function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmploy
           {errors._form && <p className={s.formError}>{errors._form}</p>}
           <div className={s.formGrid}>
             <div className={s.formGroup}>
-              <label className={s.label}>Employee *</label>
+              <label className={s.label}>Employee</label>
               {isEditing ? (
                 <input className={s.input} value={form.fullName} readOnly aria-readonly="true" />
               ) : (
-                <select className={s.input} value={form.employeeId} onChange={(e) => {
-                  const selected = employees.find((employee) => employee.employeeId === e.target.value);
-                  setField("employeeId", e.target.value);
-                  setField("fullName", selected?.fullName || selected?.name || "");
-                }}>
-                  <option value="">Select employee</option>
-                  {employees.map((employee) => (
-                    <option key={employee.id || employee._id} value={employee.employeeId}>{employee.fullName || employee.name}</option>
-                  ))}
-                </select>
+                <div className={s.autocompleteWrap} ref={autocompleteRef}>
+                  <input
+                    className={`${s.input} ${errors.employeeId ? s.inputError : ""}`}
+                    value={employeeQuery}
+                    onChange={(e) => handleEmployeeInputChange(e.target.value)}
+                    onFocus={() => setShowSuggestions(employeeQuery.trim().length >= 2)}
+                    onKeyDown={handleEmployeeKeyDown}
+                    placeholder="Type employee name"
+                    autoComplete="off"
+                  />
+                  {showSuggestions && filteredSuggestions.length > 0 && (
+                    <ul className={s.autocompleteList} role="listbox">
+                      {filteredSuggestions.map((employee, index) => (
+                        <li
+                          key={employee.id || employee._id}
+                          className={`${s.autocompleteItem} ${index === highlightedIndex ? s.autocompleteItemActive : ""}`}
+                          role="option"
+                          aria-selected={index === highlightedIndex}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            selectEmployee(employee);
+                          }}
+                        >
+                          {employee.fullName || employee.name}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               )}
               {errors.employeeId && <p className={s.fieldError}>{errors.employeeId}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Employee ID *</label>
+              <label className={s.label}>Employee ID</label>
               {isEditing ? (
                 <input className={s.input} value={form.employeeId} readOnly aria-readonly="true" />
               ) : (
@@ -360,7 +500,7 @@ function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmploy
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Leave Type *</label>
+              <label className={s.label}>Leave Type</label>
               <select className={s.input} value={form.leaveType} onChange={(e) => setField("leaveType", e.target.value)}>
                 <option value="Annual Leave">Annual Leave</option>
                 <option value="Sick Leave">Sick Leave</option>
@@ -374,25 +514,25 @@ function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmploy
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Leave Balance *</label>
-              <input type="number" min="0" className={`${s.input} ${errors.leaveBalance ? s.inputError : ""}`} value={form.leaveBalance} onChange={(e) => setField("leaveBalance", e.target.value)} placeholder="e.g. 12" />
+              <label className={s.label}>Leave Balance</label>
+              <input type="number" min="0" className={`${s.input} ${errors.leaveBalance ? s.inputError : ""}`} value={form.leaveBalance} onChange={(e) => setField("leaveBalance", e.target.value)} placeholder="Balance" />
               {errors.leaveBalance && <p className={s.fieldError}>{errors.leaveBalance}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Start Date *</label>
+              <label className={s.label}>Start Date</label>
               <input type="date" className={`${s.input} ${errors.leaveStartDate ? s.inputError : ""}`} value={form.leaveStartDate} onChange={(e) => setField("leaveStartDate", e.target.value)} />
               {errors.leaveStartDate && <p className={s.fieldError}>{errors.leaveStartDate}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>End Date *</label>
+              <label className={s.label}>End Date</label>
               <input type="date" className={`${s.input} ${errors.leaveEndDate ? s.inputError : ""}`} value={form.leaveEndDate} onChange={(e) => setField("leaveEndDate", e.target.value)} />
               {errors.leaveEndDate && <p className={s.fieldError}>{errors.leaveEndDate}</p>}
             </div>
 
             <div className={`${s.formGroup} ${s.formGroupFull}`}>
-              <label className={s.label}>Reason *</label>
+              <label className={s.label}>Reason</label>
               <textarea className={`${s.input} ${errors.reason ? s.inputError : ""}`} rows="3" value={form.reason} onChange={(e) => setField("reason", e.target.value)} placeholder="Briefly describe the leave request" />
               {errors.reason && <p className={s.fieldError}>{errors.reason}</p>}
             </div>
@@ -542,41 +682,41 @@ function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLab
 
           <div className={s.formGrid}>
             <div className={s.formGroup}>
-              <label className={s.label}>Full Name *</label>
+              <label className={s.label}>Full Name</label>
               <input className={`${s.input} ${errors.name ? s.inputError : ""}`}
                 value={form.name} onChange={(e) => setField("name", e.target.value)}
-                placeholder="e.g. Sarah Jenkins" />
+                placeholder="Full Name" />
               {errors.name && <p className={s.fieldError}>{errors.name}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Employee ID *</label>
+              <label className={s.label}>Employee ID</label>
               <input className={`${s.input} ${errors.employeeId ? s.inputError : ""}`}
                 value={form.employeeId} onChange={(e) => setField("employeeId", e.target.value)}
-                placeholder="e.g. EMP-1001" />
+                placeholder="Personal ID" />
               {errors.employeeId && <p className={s.fieldError}>{errors.employeeId}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Job Title *</label>
+              <label className={s.label}>Job Title</label>
               <input className={`${s.input} ${errors.title ? s.inputError : ""}`}
                 value={form.title} onChange={(e) => setField("title", e.target.value)}
-                placeholder="e.g. Sr. Product Designer" />
+                placeholder="Job Title" />
               {errors.title && <p className={s.fieldError}>{errors.title}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Department *</label>
+              <label className={s.label}>Department</label>
               <select className={s.input} value={form.dept} onChange={(e) => setField("dept", e.target.value)}>
                 {DEPT_OPTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Location *</label>
+              <label className={s.label}>Location</label>
               <input className={`${s.input} ${errors.location ? s.inputError : ""}`}
                 value={form.location} onChange={(e) => setField("location", e.target.value)}
-                placeholder="e.g. New York" />
+                placeholder="Location" />
               {errors.location && <p className={s.fieldError}>{errors.location}</p>}
             </div>
 
@@ -584,42 +724,42 @@ function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLab
               <label className={s.label}>Work Email *</label>
               <input type="email" className={`${s.input} ${errors.email ? s.inputError : ""}`}
                 value={form.email} onChange={(e) => setField("email", e.target.value)}
-                placeholder="e.g. sarah@Prime.com" />
+                placeholder="Email" />
               {errors.email && <p className={s.fieldError}>{errors.email}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Salary *</label>
+              <label className={s.label}>Salary</label>
               <input type="number" min="0" className={`${s.input} ${errors.salary ? s.inputError : ""}`}
                 value={form.salary} onChange={(e) => setField("salary", e.target.value)}
-                placeholder="e.g. 85000" />
+                placeholder="EG" />
               {errors.salary && <p className={s.fieldError}>{errors.salary}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Phone Number *</label>
+              <label className={s.label}>Phone Number</label>
               <input type="tel" className={`${s.input} ${errors.phoneNumber ? s.inputError : ""}`}
                 value={form.phoneNumber} onChange={(e) => setField("phoneNumber", e.target.value)}
-                placeholder="e.g. +1 555 123 4567" />
+                placeholder="+20 " />
               {errors.phoneNumber && <p className={s.fieldError}>{errors.phoneNumber}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Start Date *</label>
+              <label className={s.label}>Start Date</label>
               <input type="date" className={`${s.input} ${errors.startDate ? s.inputError : ""}`}
                 value={form.startDate} onChange={(e) => setField("startDate", e.target.value)} />
               {errors.startDate && <p className={s.fieldError}>{errors.startDate}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Date of Birth *</label>
+              <label className={s.label}>Date of Birth</label>
               <input type="date" className={`${s.input} ${errors.dateOfBirth ? s.inputError : ""}`}
                 value={form.dateOfBirth} onChange={(e) => setField("dateOfBirth", e.target.value)} />
               {errors.dateOfBirth && <p className={s.fieldError}>{errors.dateOfBirth}</p>}
             </div>
 
             <div className={s.formGroup}>
-              <label className={s.label}>Gender *</label>
+              <label className={s.label}>Gender</label>
               <select className={`${s.input} ${errors.gender ? s.inputError : ""}`} value={form.gender} onChange={(e) => setField("gender", e.target.value)}>
                 <option value="">Select gender</option>
                 <option value="Male">Male</option>

@@ -45,25 +45,25 @@
 .cards {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 10px;
+  padding: 12px;
 }
 
 /* ── Individual Card ──────────────────────────────────────────────────────────*/
 .card {
   position: relative;
   overflow: hidden;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
-  transition: filter 0.15s;
+  border: 1px solid #E9ECEF;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
 
-.card:last-child { border-bottom: none; }
-.card:hover { filter: brightness(1.08); }
-
-/* ── Pattern Overlay ──────────────────────────────────────────────────────────*/
-.cardPattern {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
+.card:hover {
+  transform: translateY(-1px);
+  border-color: #3B5BDB;
+  box-shadow: 0 4px 14px rgba(59,91,219,0.12);
 }
 
 /* ── Card Content ─────────────────────────────────────────────────────────────*/
@@ -98,6 +98,7 @@
   width: 17px;
   height: 17px;
   flex-shrink: 0;
+  color: var(--accent);
 }
 
 /* ── Card Text ────────────────────────────────────────────────────────────────*/
@@ -109,14 +110,14 @@
 .cardTitle {
   font-size: 12.5px;
   font-weight: 700;
-  color: #fff;
+  color: #1A1D23;
   margin: 0 0 3px;
   letter-spacing: -0.1px;
 }
 
 .cardDesc {
   font-size: 11px;
-  color: rgba(255,255,255,0.6);
+  color: #6C757D;
   margin: 0;
   line-height: 1.4;
 }
@@ -126,8 +127,8 @@
   width: 100%;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid rgba(59,91,219,0.16);
+  background: rgba(59,91,219,0.08);
   color: var(--accent);
   font-size: 12px;
   font-weight: 700;
@@ -138,8 +139,8 @@
 }
 
 .cardBtn:hover {
-  background: color-mix(in srgb, var(--accent) 25%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: rgba(59,91,219,0.12);
+  border-color: rgba(59,91,219,0.24);
   transform: translateY(-1px);
 }
 

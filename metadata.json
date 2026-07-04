@@ -1,0 +1,6 @@
+{
+  "name": "Prime",
+  "description": "Enterprise-grade Prime AI-Powered ERP System landing page and interactive analytics dashboard preview. Streamline and manage Finance, HR, Sales, Inventory, and support workflows in a single intelligent corporate SaaS platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
