@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finance Agent — Live Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════ RESET & TOKENS ═══════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #080c14;
+  --surface:    #0d1422;
+  --panel:      #111827;
+  --border:     rgba(255,255,255,.07);
+  --border-h:   rgba(255,255,255,.13);
+  --text:       #e2e8f0;
+  --muted:      #64748b;
+  --dim:        #334155;
+
+  --blue:       #3b82f6;
+  --blue-dim:   rgba(59,130,246,.12);
+  --green:      #22c55e;
+  --green-dim:  rgba(34,197,94,.12);
+  --amber:      #f59e0b;
+  --amber-dim:  rgba(245,158,11,.12);
+  --red:        #ef4444;
+  --red-dim:    rgba(239,68,68,.12);
+  --pink:       #ec4899;
+  --pink-dim:   rgba(236,72,153,.12);
+  --cyan:       #06b6d4;
+  --cyan-dim:   rgba(6,182,212,.12);
+
+  --font-body:  'Cairo', sans-serif;
+  --font-mono:  'IBM Plex Mono', monospace;
+  --radius:     10px;
+  --radius-lg:  16px;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Grid background */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(59,130,246,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59,130,246,.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Glow orbs */
+body::after {
+  content: '';
+  position: fixed;
+  top: -200px; right: -200px;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(59,130,246,.06) 0%, transparent 70%);
+  pointer-events: none; z-index: 0;
+}
+
+/* ═══════════════════ LAYOUT ═══════════════════ */
+.shell {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  gap: 20px;
+}
+
+/* ═══════════════════ HEADER ═══════════════════ */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 28px;
+}
+
+.header-left h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  background: linear-gradient(135deg, #60a5fa 0%, #34d399 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.header-left p {
+  color: var(--muted);
+  font-size: .85rem;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+}
+
+.conn-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-family: var(--font-mono);
+  font-size: .75rem;
+  color: var(--muted);
+  transition: border-color .3s;
+}
+
+.conn-badge.live {
+  border-color: rgba(34,197,94,.4);
+  color: var(--green);
+}
+
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  flex-shrink: 0;
+}
+
+.dot.live {
+  background: var(--green);
+  animation: pulse-dot 2s infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,.5); }
+  50%       { box-shadow: 0 0 0 5px rgba(34,197,94,0); }
+}
+
+/* ═══════════════════ STATS ROW ═══════════════════ */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.stat-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color .25s, transform .2s;
+}
+
+.stat-card:hover { border-color: var(--border-h); transform: translateY(-2px); }
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity .3s;
+}
+
+.stat-card:hover::before { opacity: 1; }
+
+.stat-card.c-blue::before  { background: linear-gradient(135deg, var(--blue-dim), transparent 60%); }
+.stat-card.c-amber::before { background: linear-gradient(135deg, var(--amber-dim), transparent 60%); }
+.stat-card.c-red::before   { background: linear-gradient(135deg, var(--red-dim), transparent 60%); }
+.stat-card.c-green::before { background: linear-gradient(135deg, var(--green-dim), transparent 60%); }
+
+.stat-accent {
+  position: absolute;
+  top: 0; right: 0; left: 0;
+  height: 2px;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.c-blue .stat-accent  { background: var(--blue); }
+.c-amber .stat-accent { background: var(--amber); }
+.c-red .stat-accent   { background: var(--red); }
+.c-green .stat-accent { background: var(--green); }
+
+.stat-label { color: var(--muted); font-size: .75rem; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.stat-value { font-size: 2rem; font-weight: 700; margin-top: 8px; letter-spacing: -.03em; }
+
+.c-blue .stat-value  { color: #60a5fa; }
+.c-amber .stat-value { color: var(--amber); }
+.c-red .stat-value   { color: #f87171; }
+.c-green .stat-value { color: var(--green); }
+
+/* ═══════════════════ MAIN CONTENT ═══════════════════ */
+.content-grid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 20px;
+  align-items: start;
+}
+
+/* ═══════════════════ FEED ═══════════════════ */
+.feed-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 640px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .9rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.panel-icon {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--blue);
+  animation: blink 1.4s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: .2; }
+}
+
+.clear-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.clear-btn:hover { border-color: var(--border-h); color: var(--text); }
+
+.feed-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scroll-behavior: smooth;
+}
+
+/* Scrollbar */
+.feed-body::-webkit-scrollbar { width: 4px; }
+.feed-body::-webkit-scrollbar-track { background: transparent; }
+.feed-body::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 4px; }
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.empty-state .empty-icon { font-size: 2.5rem; opacity: .3; }
+.empty-state p { font-size: .8rem; font-family: var(--font-mono); }
+
+/* ═══════════════════ EVENT CARDS ═══════════════════ */
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.event-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  animation: slideDown .25s ease-out;
+  border-right: 3px solid transparent;
+  position: relative;
+  overflow: hidden;
+}
+
+.event-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Status colors */
+.ev-overdue       { border-right-color: var(--amber); }
+.ev-overdue::before { background: linear-gradient(90deg, transparent, var(--amber-dim) 100%); }
+.ev-legal         { border-right-color: var(--red); }
+.ev-legal::before { background: linear-gradient(90deg, transparent, var(--red-dim) 100%); }
+.ev-suspended     { border-right-color: var(--pink); }
+.ev-suspended::before { background: linear-gradient(90deg, transparent, var(--pink-dim) 100%); }
+.ev-payment_plan  { border-right-color: var(--blue); }
+.ev-payment_plan::before { background: linear-gradient(90deg, transparent, var(--blue-dim) 100%); }
+.ev-written_off   { border-right-color: var(--muted); }
+.ev-email         { border-right-color: var(--green); }
+.ev-email::before { background: linear-gradient(90deg, transparent, var(--green-dim) 100%); }
+.ev-notification  { border-right-color: var(--cyan); }
+.ev-notification::before { background: linear-gradient(90deg, transparent, var(--cyan-dim) 100%); }
+.ev-system        { border-right-color: var(--dim); }
+
+.card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.card-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
+
+.card-meta { flex: 1; min-width: 0; }
+
+.card-title {
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-sub {
+  font-size: .72rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+
+.card-time {
+  font-size: .68rem;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.card-body {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  color: #94a3b8;
+  background: rgba(0,0,0,.3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.card-body.email-sent {
+  border-color: rgba(34,197,94,.2);
+  background: rgba(34,197,94,.04);
+}
+
+.card-body.email-sim {
+  border-color: rgba(245,158,11,.2);
+  background: rgba(245,158,11,.03);
+}
+
+.sent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: .65rem;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  margin-top: 6px;
+}
+
+.sent-badge.real  { background: var(--green-dim); color: var(--green); border: 1px solid rgba(34,197,94,.2); }
+.sent-badge.sim   { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,.2); }
+.sent-badge.fail  { background: var(--red-dim);   color: var(--red);   border: 1px solid rgba(239,68,68,.2); }
+
+/* ═══════════════════ SIDE PANEL ═══════════════════ */
+.side-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  height: 640px;
+  display: flex;
+  flex-direction: column;
+}
+
+.decisions-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.decisions-body::-webkit-scrollbar { width: 4px; }
+.decisions-body::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 4px; }
+
+.decision-row { }
+
+.decision-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: .72rem;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+}
+
+.decision-name { color: #94a3b8; }
+.decision-count { color: var(--muted); }
+
+.bar-track {
+  height: 3px;
+  background: var(--surface);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--blue), var(--cyan));
+  transition: width 1s ease-out;
+}
+
+/* ═══════════════════ RESPONSIVE ═══════════════════ */
+@media (max-width: 1100px) {
+  .content-grid { grid-template-columns: 1fr; }
+  .side-panel { height: 400px; }
+}
+
+@media (max-width: 700px) {
+  .stats-row { grid-template-columns: repeat(2, 1fr); }
+  .shell { padding: 14px; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <h1>⚡ Finance Autonomous Agent</h1>
+      <p id="last-refresh">جاري الاتصال بالخادم...</p>
+    </div>
+    <div class="conn-badge" id="conn-badge">
+      <span class="dot" id="conn-dot"></span>
+      <span id="conn-text">غير متصل</span>
+    </div>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats-row">
+    <div class="stat-card c-blue">
+      <div class="stat-accent"></div>
+      <div class="stat-label">إجمالي المستحق</div>
+      <div class="stat-value" id="stat-outstanding">—</div>
+    </div>
+    <div class="stat-card c-amber">
+      <div class="stat-accent"></div>
+      <div class="stat-label">فواتير متأخرة</div>
+      <div class="stat-value" id="stat-overdue">—</div>
+    </div>
+    <div class="stat-card c-red">
+      <div class="stat-accent"></div>
+      <div class="stat-label">قانوني / موقوف</div>
+      <div class="stat-value" id="stat-legal">—</div>
+    </div>
+    <div class="stat-card c-green">
+      <div class="stat-accent"></div>
+      <div class="stat-label">إجراءات (7 أيام)</div>
+      <div class="stat-value" id="stat-actions">—</div>
+    </div>
+  </div>
+
+  <!-- Main Grid -->
+  <div class="content-grid">
+
+    <!-- Live Feed -->
+    <div class="feed-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-icon"></span>
+          بث مباشر — تنفيذ الإجراءات
+        </div>
+        <button class="clear-btn" onclick="clearFeed()">مسح</button>
+      </div>
+      <div class="feed-body" id="feed-body">
+        <div class="empty-state" id="empty-state">
+          <span class="empty-icon">📡</span>
+          <p>في انتظار أحداث النظام المالي...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Decisions -->
+    <div class="side-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-icon" style="background:var(--cyan)"></span>
+          قرارات الـ AI (30 يوم)
+        </div>
+      </div>
+      <div class="decisions-body" id="decisions-body">
+        <div class="empty-state" style="height:100%">
+          <p>تحميل الإحصائيات...</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+/* ════════════════════ STATE ════════════════════ */
+const $    = id => document.getElementById(id);
+const feed = $('feed-body');
+const fmt  = new Intl.NumberFormat('ar-EG');
+let eventSource = null;
+let eventCount  = 0;
+
+/* ════════════════════ CONNECTION ════════════════════ */
+function setConnected(live) {
+  const badge = $('conn-badge');
+  const dot   = $('conn-dot');
+  if (live) {
+    badge.classList.add('live');
+    dot.classList.add('live');
+    $('conn-text').textContent = '● بث مباشر';
+  } else {
+    badge.classList.remove('live');
+    dot.classList.remove('live');
+    $('conn-text').textContent = 'غير متصل';
+  }
+}
+
+function connectSSE() {
+  if (eventSource) eventSource.close();
+
+  eventSource = new EventSource('/finance/live');
+
+  eventSource.onopen  = () => setConnected(true);
+  eventSource.onerror = () => { setConnected(false); };
+
+  eventSource.addEventListener('connected', () => setConnected(true));
+
+  /* ── Invoice processed ─────────────────────────────────────── */
+  eventSource.addEventListener('invoice_processed', e => {
+    const d = JSON.parse(e.data);
+
+    const statusEmoji = {
+      overdue:'⏳', legal:'⚖️', suspended:'🚫',
+      payment_plan:'💳', written_off:'❌', paid:'✅',
+      disputed:'🔍', manual_review:'👁️'
+    };
+
+    pushCard({
+      icon:    statusEmoji[d.new_status] || '🤖',
+      title:   `فاتورة #${d.invoice_id} — تم التقييم`,
+      sub:     `قرار AI: ${d.decision.toUpperCase()} | خطر: ${Math.round((d.risk_score||0)*100)}%`,
+      body:    `المبلغ: ${fmt.format(d.amount)} EGP\nالحالة الجديدة: ${d.new_status}`,
+      cls:     `ev-${d.new_status}`,
+      bodyClass: '',
+    });
+
+    setTimeout(fetchStats, 800);
+  });
+
+  /* ── Action executed ───────────────────────────────────────── */
+  eventSource.addEventListener('action_executed', e => {
+    const d = JSON.parse(e.data);
+    const r = d.result || {};
+
+    const isEmail    = d.action.includes('email') || d.action.includes('send');
+    const isInternal = d.action.includes('notify') || d.action.includes('alert');
+    const isSystem   = !isEmail && !isInternal;
+
+    let icon = isEmail ? '📧' : isInternal ? '🔔' : '⚙️';
+    let cls  = isEmail ? 'ev-email' : isInternal ? 'ev-notification' : 'ev-system';
+
+    // Build body text
+    let bodyLines = [];
+    if (r.to_email)   bodyLines.push(`إلى: ${r.to_email}`);
+    if (r.subject)    bodyLines.push(`الموضوع: ${r.subject}`);
+    if (r.new_status) bodyLines.push(`الحالة الجديدة: ${r.new_status}`);
+    if (r.installments) bodyLines.push(`الأقساط: ${r.installments} × ${fmt.format(r.monthly_amount || 0)} EGP`);
+    if (r.followup_date) bodyLines.push(`موعد المتابعة: ${r.followup_date.split('T')[0]}`);
+    if (r.status)     bodyLines.push(`النتيجة: ${r.status}`);
+
+    const body = bodyLines.length ? bodyLines.join('\n') : JSON.stringify(r, null, 2).slice(0, 200);
+
+    // Email badge
+    let badge = '';
+    if (isEmail) {
+      if (r.simulated === false && r.status === 'sent') {
+        badge = '<span class="sent-badge real">✅ بريد حقيقي أُرسل عبر SMTP</span>';
+      } else if (r.simulated) {
+        badge = '<span class="sent-badge sim">⚠️ وضع المحاكاة — تسجيل في DB فقط</span>';
+      } else if (r.status === 'failed') {
+        badge = `<span class="sent-badge fail">❌ فشل الإرسال: ${r.error || 'خطأ غير معروف'}</span>`;
+      }
+    }
+
+    pushCard({
+      icon,
+      title:    `${d.action.replace(/_/g,' ')}`,
+      sub:      `فاتورة #${d.invoice_id} | عميل #${d.customer_id}`,
+      body,
+      cls,
+      bodyClass: isEmail ? (r.simulated ? 'email-sim' : 'email-sent') : '',
+      badge,
+    });
+  });
+}
+
+/* ════════════════════ CARD FACTORY ════════════════════ */
+function pushCard({ icon, title, sub, body, cls, bodyClass='', badge='' }) {
+  const empty = $('empty-state');
+  if (empty) empty.remove();
+
+  const now = new Date().toLocaleTimeString('ar-EG', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+
+  const el = document.createElement('div');
+  el.className = `event-card ${cls}`;
+  el.innerHTML = `
+    <div class="card-top">
+      <div class="card-icon">${icon}</div>
+      <div class="card-meta">
+        <div class="card-title">${title}</div>
+        <div class="card-sub">${sub}</div>
+      </div>
+      <div class="card-time">${now}</div>
+    </div>
+    <div class="card-body ${bodyClass}">${escHtml(body)}</div>
+    ${badge}
+  `;
+
+  feed.insertBefore(el, feed.firstChild);
+
+  // Cap at 60 cards
+  while (feed.children.length > 60) feed.removeChild(feed.lastChild);
+
+  eventCount++;
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
+
+function clearFeed() {
+  feed.innerHTML = '';
+  const empty = document.createElement('div');
+  empty.className = 'empty-state';
+  empty.id = 'empty-state';
+  empty.innerHTML = '<span class="empty-icon">📡</span><p>في انتظار أحداث النظام المالي...</p>';
+  feed.appendChild(empty);
+  eventCount = 0;
+}
+
+/* ════════════════════ STATS ════════════════════ */
+async function fetchStats() {
+  try {
+    const res  = await fetch('/finance/dashboard');
+    const data = await res.json();
+
+    if (data.invoices) {
+      $('stat-outstanding').textContent =
+        fmt.format(Math.round(data.invoices.outstanding_amount || 0)) + ' ج.م';
+      $('stat-overdue').textContent = data.invoices.overdue ?? '—';
+      $('stat-legal').textContent   =
+        (data.invoices.legal || 0) + ' / ' + (data.invoices.suspended || 0);
+    }
+
+    if (data.actions_7d) {
+      const total = data.actions_7d.reduce((a, r) => a + r.count, 0);
+      $('stat-actions').textContent = total || '—';
+    }
+
+    if (data.decisions_30d && data.decisions_30d.length) {
+      renderDecisions(data.decisions_30d);
+    }
+
+    $('last-refresh').textContent =
+      'آخر تحديث: ' + new Date().toLocaleTimeString('ar-EG');
+
+  } catch (err) {
+    console.error('Stats fetch failed:', err);
+  }
+}
+
+function renderDecisions(rows) {
+  const container = $('decisions-body');
+  container.innerHTML = '';
+
+  const max = Math.max(...rows.map(r => r.count));
+
+  rows.forEach(r => {
+    const pct  = max ? Math.round((r.count / max) * 100) : 0;
+    const name = r.decision.replace(/_/g,' ');
+
+    const div = document.createElement('div');
+    div.className = 'decision-row';
+    div.innerHTML = `
+      <div class="decision-label">
+        <span class="decision-name">${escHtml(name)}</span>
+        <span class="decision-count">${r.count}</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:0%" data-pct="${pct}"></div>
+      </div>
+    `;
+    container.appendChild(div);
+  });
+
+  // Animate bars
+  requestAnimationFrame(() => {
+    container.querySelectorAll('.bar-fill').forEach(bar => {
+      bar.style.width = bar.dataset.pct + '%';
+    });
+  });
+}
+
+/* ════════════════════ INIT ════════════════════ */
+fetchStats();
+connectSSE();
+setInterval(fetchStats, 30_000);
+</script>
+</body>
+</html>

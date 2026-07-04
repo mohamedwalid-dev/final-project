@@ -1,0 +1,552 @@
+{
+  "version": "6.0",
+  "trained_at": "2026-04-25T12:11:28.118256Z",
+  "n_samples": 40451,
+  "feature_count": 35,
+  "feature_names": [
+    "amount_normalized",
+    "customer_age_normalized",
+    "invoice_frequency",
+    "industry_risk_factor",
+    "seasonal_factor",
+    "credit_score_normalized",
+    "credit_score_bucket",
+    "credit_score_x_industry",
+    "credit_x_late",
+    "hist_paid_ratio",
+    "hist_late_ratio",
+    "hist_paid_ratio_3",
+    "hist_paid_ratio_6",
+    "hist_late_ratio_3",
+    "paid_trend",
+    "late_trend",
+    "last_paid",
+    "last_late",
+    "hist_max_delay",
+    "hist_avg_delay_normalized",
+    "delay_variance",
+    "payment_volatility",
+    "late_streak",
+    "good_streak",
+    "invoice_frequency_trend",
+    "payment_velocity",
+    "hist_payment_count_normalized",
+    "risk_composite",
+    "amount_x_risk",
+    "overdue_x_industry",
+    "clv_proxy",
+    "recovery_signal",
+    "behavioral_score",
+    "overdue_days_normalized",
+    "on_time_ratio"
+  ],
+  "base_features": [
+    "amount_normalized",
+    "customer_age_normalized",
+    "invoice_frequency",
+    "industry_risk_factor",
+    "seasonal_factor"
+  ],
+  "credit_features": [
+    "credit_score_normalized",
+    "credit_score_bucket",
+    "credit_score_x_industry",
+    "credit_x_late"
+  ],
+  "behavioral_features": [
+    "hist_paid_ratio",
+    "hist_late_ratio",
+    "hist_paid_ratio_3",
+    "hist_paid_ratio_6",
+    "hist_late_ratio_3",
+    "paid_trend",
+    "late_trend",
+    "last_paid",
+    "last_late",
+    "hist_max_delay",
+    "hist_avg_delay_normalized",
+    "delay_variance",
+    "payment_volatility",
+    "late_streak",
+    "good_streak",
+    "invoice_frequency_trend",
+    "payment_velocity",
+    "hist_payment_count_normalized"
+  ],
+  "engineered_features": [
+    "risk_composite",
+    "amount_x_risk",
+    "overdue_x_industry",
+    "clv_proxy",
+    "recovery_signal",
+    "behavioral_score"
+  ],
+  "ensemble_weights": [
+    0.5,
+    0.35,
+    0.15
+  ],
+  "decision_engine": {
+    "mode": "balanced",
+    "reject_threshold": 0.4,
+    "review_threshold": 0.25,
+    "available_modes": {
+      "safe": {
+        "reject": 0.3,
+        "review": 0.18
+      },
+      "balanced": {
+        "reject": 0.4,
+        "review": 0.25
+      },
+      "aggressive": {
+        "reject": 0.55,
+        "review": 0.35
+      }
+    }
+  },
+  "cost_optimization": {
+    "threshold": 0.19,
+    "total_cost": 152600.0,
+    "fp_rate": 0.0927,
+    "cost_fn": 1000.0,
+    "cost_fp": 100.0
+  },
+  "metrics": {
+    "roc_auc": 0.9726,
+    "pr_auc": 0.9345,
+    "brier": 0.049,
+    "ece": 0.0179,
+    "f1": 0.8914,
+    "recall": 0.9306,
+    "f1_cost": 0.8674,
+    "recall_cost": 0.9555,
+    "precision_cost": 0.7941,
+    "fbeta2_cost": 0.9182,
+    "fp_rate": 0.0927,
+    "accuracy_cost": 0.9204
+  },
+  "cv_results": {
+    "roc_auc": {
+      "test_mean": 0.9749,
+      "test_std": 0.0014,
+      "train_mean": 0.9829
+    },
+    "average_precision": {
+      "test_mean": 0.9422,
+      "test_std": 0.0048,
+      "train_mean": 0.9595
+    },
+    "f1": {
+      "test_mean": 0.8933,
+      "test_std": 0.0045,
+      "train_mean": 0.9034
+    },
+    "recall": {
+      "test_mean": 0.9234,
+      "test_std": 0.0052,
+      "train_mean": 0.9344
+    }
+  },
+  "shap_importance": {
+    "overdue_x_industry": 1.369048,
+    "on_time_ratio": 0.690039,
+    "payment_volatility": 0.305812,
+    "overdue_days_normalized": 0.277125,
+    "credit_score_normalized": 0.256635,
+    "hist_payment_count_normalized": 0.253658,
+    "risk_composite": 0.138301,
+    "hist_paid_ratio": 0.128078,
+    "hist_avg_delay_normalized": 0.108615,
+    "hist_late_ratio": 0.104039,
+    "hist_paid_ratio_3": 0.08986,
+    "delay_variance": 0.067916
+  },
+  "calibration": {
+    "ece": 0.0179,
+    "bin_predicted": [
+      0.0286,
+      0.135,
+      0.2426,
+      0.3537,
+      0.446,
+      0.5602,
+      0.6528,
+      0.7557,
+      0.8645,
+      0.9547
+    ],
+    "bin_actual": [
+      0.015,
+      0.0623,
+      0.0833,
+      0.2,
+      0.3804,
+      0.5397,
+      0.615,
+      0.7754,
+      0.8679,
+      0.9535
+    ],
+    "bin_counts": [
+      5077,
+      385,
+      84,
+      55,
+      92,
+      126,
+      226,
+      236,
+      757,
+      1053
+    ]
+  },
+  "error_analysis": {
+    "false_negatives": {
+      "count": 98,
+      "avg_risk_score": 0.0703,
+      "hist_late_ratio": {
+        "diff": -0.0703
+      },
+      "hist_paid_ratio_3": {
+        "diff": 0.0761
+      },
+      "hist_late_ratio_3": {
+        "diff": -0.0748
+      },
+      "last_paid": {
+        "diff": 0.08
+      },
+      "last_late": {
+        "diff": -0.0853
+      },
+      "hist_max_delay": {
+        "diff": -0.0903
+      },
+      "late_streak": {
+        "diff": -0.1059
+      },
+      "hist_payment_count_normalized": {
+        "diff": -0.2164
+      },
+      "on_time_ratio": {
+        "diff": 0.1172
+      }
+    },
+    "false_positives": {
+      "count": 546,
+      "avg_risk_score": 0.5914,
+      "hist_paid_ratio": {
+        "diff": -0.137
+      },
+      "hist_late_ratio": {
+        "diff": 0.152
+      },
+      "hist_paid_ratio_3": {
+        "diff": -0.1482
+      },
+      "hist_paid_ratio_6": {
+        "diff": -0.1439
+      },
+      "hist_late_ratio_3": {
+        "diff": 0.1675
+      },
+      "last_paid": {
+        "diff": -0.1406
+      },
+      "last_late": {
+        "diff": 0.157
+      },
+      "hist_max_delay": {
+        "diff": 0.0794
+      },
+      "payment_volatility": {
+        "diff": 0.108
+      },
+      "late_streak": {
+        "diff": 0.1364
+      },
+      "hist_payment_count_normalized": {
+        "diff": -0.0729
+      },
+      "behavioral_score": {
+        "diff": 0.1043
+      },
+      "on_time_ratio": {
+        "diff": -0.1061
+      }
+    }
+  },
+  "drift_baseline": {
+    "amount_normalized": {
+      "mean": 0.119415,
+      "std": 0.120037,
+      "p10": 0.012434,
+      "median": 0.082082,
+      "p90": 0.275194
+    },
+    "customer_age_normalized": {
+      "mean": 0.436982,
+      "std": 0.330991,
+      "p10": 0.059101,
+      "median": 0.352274,
+      "p90": 1.0
+    },
+    "invoice_frequency": {
+      "mean": 0.400398,
+      "std": 0.149253,
+      "p10": 0.206426,
+      "median": 0.399463,
+      "p90": 0.593729
+    },
+    "industry_risk_factor": {
+      "mean": 0.342592,
+      "std": 0.156897,
+      "p10": 0.15,
+      "median": 0.4,
+      "p90": 0.55
+    },
+    "seasonal_factor": {
+      "mean": 0.36999,
+      "std": 0.08754,
+      "p10": 0.3,
+      "median": 0.35,
+      "p90": 0.5
+    },
+    "credit_score_normalized": {
+      "mean": 0.795798,
+      "std": 0.111295,
+      "p10": 0.648805,
+      "median": 0.801105,
+      "p90": 0.944299
+    },
+    "credit_score_bucket": {
+      "mean": 0.774962,
+      "std": 0.18941,
+      "p10": 0.5,
+      "median": 0.75,
+      "p90": 1.0
+    },
+    "credit_score_x_industry": {
+      "mean": 0.070233,
+      "std": 0.053129,
+      "p10": 0.009024,
+      "median": 0.059732,
+      "p90": 0.146675
+    },
+    "credit_x_late": {
+      "mean": 0.047639,
+      "std": 0.048911,
+      "p10": 0.006119,
+      "median": 0.032172,
+      "p90": 0.112883
+    },
+    "hist_paid_ratio": {
+      "mean": 0.687136,
+      "std": 0.16333,
+      "p10": 0.421323,
+      "median": 0.747822,
+      "p90": 0.84254
+    },
+    "hist_late_ratio": {
+      "mean": 0.23041,
+      "std": 0.172406,
+      "p10": 0.075875,
+      "median": 0.16068,
+      "p90": 0.516856
+    },
+    "hist_paid_ratio_3": {
+      "mean": 0.683955,
+      "std": 0.189515,
+      "p10": 0.375433,
+      "median": 0.75,
+      "p90": 0.871733
+    },
+    "hist_paid_ratio_6": {
+      "mean": 0.685332,
+      "std": 0.172956,
+      "p10": 0.401925,
+      "median": 0.75,
+      "p90": 0.85218
+    },
+    "hist_late_ratio_3": {
+      "mean": 0.234043,
+      "std": 0.198988,
+      "p10": 0.052833,
+      "median": 0.15,
+      "p90": 0.556433
+    },
+    "paid_trend": {
+      "mean": 0.513836,
+      "std": 0.027363,
+      "p10": 0.5,
+      "median": 0.5,
+      "p90": 0.552893
+    },
+    "late_trend": {
+      "mean": 0.513992,
+      "std": 0.028887,
+      "p10": 0.5,
+      "median": 0.5,
+      "p90": 0.554015
+    },
+    "last_paid": {
+      "mean": 0.682781,
+      "std": 0.246465,
+      "p10": 0.2453,
+      "median": 0.75,
+      "p90": 0.925
+    },
+    "last_late": {
+      "mean": 0.23509,
+      "std": 0.256318,
+      "p10": 0.0183,
+      "median": 0.1426,
+      "p90": 0.7025
+    },
+    "hist_max_delay": {
+      "mean": 0.188074,
+      "std": 0.225279,
+      "p10": 0.036662,
+      "median": 0.10204,
+      "p90": 0.473495
+    },
+    "hist_avg_delay_normalized": {
+      "mean": 0.119095,
+      "std": 0.158843,
+      "p10": 0.019273,
+      "median": 0.066458,
+      "p90": 0.281321
+    },
+    "delay_variance": {
+      "mean": 0.052254,
+      "std": 0.067977,
+      "p10": 0.0,
+      "median": 0.029871,
+      "p90": 0.131357
+    },
+    "payment_volatility": {
+      "mean": 0.096633,
+      "std": 0.125404,
+      "p10": 0.013206,
+      "median": 0.037916,
+      "p90": 0.296041
+    },
+    "late_streak": {
+      "mean": 0.115955,
+      "std": 0.281058,
+      "p10": 0.0,
+      "median": 0.0,
+      "p90": 0.5
+    },
+    "good_streak": {
+      "mean": 0.127274,
+      "std": 0.311249,
+      "p10": 0.0,
+      "median": 0.0,
+      "p90": 0.666667
+    },
+    "invoice_frequency_trend": {
+      "mean": 0.500017,
+      "std": 0.019363,
+      "p10": 0.48393,
+      "median": 0.5,
+      "p90": 0.516216
+    },
+    "payment_velocity": {
+      "mean": 0.041667,
+      "std": 0.0,
+      "p10": 0.041667,
+      "median": 0.041667,
+      "p90": 0.041667
+    },
+    "hist_payment_count_normalized": {
+      "mean": 0.369864,
+      "std": 0.263039,
+      "p10": 0.052632,
+      "median": 0.315789,
+      "p90": 0.736842
+    },
+    "risk_composite": {
+      "mean": 0.200438,
+      "std": 0.076926,
+      "p10": 0.125893,
+      "median": 0.181072,
+      "p90": 0.308331
+    },
+    "amount_x_risk": {
+      "mean": 0.041027,
+      "std": 0.049472,
+      "p10": 0.002914,
+      "median": 0.023899,
+      "p90": 0.100905
+    },
+    "overdue_x_industry": {
+      "mean": 0.010044,
+      "std": 0.036661,
+      "p10": 0.0,
+      "median": 0.0,
+      "p90": 0.024444
+    },
+    "clv_proxy": {
+      "mean": 0.020744,
+      "std": 0.033328,
+      "p10": 0.000628,
+      "median": 0.0084,
+      "p90": 0.054888
+    },
+    "recovery_signal": {
+      "mean": 0.972328,
+      "std": 0.054726,
+      "p10": 0.894213,
+      "median": 1.0,
+      "p90": 1.0
+    },
+    "behavioral_score": {
+      "mean": 0.217288,
+      "std": 0.132296,
+      "p10": 0.114563,
+      "median": 0.156497,
+      "p90": 0.435791
+    },
+    "overdue_days_normalized": {
+      "mean": 0.029766,
+      "std": 0.09825,
+      "p10": 0.0,
+      "median": 0.0,
+      "p90": 0.083333
+    },
+    "on_time_ratio": {
+      "mean": 0.75658,
+      "std": 0.266162,
+      "p10": 0.2792,
+      "median": 0.8745,
+      "p90": 0.9829
+    }
+  },
+  "training_config": {
+    "n_folds": 5,
+    "n_trials": 30,
+    "smote": true,
+    "time_based_split": true,
+    "threshold_opt": "fbeta_b2_on_val",
+    "calibration": "isotonic",
+    "random_seed": 42,
+    "cost_fn": 1000.0,
+    "cost_fp": 100.0
+  },
+  "root_causes_fixed": {
+    "ROOT-1 history": "multi-invoice per customer (6-22 invoices)",
+    "ROOT-2 behavioral": "delay_variance, late_streak, velocity, good_streak",
+    "ROOT-3 recall": "F-beta(β=2) threshold on val set",
+    "ROOT-4 fp_rate": "9.3%",
+    "ROOT-5 credit_dom": "reg_alpha=2 reg_lambda=3 + bucket + interactions",
+    "ROOT-6 lightgbm": "active"
+  },
+  "monitoring": {
+    "alert_roc_drop": 0.05,
+    "alert_drift_z": 3.0,
+    "retrain_schedule": "weekly",
+    "evidently_ready": true
+  }
+}

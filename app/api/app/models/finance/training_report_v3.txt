@@ -1,0 +1,46 @@
+=================================================================
+  Finance Risk Model v3.0 — Training Report
+  Generated: 2026-04-25T18:59:42.675138
+=================================================================
+Samples:         10000
+Features:        20 total (11 base + 9 engineered)
+Bad payer rate:  25.9%
+Split:           Time-based (no data leakage)
+Ensemble:        XGBoost+ LightGBM
+
+── Cross Validation ───────────────────────────────────────
+  roc_auc     : test=0.9995 ± 0.0002 | train=1.0000
+  f1          : test=0.9874 ± 0.0025 | train=1.0000
+  precision   : test=0.9809 ± 0.0039 | train=1.0000
+  recall      : test=0.9939 ± 0.0017 | train=1.0000
+  accuracy    : test=0.9915 ± 0.0017 | train=1.0000
+
+── Test Set (threshold=0.50) ──────────────────────────────
+  ROC AUC:     0.9997
+  PR AUC:      0.9992
+  Brier:       0.0052
+  F1:          0.9888
+  Recall:      0.9938
+  Precision:   0.9837
+
+── Cost-Sensitive Decision (FN=1000, FP=100) ─────────
+  Threshold:   0.35
+  Precision:   0.9798
+  Recall:      0.9959
+  F1:          0.9878
+  Total Cost:  3,000
+
+── Decision Engine ────────────────────────────────────────
+  reject  ≥ 0.35
+  review  ≥ 0.30
+  approve <  0.30
+
+── Classification Report ──────────────────────────────────
+              precision    recall  f1-score   support
+
+  Good Payer       1.00      0.99      1.00      1513
+   Bad Payer       0.98      1.00      0.99       487
+
+    accuracy                           0.99      2000
+   macro avg       0.99      0.99      0.99      2000
+weighted avg       0.99      0.99      0.99      2000

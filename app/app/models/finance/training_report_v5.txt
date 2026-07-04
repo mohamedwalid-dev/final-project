@@ -1,0 +1,61 @@
+=================================================================
+  Finance Risk Model v5.0 — Production Training Report
+  Generated: 2026-04-23T21:57:55.146580 UTC
+=================================================================
+Samples:        10,000
+Features:       32 (base + rolling-historical + engineered)
+Bad payer rate: 32.1%
+Split:          Time-based (prevents future leakage)
+Ensemble:       XGBoost + LightGBM + LogisticRegression
+
+── v5.0 Improvements ────────────────────────────────────
+  [FIX-1] Credit de-dominance  reg_alpha=1.0 reg_lambda=2.0 + bucket/trend
+  [FIX-2] Rolling historical   paid_ratio_3/6, trend, last_paid, streak
+  [FIX-3] Multi-mode engine    safe/balanced/aggressive (active=balanced)
+  [FIX-4] Isotonic calibration ECE=0.0533
+  [FIX-5] Leakage AUC limit    0.85 (was 0.90)
+  [FIX-6] Logistic Regression  added for ensemble diversity
+  [FIX-7] Error analysis       FP/FN segment profiling
+
+── Cross Validation ─────────────────────────────────────
+  roc_auc     : test=0.6117 ± 0.0138
+  f1          : test=0.1204 ± 0.0652
+  precision   : test=0.4903 ± 0.0836
+  recall      : test=0.0723 ± 0.0419
+
+── Test Set (threshold=0.50) ────────────────────────────
+  ROC AUC:   0.5948
+  PR AUC:    0.3726
+  Brier:     0.2094
+  F1:        0.2315
+  Recall:    0.1561
+  Precision: 0.4476
+  ECE:       0.0533
+
+── Cost-Sensitive (FN=1000, FP=100) ──────────
+  Threshold: 0.10
+  Precision: 0.3015
+  Recall:    1.0000
+  F1:        0.4633
+  Cost:      139,500
+
+── Decision Engine (Multi-Mode) ─────────────────────────
+  Active mode: balanced
+  safe        : reject≥0.15 review≥0.10
+  balanced    : reject≥0.25 review≥0.15
+  aggressive  : reject≥0.35 review≥0.20
+
+── Classification Report ────────────────────────────────
+              precision    recall  f1-score   support
+
+  Good Payer       1.00      0.00      0.00      1398
+   Bad Payer       0.30      1.00      0.46       602
+
+    accuracy                           0.30      2000
+   macro avg       0.65      0.50      0.23      2000
+weighted avg       0.79      0.30      0.14      2000
+
+
+── Error Analysis ───────────────────────────────────────
+  False Negatives (missed bad payers): 0
+  False Positives (wrongly rejected):  1395

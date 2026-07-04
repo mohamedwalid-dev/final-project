@@ -1,0 +1,30 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: ERP_DB_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - ERP_DB_mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: ERP
+
+  redis:
+    image: redis:7-alpine
+    container_name: ERP_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ERP_redis_data:/data
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  ERP_DB_mongo_data:
+  ERP_redis_data:

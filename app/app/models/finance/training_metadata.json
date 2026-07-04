@@ -1,0 +1,220 @@
+{
+  "version": "2.0",
+  "trained_at": "2026-04-22T22:46:17.415225",
+  "n_samples": 100000,
+  "feature_count": 14,
+  "feature_names": [
+    "overdue_days_normalized",
+    "amount_normalized",
+    "paid_ratio",
+    "late_ratio",
+    "on_time_ratio",
+    "customer_age_normalized",
+    "invoice_frequency",
+    "avg_delay_normalized",
+    "credit_score_normalized",
+    "industry_risk_factor",
+    "seasonal_factor",
+    "amount_x_overdue",
+    "credit_x_late_ratio",
+    "risk_score_composite"
+  ],
+  "base_features": [
+    "overdue_days_normalized",
+    "amount_normalized",
+    "paid_ratio",
+    "late_ratio",
+    "on_time_ratio",
+    "customer_age_normalized",
+    "invoice_frequency",
+    "avg_delay_normalized",
+    "credit_score_normalized",
+    "industry_risk_factor",
+    "seasonal_factor"
+  ],
+  "engineered_features": [
+    "amount_x_overdue",
+    "credit_x_late_ratio",
+    "risk_score_composite"
+  ],
+  "model_type": "CalibratedClassifierCV",
+  "optimal_threshold": 0.67,
+  "threshold_strategy": "f1",
+  "metrics": {
+    "accuracy": 0.9231,
+    "roc_auc": 0.9662,
+    "pr_auc": 0.9397,
+    "brier": 0.0569,
+    "precision": 0.8315,
+    "recall": 0.8719,
+    "f1": 0.8512,
+    "precision_opt": 0.886,
+    "recall_opt": 0.8406,
+    "f1_opt": 0.8627
+  },
+  "cv_results": {
+    "roc_auc": {
+      "test_mean": 0.9731,
+      "test_std": 0.001,
+      "train_mean": 0.9747
+    },
+    "f1": {
+      "test_mean": 0.8789,
+      "test_std": 0.0022,
+      "train_mean": 0.8815
+    },
+    "precision": {
+      "test_mean": 0.8434,
+      "test_std": 0.0041,
+      "train_mean": 0.8454
+    },
+    "recall": {
+      "test_mean": 0.9175,
+      "test_std": 0.0027,
+      "train_mean": 0.9208
+    },
+    "accuracy": {
+      "test_mean": 0.9157,
+      "test_std": 0.0017,
+      "train_mean": 0.9175
+    }
+  },
+  "shap_importance": {
+    "credit_score_normalized": 1.583409,
+    "overdue_days_normalized": 1.131295,
+    "risk_score_composite": 0.8039,
+    "industry_risk_factor": 0.259914,
+    "seasonal_factor": 0.156313,
+    "amount_x_overdue": 0.156057,
+    "amount_normalized": 0.084398,
+    "customer_age_normalized": 0.031862,
+    "invoice_frequency": 0.022131,
+    "paid_ratio": 0.0,
+    "late_ratio": 0.0,
+    "on_time_ratio": 0.0,
+    "avg_delay_normalized": 0.0,
+    "credit_x_late_ratio": 0.0
+  },
+  "native_importance": {
+    "overdue_days_normalized": 0.208491,
+    "amount_normalized": 0.013881,
+    "paid_ratio": 0.0,
+    "late_ratio": 0.0,
+    "on_time_ratio": 0.0,
+    "customer_age_normalized": 0.004353,
+    "invoice_frequency": 0.012496,
+    "avg_delay_normalized": 0.0,
+    "credit_score_normalized": 0.305621,
+    "industry_risk_factor": 0.059728,
+    "seasonal_factor": 0.035769,
+    "amount_x_overdue": 0.07192,
+    "credit_x_late_ratio": 0.0,
+    "risk_score_composite": 0.287743
+  },
+  "drift_baseline": {
+    "overdue_days_normalized": {
+      "mean": 0.073518,
+      "std": 0.137308,
+      "p25": 0.005556,
+      "median": 0.022222,
+      "p75": 0.066667
+    },
+    "amount_normalized": {
+      "mean": 0.15002,
+      "std": 0.14924,
+      "p25": 0.043145,
+      "median": 0.104421,
+      "p75": 0.207975
+    },
+    "paid_ratio": {
+      "mean": 0.0,
+      "std": 0.0,
+      "p25": 0.0,
+      "median": 0.0,
+      "p75": 0.0
+    },
+    "late_ratio": {
+      "mean": 0.0,
+      "std": 0.0,
+      "p25": 0.0,
+      "median": 0.0,
+      "p75": 0.0
+    },
+    "on_time_ratio": {
+      "mean": 1.0,
+      "std": 0.0,
+      "p25": 1.0,
+      "median": 1.0,
+      "p75": 1.0
+    },
+    "customer_age_normalized": {
+      "mean": 0.367238,
+      "std": 0.304655,
+      "p25": 0.115,
+      "median": 0.278333,
+      "p75": 0.553333
+    },
+    "invoice_frequency": {
+      "mean": 0.351349,
+      "std": 0.303088,
+      "p25": 0.1,
+      "median": 0.25,
+      "p75": 0.55
+    },
+    "avg_delay_normalized": {
+      "mean": 0.0,
+      "std": 0.0,
+      "p25": 0.0,
+      "median": 0.0,
+      "p75": 0.0
+    },
+    "credit_score_normalized": {
+      "mean": 0.778081,
+      "std": 0.119527,
+      "p25": 0.698824,
+      "median": 0.788235,
+      "p75": 0.864706
+    },
+    "industry_risk_factor": {
+      "mean": 0.345931,
+      "std": 0.158908,
+      "p25": 0.2,
+      "median": 0.4,
+      "p75": 0.45
+    },
+    "seasonal_factor": {
+      "mean": 0.370315,
+      "std": 0.087439,
+      "p25": 0.3,
+      "median": 0.35,
+      "p75": 0.4
+    },
+    "amount_x_overdue": {
+      "mean": 0.011004,
+      "std": 0.030896,
+      "p25": 0.000412,
+      "median": 0.002182,
+      "p75": 0.00802
+    },
+    "credit_x_late_ratio": {
+      "mean": 0.0,
+      "std": 0.0,
+      "p25": 0.0,
+      "median": 0.0,
+      "p75": 0.0
+    },
+    "risk_score_composite": {
+      "mean": 0.15536,
+      "std": 0.060614,
+      "p25": 0.117,
+      "median": 0.144627,
+      "p75": 0.176983
+    }
+  },
+  "training_config": {
+    "n_folds": 5,
+    "n_trials": 50,
+    "smote": true,
+    "random_seed": 42
+  }
+}
