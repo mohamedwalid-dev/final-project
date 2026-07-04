@@ -1,5 +1,5 @@
 """
-🧠 HR Leave Approval — Training Pipeline (Production v3.1)
+🧠 HR Leave Approval — Training Pipeline (Production v3.2)
 =========================================================
 File: training/hr_train.py
 
@@ -8,6 +8,18 @@ File: training/hr_train.py
     2. n default: 800 → 1500
     3. Confidence distribution check بعد training
     4. Post-train sanity: رفض الـ model لو AUC > 0.99 على synthetic فقط
+
+✅ v3.2 — Node.js API Integration (بدل الاتصال المباشر بـ MongoDB):
+    1. load_from_db() بقت بتنادي Node.js Express API (GET /hr/leaves)
+       بدل ما تتصل بـ MongoDB مباشرة عن طريق Motor.
+    2. الراوتر بتاع الـ HR مفيهوش endpoint بيرجّع approved/rejected بس
+       (زي ?status=approved,rejected)، فبنجيب كل الطلبات من /hr/leaves
+       (مع limit كبير + pagination لو المفروض) وبنفلتر approved/rejected
+       محلياً في بايثون.
+    3. الاتصال بيتم عن طريق core.node_hr_proxy.get_hr_db() اللي بيرجع
+       NodeHRProxy — نفس شكل الاستدعاء القديم (get_hr_db().leaves.find...)
+       اتلغى، ودلوقتي بنستخدم NodeHRProxy.get_leaves() اللي بينادي
+       GET /hr/leaves تحت الغطاء عن طريق NodeAPIClient.
 
 Run:
     python training/hr_train.py
@@ -108,6 +120,13 @@ THRESHOLD_ESCALATE = 0.42
 
 SANITY_MAX_AUC_SYNTHETIC = 0.97
 
+# ── v3.2: pull size cap when loading from Node API ──────────────────────────
+# الراوتر مفيهوش endpoint بيرجّع approved/rejected بس، فبنجيب دفعة كبيرة من
+# /hr/leaves (كل الحالات) وبنفلتر approved/rejected محلياً. الرقم ده حد أقصى
+# لعدد الطلبات اللي بنجيبها في الاستدعاء عشان منحملش الـ Node API/الشبكة أكتر
+# من اللازم لو الجدول كبير جداً.
+NODE_API_LEAVES_FETCH_LIMIT = int(os.getenv("HR_TRAIN_LEAVES_FETCH_LIMIT", "5000"))
+
 
 def days_to_fy_end(ref_date: pd.Timestamp) -> int:
     year   = ref_date.year
@@ -126,52 +145,68 @@ def load_from_csv(csv_path: str) -> pd.DataFrame:
     return df
 
 
-async def _fetch_leaves_from_mongo() -> list[dict]:
+async def _fetch_leaves_from_node_api() -> list[dict]:
     """
-    Pull historical approved/rejected leaves from MongoDB HRDB.
-    Maps Mongo document fields → training column names.
+    ✅ v3.2 — بدل الاتصال المباشر بـ MongoDB (Motor)، دلوقتي بنسحب طلبات
+    الإجازات التاريخية من Node.js Express API عن طريق NodeHRProxy
+    (core/node_hr_proxy.py) اللي بينادي تحت الغطاء:
+
+        GET /hr/leaves?limit=<NODE_API_LEAVES_FETCH_LIMIT>
+
+    الراوتر الحالي (hr.routes.js) بيدعم بس:
+        GET /hr/leaves            (list — يقبل ?status=&limit=)
+        GET /hr/leaves/pending
+        GET /hr/leaves/:id
+        GET /hr/leaves/:id/decision
+        PATCH /hr/leaves/:id/status
+        DELETE /hr/leaves/:id
+
+    ومفيش endpoint بيرجّع approved+rejected بس دفعة واحدة، فبنجيب كل
+    الطلبات (status=None) وبنفلتر approved/rejected محلياً في بايثون
+    (زي ما كان بيحصل قبل كده جوه استعلام Mongo نفسه).
     """
     load_dotenv(ROOT_DIR / ".env")
     sys.path.insert(0, str(APP_DIR))
 
-    from core.mongo_connect import ensure_mongo_ready, get_hr_db
+    from core.node_hr_proxy import get_hr_db
 
-    await ensure_mongo_ready()
-    db = get_hr_db()
+    proxy = get_hr_db()
 
-    cursor = db.leaves.find(
-        {"status": {"$in": ["approved", "rejected"]}},
-        {
-            "leave_days":          1,
-            "leave_balance":       1,
-            "confidence_score":    1,   # used as proxy for performance_score if needed
-            "leave_type":          1,
-            "department":          1,
-            "created_at":          1,
-            "status":              1,
-            # employee context fields (set at request time)
-            "performance_score":   1,
-            "absence_count":       1,
-            "job_level":           1,
-            "years_of_experience": 1,
-            "salary_grade":        1,
-            "overtime_hours":      1,
-        },
-    ).sort("created_at", 1)
+    # status=None → يرجّع كل الطلبات (مش فلترة على السيرفر)، وبنفلتر إحنا
+    # بعدين على approved/rejected بس عشان الـ training.
+    docs = await proxy.get_leaves(status=None, limit=NODE_API_LEAVES_FETCH_LIMIT)
 
-    docs = await cursor.to_list(None)
-    return docs
+    if not isinstance(docs, list):
+        logger.warning(
+            "⚠️ GET /hr/leaves رجّعت شكل غير متوقع (مش list) — نوعها: %s",
+            type(docs).__name__,
+        )
+        return []
+
+    filtered = [d for d in docs if d.get("status") in ("approved", "rejected")]
+    logger.info(
+        "   📡 Node API /hr/leaves: %d إجمالي | %d approved/rejected بعد الفلترة",
+        len(docs), len(filtered),
+    )
+    return filtered
 
 
 def load_from_db() -> pd.DataFrame:
     """
-    Load historical leave data from MongoDB for training.
-    Runs the async fetch synchronously via asyncio.run().
+    ✅ v3.2 — تحميل بيانات الإجازات التاريخية من Node.js API (بدل MongoDB
+    مباشرة). الدالة بتفضل شكلها الخارجي زي ما هو (بترجع DataFrame) عشان
+    main() تفضل شغالة من غير تعديل، لكن جوايها بقت بتستخدم NodeHRProxy
+    بدل Motor/get_hr_db القديمة اللي كانت بتتصل بـ MongoDB مباشرة.
     """
-    docs = asyncio.run(_fetch_leaves_from_mongo())
+    docs = asyncio.run(_fetch_leaves_from_node_api())
 
     if not docs:
-        raise ValueError("No approved/rejected leaves found in MongoDB")
+        raise ValueError(
+            "No approved/rejected leaves found via Node API (GET /hr/leaves). "
+            "تأكد إن NODE_API_BASE_URL و NODE_API_SERVICE_TOKEN (أو "
+            "NODE_API_SERVICE_EMAIL/PASSWORD) متظبطين في .env، وإن Node.js "
+            "server شغال على localhost:5005."
+        )
 
     rows = []
     for d in docs:
@@ -191,7 +226,7 @@ def load_from_db() -> pd.DataFrame:
         })
 
     df = pd.DataFrame(rows)
-    logger.info("✅ Loaded %d records from MongoDB HRDB (leaves collection)", len(df))
+    logger.info("✅ Loaded %d records from Node.js HR API (GET /hr/leaves)", len(df))
     return df
 
 
@@ -1027,7 +1062,7 @@ def save_artifacts(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(description="HR Leave Approval — Training Pipeline v3.1")
+    parser = argparse.ArgumentParser(description="HR Leave Approval — Training Pipeline v3.2")
     parser.add_argument("--min-samples",        type=int,  default=50)
     parser.add_argument("--dry-run",            action="store_true")
     parser.add_argument("--csv",                type=str,  default=None)
@@ -1040,13 +1075,14 @@ def main():
     parser.add_argument("--cost-false-reject",  type=float, default=COST_FALSE_REJECT)
     args = parser.parse_args()
 
-    logger.info("🚀 HR Leave Approval Training Pipeline v3.1 starting...")
+    logger.info("🚀 HR Leave Approval Training Pipeline v3.2 starting...")
+    logger.info("   Data source priority: --csv > Node.js API (GET /hr/leaves) > synthetic")
     logger.info("   Thresholds: approve>=%.2f | escalate>=%.2f",
                 THRESHOLD_APPROVE, THRESHOLD_ESCALATE)
     logger.info("   Sanity cap (synthetic AUC max): %.2f", SANITY_MAX_AUC_SYNTHETIC)
 
     # ── 1. Data ───────────────────────────────────────────────────────────────
-    data_source = "db"
+    data_source = "node_api"
     df = None
 
     if args.csv:
@@ -1062,13 +1098,13 @@ def main():
             df = load_from_db()
             if len(df) < args.min_samples:
                 logger.warning(
-                    "⚠️ Only %d real rows — augmenting with synthetic", len(df)
+                    "⚠️ Only %d real rows from Node API — augmenting with synthetic", len(df)
                 )
                 df_synth    = generate_synthetic_data(n=max(300, args.min_samples * 4))
                 df          = pd.concat([df, df_synth], ignore_index=True)
-                data_source = "mongo+synthetic"
+                data_source = "node_api+synthetic"
         except Exception as e:
-            logger.warning("⚠️ MongoDB load failed: %s — using synthetic", e)
+            logger.warning("⚠️ Node.js API load failed: %s — using synthetic", e)
             df = None
 
     if df is None or args.dry_run:
@@ -1202,7 +1238,8 @@ def main():
     )
 
     # ── Final Summary ─────────────────────────────────────────────────────────
-    print(f"\n{'🏆' * 3} Training Complete v3.1 {'🏆' * 3}")
+    print(f"\n{'🏆' * 3} Training Complete v3.2 {'🏆' * 3}")
+    print(f"   Data source: {data_source}")
     print(f"   Accuracy : {eval_metrics['accuracy']:.2%}")
     print(f"   ROC-AUC  : {eval_metrics['roc_auc']:.4f}")
     print(f"   F1 Score : {eval_metrics['f1_score']:.4f}")

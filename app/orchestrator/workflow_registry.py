@@ -9,8 +9,6 @@ Registered Workflows:
     ✅ incentive_request                → IncentiveWorkflow
     ✅ absence_event                    → AbsenceWorkflow
     ✅ attendance_audit                 → AttendanceWorkflow
-    ✅ ticket_created                   → TicketWorkflow
-    ✅ lead_added                       → LeadWorkflow
     ✅ invoice_overdue                  → OverdueInvoiceWorkflow    (NEW Finance v1)
     ✅ invoice_created                  → NewInvoiceWorkflow        (NEW Finance v1)
     ✅ payment_received                 → PaymentReceivedWorkflow   (NEW Finance v1)
@@ -25,8 +23,6 @@ from workflows.hr.leave_approval_workflow import (
     AbsenceWorkflow,
     AttendanceWorkflow,
 )
-from workflows.support.ticket_workflow import TicketWorkflow
-from workflows.crm.lead_workflow import LeadWorkflow
 
 # ── Finance Workflows (NEW) ───────────────────────────────────────────────────
 from workflows.finance.invoice_workflow import (
@@ -64,12 +60,6 @@ class WorkflowRegistry:
 
             # ── HR — Attendance ───────────────────────────────────────────────
             "attendance_audit": AttendanceWorkflow(),
-
-            # ── Support ───────────────────────────────────────────────────────
-            "ticket_created":  TicketWorkflow(),
-
-            # ── CRM ───────────────────────────────────────────────────────────
-            "lead_added":      LeadWorkflow(),
 
             # ── Finance (NEW v1) ──────────────────────────────────────────────
             "invoice_overdue":  OverdueInvoiceWorkflow(),

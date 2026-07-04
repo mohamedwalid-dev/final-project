@@ -18,6 +18,13 @@ traing\finance_train.py
   ✅ _to_features(): numpy array input → shape guard يضمن (1, N) مش (1, 1, N)
   ✅ _to_features(): dict input مع leakage guard محسّن
 
+🌐 v8.2 — Node API Data Source:
+  ✅ load_from_node_api(): يجيب customers + invoices من Node.js ERP API
+     (بدل CSV) عن طريق NodeAPIClient الموجود في core/node_api_client.py
+  ✅ Fallback chain: Node API → CSV → Synthetic data
+  ✅ Field-name tolerant (snake_case / camelCase) لأن الـ Node controllers
+     بترجّع Mongoose documents مباشرة من غير schema ثابت متفق عليه هنا
+
 CSV Columns المتوقعة (schema ثابت):
   customer_id, invoice_id, age, gender, location, industry,
   business_type, years_with_company, income_revenue, credit_score,
@@ -31,15 +38,19 @@ Usage:
   python finance_train_v8.py --csv data.csv
   python finance_train_v8.py --csv data.csv --mode balanced --trials 50
   python finance_train_v8.py --csv data.csv --fp-penalty 5.0   # يرفع penalty على FP
+  python finance_train_v8.py --from-node-api                  # 🌐 من Node API مباشرة
+  python finance_train_v8.py --from-node-api --csv data.csv    # Node API مع CSV fallback
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import pickle
+import sys
 import uuid
 import warnings
 from datetime import datetime
@@ -63,6 +74,11 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+# ── Make sure `core.*` (node_api_client / node_finance_proxy) is importable ──
+_APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _APP_ROOT not in sys.path:
+    sys.path.insert(0, _APP_ROOT)
 
 # ─────────────────────────────────────────────────────────────────────────────
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -253,7 +269,17 @@ def load_and_prepare_csv(csv_path: str) -> tuple:
     log.info("📂 Loading CSV: %s", csv_path)
     df = pd.read_csv(csv_path)
     log.info("   Raw shape: %s | columns: %s", df.shape, list(df.columns))
+    return _prepare_dataframe(df)
 
+
+def _prepare_dataframe(df: pd.DataFrame) -> tuple:
+    """
+    Shared preparation pipeline for any DataFrame that already has (or can
+    be coerced into) the expected schema — used by both load_and_prepare_csv()
+    and load_from_node_api(), so Node-sourced data goes through exactly the
+    same feature engineering / leakage handling as CSV data.
+    """
+    df = df.copy()
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
     for col in ["invoice_date", "due_date", "payment_date"]:
@@ -331,6 +357,207 @@ def load_and_prepare_csv(csv_path: str) -> tuple:
     X, feature_names = build_feature_matrix(df)
     log.info("   Feature matrix: %s | bad=%.1f%%", X.shape, y.mean() * 100)
     return X, y, months, feature_names, df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1b. NODE API LOADER  🌐  v8.2
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# يجيب customers + invoices من Node.js ERP API (بدل CSV) عن طريق
+# NodeAPIClient الموجود في core/node_api_client.py، ويبني DataFrame
+# بنفس الأعمدة اللي load_and_prepare_csv() متوقعاها بالظبط:
+#
+#   customer_id, invoice_id, age, gender, location, industry,
+#   business_type, years_with_company, income_revenue, credit_score,
+#   credit_limit, outstanding_balance, debt_ratio, invoice_amount,
+#   invoice_date, due_date, payment_date
+#
+# ⚠️ الـ Node controllers بترجّع Mongoose documents زي ما هي (مفيش schema
+#    ثابت متفق عليه هنا)، فالـ loader ده متسامح مع أسماء الحقول:
+#    بيدور على snake_case وcamelCase variants قبل ما يـ default.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# كل عمود متوقع → قائمة أسماء بديلة محتملة جايه من الـ Node API (بالترتيب)
+_INVOICE_FIELD_ALIASES = {
+    "invoice_id":            ["invoice_id", "invoiceId", "_id", "id"],
+    "customer_id":           ["customer_id", "customerId"],
+    "invoice_amount":        ["invoice_amount", "invoiceAmount", "amount", "total_amount", "totalAmount"],
+    "invoice_date":          ["invoice_date", "invoiceDate", "created_at", "createdAt", "issue_date", "issueDate"],
+    "due_date":               ["due_date", "dueDate"],
+    "payment_date":           ["payment_date", "paymentDate", "paid_at", "paidAt"],
+    "status":                 ["status"],
+    "ai_risk_score":          ["ai_risk_score", "aiRiskScore", "risk_score", "riskScore"],
+}
+
+_CUSTOMER_FIELD_ALIASES = {
+    "customer_id":            ["customer_id", "customerId", "_id", "id"],
+    "age":                     ["age", "customer_age"],
+    "gender":                  ["gender"],
+    "location":                ["location", "city", "address"],
+    "industry":                ["industry", "sector"],
+    "business_type":           ["business_type", "businessType"],
+    "years_with_company":      ["years_with_company", "yearsWithCompany", "tenure_years", "tenureYears"],
+    "income_revenue":          ["income_revenue", "incomeRevenue", "annual_revenue", "annualRevenue", "revenue"],
+    "credit_score":            ["credit_score", "creditScore"],
+    "credit_limit":            ["credit_limit", "creditLimit"],
+    "outstanding_balance":     ["outstanding_balance", "outstandingBalance", "balance"],
+    "debt_ratio":              ["debt_ratio", "debtRatio"],
+}
+
+
+def _first_present(d: dict, aliases: list[str], default=None):
+    """يرجّع أول قيمة موجودة (مش None) من قائمة أسماء بديلة داخل dict واحد."""
+    for key in aliases:
+        if key in d and d[key] is not None:
+            return d[key]
+    return default
+
+
+def _extract_fields(record: dict, alias_map: dict) -> dict:
+    return {out_col: _first_present(record, aliases) for out_col, aliases in alias_map.items()}
+
+
+async def _fetch_all_node_data(limit_per_page: int = 200, max_pages: int = 100) -> tuple[list, list]:
+    """
+    يسحب كل الـ customers وكل الـ invoices من Node API بالـ pagination
+    (limit/skip) لحد ما صفحة ترجع فاضية أو نوصل max_pages (حماية من infinite loop).
+
+    بيرجّع (customers: list[dict], invoices: list[dict]) — raw records
+    زي ما جايه من الـ API، من غير أي تعديل على أسماء الحقول.
+    """
+    from core.node_api_client import get_node_api_client
+
+    client = get_node_api_client()
+    await client.ensure_authenticated()
+
+    customers: list = []
+    skip = 0
+    for _ in range(max_pages):
+        page = await client.get_customers(limit=limit_per_page, skip=skip)
+        if not page:
+            break
+        customers.extend(page)
+        if len(page) < limit_per_page:
+            break
+        skip += limit_per_page
+    log.info("   🌐 Node API: fetched %d customers", len(customers))
+
+    invoices: list = []
+    skip = 0
+    for _ in range(max_pages):
+        page = await client.get_invoices(limit=limit_per_page, skip=skip)
+        if not page:
+            break
+        invoices.extend(page)
+        if len(page) < limit_per_page:
+            break
+        skip += limit_per_page
+    log.info("   🌐 Node API: fetched %d invoices", len(invoices))
+
+    return customers, invoices
+
+
+def _build_node_dataframe(customers: list, invoices: list) -> pd.DataFrame:
+    """
+    يبني DataFrame واحد بدمج كل invoice مع الـ customer بتاعه (join على
+    customer_id)، وبيطبّع أسماء الحقول لنفس الأعمدة اللي load_and_prepare_csv()
+    متوقعاها. أي حقل ناقص بيتسيب فاضي (NaN) — الـ pipeline بعد كده
+    (_prepare_dataframe / build_feature_matrix) أصلاً بيعمل .fillna() بقيم
+    افتراضية معقولة لكل عمود من دول.
+    """
+    customer_lookup: dict[str, dict] = {}
+    for c in customers:
+        norm = _extract_fields(c, _CUSTOMER_FIELD_ALIASES)
+        cid = norm.get("customer_id")
+        if cid is not None:
+            customer_lookup[str(cid)] = norm
+
+    rows = []
+    for inv in invoices:
+        inv_norm = _extract_fields(inv, _INVOICE_FIELD_ALIASES)
+        cid = inv_norm.get("customer_id")
+        cust_norm = customer_lookup.get(str(cid), {}) if cid is not None else {}
+
+        row = {
+            "customer_id":         cid,
+            "invoice_id":          inv_norm.get("invoice_id"),
+            "invoice_amount":      inv_norm.get("invoice_amount"),
+            "invoice_date":        inv_norm.get("invoice_date"),
+            "due_date":            inv_norm.get("due_date"),
+            "payment_date":        inv_norm.get("payment_date"),
+            "age":                 cust_norm.get("age"),
+            "gender":              cust_norm.get("gender"),
+            "location":            cust_norm.get("location"),
+            "industry":            cust_norm.get("industry"),
+            "business_type":       cust_norm.get("business_type"),
+            "years_with_company":  cust_norm.get("years_with_company"),
+            "income_revenue":      cust_norm.get("income_revenue"),
+            "credit_score":        cust_norm.get("credit_score"),
+            "credit_limit":        cust_norm.get("credit_limit"),
+            "outstanding_balance": cust_norm.get("outstanding_balance"),
+            "debt_ratio":          cust_norm.get("debt_ratio"),
+        }
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    return df
+
+
+def load_from_node_api(limit_per_page: int = 200,
+                       max_pages: int = 100,
+                       min_rows: int = 50) -> Optional[tuple]:
+    """
+    🌐 Data source #1 (v8.2): يجيب customers + invoices من Node.js ERP API
+    ويبنيهم في نفس الـ DataFrame schema اللي CSV loader بيستخدمه، وبعدين
+    يمشي في نفس الـ pipeline (_prepare_dataframe) بالظبط.
+
+    بيرجّع (X, y, months, feature_names, df) زي load_and_prepare_csv()،
+    أو None لو:
+      - فيه استثناء (auth فشل، Node مش شغال، circuit breaker مفتوح، ...)
+      - عدد الصفوف اللي رجعت أقل من min_rows (بيانات مش كافية للتدريب)
+
+    الـ caller (main()) مسؤول عن الـ fallback لـ CSV أو synthetic data
+    لو رجع None — الدالة دي متعمدة تبلع أي error وترجع None بدل ما توقف
+    التدريب كله.
+    """
+    log.info("🌐 Attempting to load training data from Node API...")
+    try:
+        customers, invoices = asyncio.run(
+            _fetch_all_node_data(limit_per_page=limit_per_page, max_pages=max_pages)
+        )
+    except Exception as e:
+        log.warning("   ⚠️  Node API fetch failed: %s", e)
+        return None
+
+    if not invoices:
+        log.warning("   ⚠️  Node API returned 0 invoices — nothing to train on")
+        return None
+
+    df = _build_node_dataframe(customers, invoices)
+
+    if len(df) < min_rows:
+        log.warning(
+            "   ⚠️  Node API returned only %d invoice rows (< min_rows=%d) — "
+            "not enough data to train reliably", len(df), min_rows,
+        )
+        return None
+
+    n_missing_customer = df["customer_id"].isna().sum()
+    if n_missing_customer:
+        log.warning(
+            "   ⚠️  %d/%d invoices have no resolvable customer_id — "
+            "these rows will get synthetic IDs downstream",
+            n_missing_customer, len(df),
+        )
+
+    log.info("   ✅ Node API data assembled: %d invoice rows | %d customers matched",
+             len(df), len(customers))
+
+    try:
+        return _prepare_dataframe(df)
+    except Exception as e:
+        log.warning("   ⚠️  Failed to prepare Node API data for training: %s", e)
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1749,21 +1976,6 @@ def train(X_raw, y, months, feature_names, best_params,
         },
         "report_text": report_text,
     }
-    # ← بعد الـ return مفيش حاجة — احذف كل الكود القديم اللي كان هنا
-
-    # ← احذف كل اللي بعد return القديم
-
-#    if joblib is not None:
-#        joblib.dump(feature_names, FEATURE_COLUMNS_PATH)
-#    else:
-#        with open(FEATURE_COLUMNS_PATH, "wb") as f:
-#            pickle.dump(feature_names, f)
-
-#    log.info("Feature columns saved: %s", FEATURE_COLUMNS_PATH)
-
-#    api_feature_columns_path = os.path.join(API_MODEL_DIR, "finance_feature_columns.pkl")
-#    shutil.copy2(FEATURE_COLUMNS_PATH, api_feature_columns_path)
-#    log.info("Feature columns copied to API dir: %s", os.path.abspath(api_feature_columns_path))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1790,6 +2002,15 @@ def main():
     parser.add_argument("--mode",           choices=["safe", "balanced", "aggressive"],
                         default="balanced")
     parser.add_argument("--bad-days",       type=int,   default=30)
+    # 🌐 v8.2 — Node API data source
+    parser.add_argument("--from-node-api",  action="store_true",
+                        help="جرّب تجيب بيانات التدريب من Node.js ERP API الأول "
+                             "(قبل CSV/synthetic)")
+    parser.add_argument("--node-api-min-rows", type=int, default=50,
+                        help="أقل عدد invoice rows مقبول من Node API قبل ما نعتبره "
+                             "فشل ونعمل fallback")
+    parser.add_argument("--node-api-page-size", type=int, default=200,
+                        help="حجم الصفحة (limit) لكل pagination request للـ Node API")
     args = parser.parse_args()
 
     global MODEL_PATH, METADATA_PATH, REPORT_PATH, FEATURE_COLUMNS_PATH
@@ -1803,7 +2024,7 @@ def main():
     print("=" * 65)
     print("  💰 Finance Risk Model v8.1.1 — Low FP | 3-tier | Logging")
     print("=" * 65)
-    print(f"  CSV:          {args.csv or 'synthetic fallback'}")
+    print(f"  Data source:  {'Node API → CSV → synthetic' if args.from_node_api else (args.csv or 'synthetic fallback')}")
     print(f"  Mode:         {args.mode}  [{DECISION_MODES[args.mode]['description']}]")
     print(f"  Bad payer:    payment_delay > {args.bad_days} days")
     print(f"  FP Penalty:   x{args.fp_penalty} (cost_fp_effective={args.cost_fp * args.fp_penalty:.0f})")
@@ -1813,21 +2034,42 @@ def main():
     print("=" * 65)
 
     X, y, months, feature_names, df = None, None, None, None, None
-    if args.csv:
+    data_source = "synthetic"
+
+    # ── 🌐 v8.2: Node API first (if requested) ────────────────────────────
+    if args.from_node_api:
+        result_tuple = load_from_node_api(
+            limit_per_page=args.node_api_page_size,
+            min_rows=args.node_api_min_rows,
+        )
+        if result_tuple is not None:
+            X, y, months, feature_names, df = result_tuple
+            data_source = "node_api"
+            log.info("✅ Using Node API as training data source")
+        else:
+            log.warning("⚠️  Node API data unavailable/insufficient — falling back to CSV/synthetic")
+
+    # ── CSV (explicit --csv, or fallback after failed Node API attempt) ───
+    if X is None and args.csv:
         try:
             X, y, months, feature_names, df = load_and_prepare_csv(args.csv)
+            data_source = "csv"
         except Exception as e:
             log.error("CSV load failed: %s", e)
-            raise
+            if not args.from_node_api:
+                raise
+            log.warning("⚠️  CSV fallback also failed — falling back to synthetic data")
 
+    # ── Synthetic (final fallback) ─────────────────────────────────────────
     if X is None:
-        log.info("No CSV provided — using synthetic data")
+        log.info("No usable Node API/CSV data — using synthetic data")
         X, y, months, feature_names, df = generate_synthetic_data(
             n_customers=args.n_customers
         )
+        data_source = "synthetic"
 
-    log.info("\n📦 Dataset: %d rows | %d features | bad=%.1f%%",
-             len(X), X.shape[1], y.mean() * 100)
+    log.info("\n📦 Dataset: %d rows | %d features | bad=%.1f%% | source=%s",
+             len(X), X.shape[1], y.mean() * 100, data_source)
 
     best_params = {}
     if args.trials > 0 and not args.dry_run:
@@ -1856,6 +2098,7 @@ def main():
     metadata = {
         "version":             "8.1.1",
         "trained_at":          datetime.utcnow().isoformat() + "Z",
+        "data_source":          data_source,
         "n_samples":           len(X),
         "feature_count":       len(feature_names),
         "feature_names":       feature_names,
@@ -1910,6 +2153,7 @@ def main():
             "fp_penalty_multiplier": args.fp_penalty,
             "max_fp_rate_target": args.max_fp_rate,
             "bad_payer_threshold_days": args.bad_days,
+            "from_node_api": args.from_node_api,
         },
     }
 
@@ -1999,6 +2243,7 @@ def main():
     print(f"  📋 Metadata: {METADATA_PATH}")
     print(f"  📄 Report:   {REPORT_PATH}")
     print(f"  📊 Logs:     {LOG_DIR}/")
+    print(f"  🗂️  Source:   {data_source}")
     print(f"{'=' * 65}")
     print(f"  ROC AUC:    {m['roc_auc']:.4f}  (realistic: 0.75–0.88)")
     print(f"  PR AUC:     {m['pr_auc']:.4f}   (realistic: 0.40–0.70)")
@@ -2019,11 +2264,13 @@ def main():
     print(f"    ❌ reject   : score >= {de.reject_threshold:.2f}")
     print(f"\n{'=' * 65}")
     print(f"\n🚀 Commands:")
-    print(f"   python finance_train_v8.py --csv data.csv")
-    print(f"   python finance_train_v8.py --csv data.csv --mode safe --fp-penalty 8.0")
-    print(f"   python finance_train_v8.py --csv data.csv --mode aggressive --max-fp-rate 0.20")
-    print(f"   python finance_train_v8.py --csv data.csv --mode balanced --trials 100")
-    print(f"   python finance_train_v8.py --csv data.csv --bad-days 15 --fp-penalty 5")
+    print(f"   python finance_train.py --csv data.csv")
+    print(f"   python finance_train.py --from-node-api")
+    print(f"   python finance_train.py --from-node-api --csv data.csv   # Node API مع CSV fallback")
+    print(f"   python finance_train.py --csv data.csv --mode safe --fp-penalty 8.0")
+    print(f"   python finance_train.py --csv data.csv --mode aggressive --max-fp-rate 0.20")
+    print(f"   python finance_train.py --csv data.csv --mode balanced --trials 100")
+    print(f"   python finance_train.py --csv data.csv --bad-days 15 --fp-penalty 5")
 
 
 if __name__ == "__main__":

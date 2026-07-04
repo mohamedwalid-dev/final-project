@@ -20,11 +20,17 @@ v2.0 logic (unchanged):
     ✅ Live dashboard push (push_finance_event → SSE)
     ✅ Atomic log per action (finance_collection_log)
     ✅ Never raises (all errors caught & returned)
+
+Fixes (v3.0.1):
+    ✅ BUG 1  — schedule_followup_N_days: regex بدل split()[-2] لتجنب suffix خاطئ
+    ✅ BUG 2  — _write_off_invoice: now = _utcnow() مرة واحدة → consistency بين DB والـ response
+    ✅ WARN 2 — _send_email: simulated default → False (كان True بيموه على real SMTP sends)
 """
 
 from __future__ import annotations
 
 import logging
+import re                                           # ✅ BUG 1 — مضاف لـ regex parsing
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -37,7 +43,7 @@ def _utcnow() -> datetime:
 
 def _get_db():
     """Return the shared FinanceDB instance (Motor async)."""
-    from core.mongo_connect import get_finance_db
+    from core.node_finance_proxy import get_finance_db
     return get_finance_db()
 
 
@@ -121,11 +127,12 @@ class FinanceActionExecutor:
         }
 
         # ── schedule_followup_N_days handled dynamically ──────────────────
+        # ✅ BUG 1 FIX: regex بدل split("_")[-2] — يشتغل صح مع أي suffix زيادة
+        #    مثال: schedule_followup_30_days_special كان بيرجع "special" → exception
+        #    دلوقتي: re.search بيجيب الـ digit group بشكل صريح وآمن
         if action.startswith("schedule_followup_"):
-            try:
-                days = int(action.split("_")[-2])
-            except Exception:
-                days = 7
+            m    = re.search(r"schedule_followup_(\d+)_days", action)
+            days = int(m.group(1)) if m else 7
             return await self._schedule_followup(
                 days=days, invoice_id=invoice_id,
                 customer_id=customer_id, amount=amount, request_id=request_id,
@@ -146,16 +153,15 @@ class FinanceActionExecutor:
             )
 
         if action.startswith("schedule_first_reminder_in_"):
-            try:
-                days = int(action.split("_")[-2])
-            except Exception:
-                days = 7
+            # ✅ BUG 1 FIX (same pattern): regex بدل split("_")[-2]
+            m    = re.search(r"schedule_first_reminder_in_(\d+)_days", action)
+            days = int(m.group(1)) if m else 7
             return await self._schedule_followup(
                 days=days, review_type="first_reminder",
                 invoice_id=invoice_id, customer_id=customer_id,
                 amount=amount, request_id=request_id,
             )
-        
+
         # ── schedule_legal_review — إيجاد أي action اسمه كده وعمل legal review ──────
         if action == "schedule_legal_review":
             return await self._schedule_followup(
@@ -163,14 +169,14 @@ class FinanceActionExecutor:
                 invoice_id=invoice_id, customer_id=customer_id,
                 amount=amount, request_id=request_id,
             )
-        
+
         # ── schedule_suspension_notice — alias للـ suspend ───────────────────────────
         if action == "schedule_suspension_notice":
             return await self._schedule_followup(
                 days=3, review_type="suspension_notice",
                 invoice_id=invoice_id, customer_id=customer_id,
                 amount=amount, request_id=request_id,
-    )
+            )
 
         if action == "update_customer_risk_profile":
             return await self._update_credit_score(
@@ -433,7 +439,10 @@ class FinanceActionExecutor:
             "status":        status,
             "to_email":      customer_email,
             "html_rendered": bool(html_body),
-            "simulated":     email_result.get("simulated", True),
+            # ✅ WARN 2 FIX: default → False بدل True
+            #    كان: email_result.get("simulated", True) → بيموه على كل real SMTP send
+            #    دلوقتي: False = real send unless the service explicitly marks it simulated
+            "simulated":     email_result.get("simulated", False),
             "method":        email_result.get("method", "none"),
             "error":         email_result.get("error"),
             "sent_at":       _utcnow().isoformat() + "Z",
@@ -647,18 +656,24 @@ class FinanceActionExecutor:
         }
 
     async def _write_off_invoice(self, invoice_id, customer_id, amount, **kw) -> dict:
-        """✅ invoices.status = 'written_off' ← FinanceDB.update_invoice_status()"""
-        db = _get_db()
+        """
+        ✅ invoices.status = 'written_off' ← FinanceDB.update_invoice_status()
 
-        # ✅ بدل extra_fields={"written_off_at": "NOW()"}
-        # update_invoice_status مش بتاخد extra_fields — نعمل update_one مباشرة
-        from bson import ObjectId
+        ✅ BUG 2 FIX: now = _utcnow() مرة واحدة قبل الـ update
+           كان: _utcnow() في الـ $set + _utcnow() تاني في الـ return
+           → قيمتين مختلفتين (ولو بفرق microseconds) = inconsistency بين MongoDB والـ response
+           دلوقتي: نفس الـ datetime object في الاتنين → consistency تامة
+        """
+        db  = _get_db()
+        now = _utcnow()                             # ✅ مرة واحدة بس
+
+        
         await db.invoices.update_one(
-            {"_id": ObjectId(str(invoice_id))},
+            {"_id": str(invoice_id)},
             {"$set": {
-                "status":        "written_off",
-                "written_off_at": _utcnow(),
-                "updated_at":    _utcnow(),
+                "status":         "written_off",
+                "written_off_at": now,              # ✅ نفس الـ object
+                "updated_at":     now,              # ✅ نفس الـ object
             }},
         )
         await db.log_collection_action(
@@ -676,7 +691,7 @@ class FinanceActionExecutor:
             "invoice_id":     invoice_id,
             "new_status":     "written_off",
             "amount":         amount,
-            "written_off_at": _utcnow().isoformat() + "Z",
+            "written_off_at": now.isoformat() + "Z",  # ✅ نفس الـ object → consistent مع MongoDB
         }
 
     async def _put_on_hold(self, invoice_id, customer_id=None, **kw) -> dict:
@@ -723,9 +738,9 @@ class FinanceActionExecutor:
     async def _mark_paid(self, invoice_id, customer_id=None, **kw) -> dict:
         """✅ invoices.status = 'paid' + paid_at timestamp"""
         db = _get_db()
-        from bson import ObjectId
+        
         await db.invoices.update_one(
-            {"_id": ObjectId(str(invoice_id))},
+            {"_id": str(invoice_id)},
             {"$set": {
                 "status":     "paid",
                 "paid_at":    _utcnow(),    # ✅ datetime بدل "NOW()"

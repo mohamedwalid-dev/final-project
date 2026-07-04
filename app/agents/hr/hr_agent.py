@@ -1,9 +1,20 @@
 """
-🤖 HR Agent — v4.1 Production
+🤖 HR Agent — v4.2 Production
 ==============================
 File: app/agents/hr/hr_agent.py
 
-✅ v4.1 Fixes:
+✅ v4.2 Fixes:
+    Fix Q1 — GeminiQuotaGuard: added to ALL Gemini call sites in HR agent
+              (_invoke_llm_leave + _invoke_llm_domain), matching the
+              FinanceAgent pattern. Under 50 concurrent users hammering
+              /leaves/submit, the old code triggered Gemini rate-limit errors
+              and then waited for exponential backoff → p95 = 20s per request.
+              The guard detects ResourceExhausted / 429 on first hit and
+              immediately routes to rule-based fallback for the circuit-open
+              window (default 30s), dropping p95 dramatically while keeping
+              throughput.
+
+✅ v4.1 Fixes (retained):
     Fix S1 — Salary: recommended_increment_pct calculation (never null)
     Fix S2 — Salary: professional reason (not "rule-based fallback")
     Fix I1 — Incentive: KPI 85%+ = approve_bonus (not partial)
@@ -29,6 +40,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Optional
 
 from agents.hr.leave_model_handler import get_model_handler
@@ -41,6 +53,115 @@ from agents.hr.salary_decision_engine import (
 from config.hr_thresholds import LLM_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 🛡️  GEMINI QUOTA GUARD  (Fix Q1 — same pattern as FinanceAgent)
+# ════════════════════════════════════════════════════════════════════════════
+
+class _GeminiQuotaGuard:
+    """
+    Circuit-breaker for Gemini API rate-limit errors.
+
+    v4.3 UPDATE:
+        - Reads Google's own `retryDelay` from the 429 error payload and
+          opens the circuit for EXACTLY that long (capped at MAX_OPEN_WINDOW_SEC),
+          instead of a blind fixed 30s. Google tells us precisely when the
+          per-day/per-minute quota window resets — trust that number.
+        - Falls back to DEFAULT_OPEN_WINDOW_SEC only if no retryDelay is
+          found in the error (e.g. a different kind of failure).
+    """
+
+    DEFAULT_OPEN_WINDOW_SEC: int = 30
+    MAX_OPEN_WINDOW_SEC:     int = 90   # never block longer than this even if Google asks for more
+
+    _QUOTA_SIGNATURES: tuple[str, ...] = (
+        "resourceexhausted",
+        "429",
+        "quota",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+    )
+
+    def __init__(self) -> None:
+        self._lock:       threading.Lock = threading.Lock()
+        self._open:       bool           = False
+        self._open_until: float          = 0.0
+        self._trip_count: int            = 0
+        self._last_retry_delay_sec: Optional[float] = None
+
+    def is_open(self) -> bool:
+        if not self._open:
+            return False
+        with self._lock:
+            if time.monotonic() >= self._open_until:
+                self._open = False
+                logger.info(
+                    "🔵 [HR QuotaGuard] Circuit closed — Gemini calls resuming "
+                    "(total trips=%d)",
+                    self._trip_count,
+                )
+            return self._open
+
+    def is_quota_error(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(sig in msg for sig in self._QUOTA_SIGNATURES)
+
+    @staticmethod
+    def _extract_retry_delay_sec(exc: Exception) -> Optional[float]:
+        """
+        Parses Google's own suggested wait time out of the error message,
+        e.g. 'retryDelay': '43s'  or  'Please retry in 43.5s'.
+        Returns None if not found.
+        """
+        import re
+        msg = str(exc)
+        m = re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", msg)
+        if m:
+            return float(m.group(1))
+        m = re.search(r"retry in (\d+(?:\.\d+)?)s", msg, re.IGNORECASE)
+        if m:
+            return float(m.group(1))
+        return None
+
+    def trip(self, exc: Exception) -> None:
+        """Open the circuit using Google's own retryDelay when available."""
+        retry_delay = self._extract_retry_delay_sec(exc)
+        window = retry_delay if retry_delay is not None else self.DEFAULT_OPEN_WINDOW_SEC
+        window = min(window, self.MAX_OPEN_WINDOW_SEC)
+
+        with self._lock:
+            self._open              = True
+            self._open_until        = time.monotonic() + window
+            self._trip_count       += 1
+            self._last_retry_delay_sec = retry_delay
+
+        logger.warning(
+            "🔴 [HR QuotaGuard] Circuit OPEN for %.1fs (trip #%d, google_retry_delay=%s) — "
+            "Gemini quota hit: %s. All HR LLM calls → rule fallback.",
+            window, self._trip_count, retry_delay, str(exc)[:120],
+        )
+
+    def record_success(self) -> None:
+        pass
+
+    def status(self) -> dict:
+        return {
+            "circuit_open":         self.is_open(),
+            "open_until":           self._open_until,
+            "trip_count":           self._trip_count,
+            "last_retry_delay_sec": self._last_retry_delay_sec,
+        }
+
+# Module-level singleton — one guard instance shared across all HRAgent instances.
+# Constructed at import time (thread-safe via Python's import lock).
+_quota_guard = _GeminiQuotaGuard()
+
+
+def get_hr_quota_guard() -> _GeminiQuotaGuard:
+    """Expose the guard for health-check endpoints or testing."""
+    return _quota_guard
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -67,63 +188,53 @@ def _calculate_recommended_increment(
 
     Returns: float (e.g. 0.15 = 15%)
     """
-    # حدود الـ increment حسب الـ job level (Egyptian market benchmarks)
     level_caps = {
-        "junior":  0.20,   # max 20%
-        "senior":  0.25,   # max 25%
-        "lead":    0.30,   # max 30%
-        "manager": 0.35,   # max 35%
+        "junior":  0.20,
+        "senior":  0.25,
+        "lead":    0.30,
+        "manager": 0.35,
     }
     max_by_level = level_caps.get(str(job_level).lower(), 0.20)
 
-    # الأداء يؤثر على نسبة الـ increment
     if performance_score >= 0.90:
-        perf_multiplier = 1.0       # full increment
+        perf_multiplier = 1.0
     elif performance_score >= 0.75:
-        perf_multiplier = 0.85      # 85% من المطلوب
+        perf_multiplier = 0.85
     elif performance_score >= 0.60:
-        perf_multiplier = 0.70      # 70%
+        perf_multiplier = 0.70
     else:
-        perf_multiplier = 0.50      # نص فقط
+        perf_multiplier = 0.50
 
-    # KPI achievement يضيف bonus على الـ increment
     kpi_bonus = 0.0
     if kpi_achievement >= 1.20:
-        kpi_bonus = 0.03    # +3% لو exceeded target
+        kpi_bonus = 0.03
     elif kpi_achievement >= 1.0:
-        kpi_bonus = 0.02    # +2% لو met target
+        kpi_bonus = 0.02
     elif kpi_achievement >= 0.90:
-        kpi_bonus = 0.01    # +1% لو قريب من target
+        kpi_bonus = 0.01
 
-    # سنوات بدون increment → يرفع الـ increment المنطقي
     tenure_bonus = 0.0
     if months_since_last_increment >= 24:
-        tenure_bonus = 0.03    # +3% لو 2+ سنين
+        tenure_bonus = 0.03
     elif months_since_last_increment >= 18:
-        tenure_bonus = 0.02    # +2% لو 18+ شهر
+        tenure_bonus = 0.02
     elif months_since_last_increment >= 12:
-        tenure_bonus = 0.01    # +1% لو سنة+
+        tenure_bonus = 0.01
 
-    # الـ increment الأساسي المحسوب
     base_increment = min(
         requested_increment_pct,
         abs(market_gap_pct) if market_gap_pct > 0 else requested_increment_pct,
     )
 
-    # طبق الـ performance multiplier والـ bonuses
     calculated = (base_increment * perf_multiplier) + kpi_bonus + tenure_bonus
-
-    # تأكد مش بيتجاوز الحد حسب الـ level
     calculated = min(calculated, max_by_level)
 
-    # تأكد مش بيتجاوز الميزانية المتاحة
     if available_pool_egp > 0 and current_salary_egp > 0:
         max_by_budget = available_pool_egp / current_salary_egp
         calculated = min(calculated, max_by_budget)
 
-    # حد أدنى لو الأداء يستحق
     if performance_score >= 0.75 and months_since_last_increment >= 12:
-        calculated = max(calculated, 0.05)   # على الأقل 5%
+        calculated = max(calculated, 0.05)
 
     return round(max(0.0, calculated), 4)
 
@@ -140,9 +251,6 @@ def _build_salary_reason(
     is_on_pip: bool,
     is_on_probation: bool,
 ) -> str:
-    """
-    اكتب سبب واضح ومفيد لـ HR (مش "rule-based fallback")
-    """
     if is_on_probation:
         return (
             "Salary increment deferred: Employee is currently in the probation period. "
@@ -168,7 +276,6 @@ def _build_salary_reason(
     new_salary = current_salary_egp * (1 + recommended_increment_pct)
     parts = []
 
-    # Performance context
     if performance_score >= 0.90:
         parts.append(f"exceptional performance score ({performance_score:.0%})")
     elif performance_score >= 0.75:
@@ -176,19 +283,16 @@ def _build_salary_reason(
     else:
         parts.append(f"satisfactory performance score ({performance_score:.0%})")
 
-    # KPI context
     if kpi_achievement >= 1.0:
         parts.append(f"KPI target met at {kpi_achievement:.0%}")
     else:
         parts.append(f"KPI achievement of {kpi_achievement:.0%}")
 
-    # Market gap context
     if market_gap_pct > 0.15:
         parts.append(f"significant market gap ({market_gap_pct:.0%} below median) — retention risk")
     elif market_gap_pct > 0.05:
         parts.append(f"moderate market gap ({market_gap_pct:.0%} below median)")
 
-    # Tenure context
     if months_since_last_increment >= 18:
         parts.append(f"{months_since_last_increment} months since last increment")
 
@@ -206,7 +310,7 @@ def _build_salary_reason(
             f"The requested increment requires director-level authorization due to its magnitude "
             f"or budget implications. Recommended increment if approved: {recommended_increment_pct:.0%}."
         )
-    else:  # defer
+    else:
         return (
             f"Salary review deferred based on {reason_parts}. "
             "Current conditions do not fully support the requested increment at this time. "
@@ -228,55 +332,26 @@ def _calculate_bonus_amount(
     incentive_budget_remaining_egp: float,
     incentive_type: str,
 ) -> float:
-    """
-    احسب مبلغ الـ bonus المنطقي بناءً على الأداء والعوامل التانية.
-
-    Formula:
-        base_bonus = monthly_salary * 0.20 (20% benchmark)
-        × performance_factor (kpi + perf score average)
-        × trend_factor (up/stable/down)
-        × critical_factor (critical talent premium)
-
-    Returns: float (EGP amount)
-    """
     if monthly_salary_egp <= 0:
-        # لو مفيش salary data، استخدم الـ requested amount مباشرة
         return min(requested_amount_egp, incentive_budget_remaining_egp)
 
-    # الـ overtime compensation = بيتحسب بطريقة تانية (statutory)
     if incentive_type == "overtime_compensation":
         return min(requested_amount_egp, incentive_budget_remaining_egp)
 
-    # Base bonus = 20% من الراتب الشهري
     base_bonus = monthly_salary_egp * 0.20
-
-    # Performance factor = average of KPI and performance score
-    # KPI > 1.0 يعني exceeded target
-    normalized_kpi = min(kpi_achievement, 1.20)   # cap at 120%
+    normalized_kpi = min(kpi_achievement, 1.20)
     performance_factor = (normalized_kpi + min(performance_score, 1.0)) / 2.0
 
-    # Trend factor
-    trend_factors = {
-        "up":       1.15,   # improving → +15%
-        "stable":   1.00,   # stable → baseline
-        "down":     0.80,   # declining → -20%
-    }
+    trend_factors = {"up": 1.15, "stable": 1.00, "down": 0.80}
     trend_factor = trend_factors.get(str(perf_trend).lower(), 1.00)
 
-    # Critical talent premium
     critical_factor = 1.20 if is_critical_talent else 1.00
-
-    # Calculate
     calculated = base_bonus * performance_factor * trend_factor * critical_factor
 
-    # Cap at 3x monthly salary (board approval needed above this)
     max_bonus = monthly_salary_egp * 3.0
     calculated = min(calculated, max_bonus)
-
-    # Never exceed requested amount
     calculated = min(calculated, requested_amount_egp)
 
-    # Never exceed budget
     if incentive_budget_remaining_egp > 0:
         calculated = min(calculated, incentive_budget_remaining_egp)
 
@@ -295,8 +370,6 @@ def _build_incentive_reason(
     is_critical_talent: bool,
     monthly_salary_egp: float,
 ) -> str:
-    """اكتب سبب واضح ومفيد لقرار الـ incentive"""
-
     if incentive_type == "overtime_compensation":
         return (
             f"Overtime compensation approved: This is a statutory right under Egyptian Labor Law Art. 57. "
@@ -340,7 +413,7 @@ def _build_incentive_reason(
     if decision == "approve_bonus":
         return (
             f"Performance bonus of {approved_amount:,.0f} EGP approved based on {context}. "
-            f"{'Full requested amount approved.' if approved_amount >= requested_amount else f'Approved amount reflects performance scoring and budget optimization.'}"
+            f"{'Full requested amount approved.' if approved_amount >= requested_amount else 'Approved amount reflects performance scoring and budget optimization.'}"
         )
     elif decision == "partial_bonus":
         pct = (approved_amount / requested_amount * 100) if requested_amount > 0 else 0
@@ -360,7 +433,7 @@ def _build_incentive_reason(
             f"exceeds 3x monthly salary threshold ({monthly_salary_egp * 3:,.0f} EGP). "
             "Board-level authorization required per company policy."
         )
-    else:  # deny
+    else:
         return (
             f"Bonus denied based on {context}. "
             "Performance metrics do not meet the minimum threshold required for bonus disbursement. "
@@ -390,7 +463,7 @@ class HRAgent(BaseAgent):
 
     @property
     def name(self) -> str:
-        return "HRAgent_v4.1"
+        return "HRAgent_v4.2"
 
     # ── BaseAgent.process (sync wrapper) ──────────────────────────────────────
 
@@ -517,21 +590,6 @@ class HRAgent(BaseAgent):
     # ── Salary Review Pipeline ────────────────────────────────────────────────
 
     async def process_salary(self, data: dict) -> dict:
-        """
-        Salary review pipeline — v6.0 Single-Decision Flow.
-
-        Flow:
-            1. Try Gemini LLM (best quality reasoning)
-            2. If LLM fails/times out → SalaryDecisionEngine (rule + score engine)
-            3. ONE final result — no overwriting, no double-decision
-
-        The old pattern:
-            LLM fail → _rule_based_fallback() → "defer"
-            then SalaryValidationLayer overrides → "reject"    ← BROKEN
-
-        The new pattern:
-            LLM fail → SalaryDecisionEngine.decide()  →  "reject"  ← CLEAN
-        """
         request_id = data.get("request_id") or generate_request_id()
         data       = {**data, "request_id": request_id}
 
@@ -540,31 +598,23 @@ class HRAgent(BaseAgent):
             request_id, data.get("employee_id", "?"),
         )
 
-        # ── Try LLM first (highest quality) ──────────────────────────────────
         try:
-            llm_result = await self._invoke_llm_domain(data, "salary", request_id)
-
-            # _invoke_llm_domain already calls _rule_based_fallback internally on error,
-            # but we now intercept that and use SalaryDecisionEngine instead.
-            # Check if the result came from the old fallback — if so, re-decide with engine.
+            llm_result   = await self._invoke_llm_domain(data, "salary", request_id)
             model_source = llm_result.get("model_source", "")
 
             if model_source == "rule_fallback":
-                # Old fallback fired — replace with engine decision
                 logger.info(
                     "[request_id=%s] 🔄 [HRAgent] Replacing rule_fallback with SalaryDecisionEngine",
                     request_id,
                 )
                 return self._salary_engine_decision(data, request_id, llm_used=False)
 
-            # LLM succeeded — enrich and return
             llm_result = self._enrich_llm_result(llm_result, data, "salary")
             llm_result["request_id"] = request_id
             llm_result["domain"]     = "salary"
             llm_result["llm_used"]   = True
             llm_result = self._normalize_booleans(llm_result)
 
-            # Ensure recommended_increment_pct is never null even from LLM
             if llm_result.get("recommended_increment_pct") is None:
                 llm_result["recommended_increment_pct"] = self._compute_salary_fallback_increment(data)
 
@@ -583,18 +633,8 @@ class HRAgent(BaseAgent):
             )
             return self._salary_engine_decision(data, request_id, llm_used=False)
 
-    def _salary_engine_decision(
-        self,
-        data:       dict,
-        request_id: str,
-        llm_used:   bool = False,
-    ) -> dict:
-        """
-        Use SalaryDecisionEngine to produce a single, final, auditable decision.
-        This replaces BOTH _rule_based_fallback("salary") AND SalaryValidationLayer.
-        """
+    def _salary_engine_decision(self, data: dict, request_id: str, llm_used: bool = False) -> dict:
         from agents.hr.salary_decision_engine import get_salary_decision_engine
-
         engine = get_salary_decision_engine()
         result = engine.decide(data, request_id=request_id)
 
@@ -634,7 +674,6 @@ class HRAgent(BaseAgent):
     # ── Incentive/Bonus Pipeline ──────────────────────────────────────────────
 
     async def process_incentive(self, data: dict) -> dict:
-        """Incentive / bonus pipeline — LLM-first, smart rule fallback."""
         request_id = data.get("request_id") or generate_request_id()
         data       = {**data, "request_id": request_id}
 
@@ -648,9 +687,10 @@ class HRAgent(BaseAgent):
             result["request_id"] = request_id
             result["domain"]     = "incentive"
             result = self._normalize_booleans(result)
-            # ✅ Fix I2: approved_amount never null
             if result.get("approved_amount_egp") is None:
-                result["approved_amount_egp"] = self._compute_incentive_amount(data, result.get("decision", "deny_bonus"))
+                result["approved_amount_egp"] = self._compute_incentive_amount(
+                    data, result.get("decision", "deny_bonus")
+                )
             return result
         except Exception as e:
             logger.error("[request_id=%s] ❌ incentive failed: %s", request_id, e)
@@ -659,7 +699,6 @@ class HRAgent(BaseAgent):
     # ── Absence Management Pipeline ───────────────────────────────────────────
 
     async def process_absence(self, data: dict) -> dict:
-        """Absence event classification and penalty pipeline."""
         request_id = data.get("request_id") or generate_request_id()
         data       = {**data, "request_id": request_id}
 
@@ -681,7 +720,6 @@ class HRAgent(BaseAgent):
     # ── Attendance Audit Pipeline ─────────────────────────────────────────────
 
     async def process_attendance(self, data: dict) -> dict:
-        """Monthly attendance audit pipeline."""
         request_id = data.get("request_id") or generate_request_id()
         data       = {**data, "request_id": request_id}
 
@@ -704,7 +742,6 @@ class HRAgent(BaseAgent):
 
     @staticmethod
     def reload_model() -> bool:
-        """Reload ML model from disk. Called from POST /model/reload."""
         handler = get_model_handler()
         success = handler.reload()
         if success:
@@ -719,12 +756,10 @@ class HRAgent(BaseAgent):
 
     @staticmethod
     def get_model_info() -> dict:
-        """Model info for /model/info endpoint."""
         return get_model_handler().get_info()
 
     @staticmethod
     def get_decision_debug(validated: dict, payload: dict) -> dict:
-        """Build debug panel for /leaves/debug endpoint."""
         from agents.hr.conflict_resolver import get_conflict_resolver
         from agents.hr.leave_model_handler import get_model_handler
         from config.hr_thresholds import get_thresholds_from_metadata
@@ -755,7 +790,7 @@ class HRAgent(BaseAgent):
             "request_id":         validated.get("request_id", "?"),
         }
 
-    # ── Private: Leave LLM Invocation ─────────────────────────────────────────
+    # ── Private: Leave LLM Invocation (with QuotaGuard) ───────────────────────
 
     async def _invoke_llm_leave(
         self,
@@ -765,8 +800,23 @@ class HRAgent(BaseAgent):
     ) -> Optional[dict]:
         """
         Invoke Gemini for leave gray-zone review.
+
+        ✅ Fix Q1: Checks _quota_guard.is_open() FIRST — if the circuit is
+        open (recent quota hit), immediately returns None so the caller uses
+        ML-based fallback without waiting for any backoff. On quota errors,
+        trips the circuit. On success, calls record_success() for observability.
+
         Returns {decision, reason, confidence, flags} or None on failure.
         """
+        # ── QuotaGuard: skip if circuit open ─────────────────────────────────
+        if _quota_guard.is_open():
+            logger.warning(
+                "[request_id=%s] 🔴 [HR QuotaGuard] Circuit open — skipping Gemini leave call, "
+                "falling back to ML decision",
+                request_id,
+            )
+            return None
+
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
             from config.settings import get_settings
@@ -803,7 +853,11 @@ class HRAgent(BaseAgent):
                 llm.ainvoke(full_prompt),
                 timeout = LLM_TIMEOUT_SECONDS,
             )
-            return self._parse_llm_json(response.content, request_id)
+
+            result = self._parse_llm_json(response.content, request_id)
+            # ── QuotaGuard: record success ────────────────────────────────────
+            _quota_guard.record_success()
+            return result
 
         except asyncio.TimeoutError:
             logger.warning(
@@ -816,10 +870,19 @@ class HRAgent(BaseAgent):
                 request_id,
             )
         except Exception as e:
-            logger.warning("[request_id=%s] ⚠️ LLM invoke failed: %s", request_id, e)
+            # ── QuotaGuard: trip on quota/rate-limit errors ───────────────────
+            if _quota_guard.is_quota_error(e):
+                _quota_guard.trip(e)
+                logger.warning(
+                    "[request_id=%s] 🔴 [HR QuotaGuard] Quota error on leave LLM — "
+                    "circuit tripped, falling back to ML decision",
+                    request_id,
+                )
+            else:
+                logger.warning("[request_id=%s] ⚠️ LLM invoke failed: %s", request_id, e)
         return None
 
-    # ── Private: Domain LLM Invocation ───────────────────────────────────────
+    # ── Private: Domain LLM Invocation (with QuotaGuard) ─────────────────────
 
     async def _invoke_llm_domain(
         self,
@@ -829,8 +892,20 @@ class HRAgent(BaseAgent):
     ) -> dict:
         """
         Generic LLM invocation for non-leave HR domains.
-        Falls back to smart rule-based calculation on failure.
+
+        ✅ Fix Q1: Same QuotaGuard pattern as _invoke_llm_leave. If the circuit
+        is open → immediately returns rule-based fallback without touching
+        Gemini API. On quota errors → trips the circuit and falls back.
         """
+        # ── QuotaGuard: skip if circuit open ─────────────────────────────────
+        if _quota_guard.is_open():
+            logger.warning(
+                "[request_id=%s] 🔴 [HR QuotaGuard] Circuit open — skipping Gemini %s call, "
+                "using rule-based fallback immediately",
+                request_id, domain,
+            )
+            return self._rule_based_fallback(data, domain, request_id)
+
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
             from config.settings import get_settings
@@ -861,6 +936,8 @@ class HRAgent(BaseAgent):
                 model          = settings.GEMINI_MODEL,
                 google_api_key = settings.GOOGLE_API_KEY,
                 temperature    = 0.05,
+                max_retries    = 0,      # ← جديد: نمنع الـ SDK من عمل exponential backoff داخلي
+                timeout        = 10,     # ← جديد: أقصى انتظار 10 ثانية للـ HTTP call نفسه
             )
 
             logger.debug(
@@ -870,7 +947,7 @@ class HRAgent(BaseAgent):
 
             response = await asyncio.wait_for(
                 llm.ainvoke(full_prompt),
-                timeout = LLM_TIMEOUT_SECONDS,
+                timeout = min(LLM_TIMEOUT_SECONDS, 10),   # ← سقف 10 ثانية زي ما اتفقنا
             )
 
             parsed = self._parse_llm_json(response.content, request_id)
@@ -881,8 +958,9 @@ class HRAgent(BaseAgent):
                     parsed.get("decision", "?"),
                     float(parsed.get("confidence", 0)),
                 )
-                # ✅ Post-process LLM result to ensure completeness
                 parsed = self._enrich_llm_result(parsed, data, domain)
+                # ── QuotaGuard: record success ────────────────────────────────
+                _quota_guard.record_success()
                 return parsed
 
         except asyncio.TimeoutError:
@@ -896,31 +974,32 @@ class HRAgent(BaseAgent):
                 request_id, domain,
             )
         except Exception as e:
-            logger.warning(
-                "[request_id=%s] ⚠️ %s LLM failed: %s — rule fallback",
-                request_id, domain, e,
-            )
+            # ── QuotaGuard: trip on quota/rate-limit errors ───────────────────
+            if _quota_guard.is_quota_error(e):
+                _quota_guard.trip(e)
+                logger.warning(
+                    "[request_id=%s] 🔴 [HR QuotaGuard] Quota error on %s domain — "
+                    "circuit tripped, using rule-based fallback",
+                    request_id, domain,
+                )
+            else:
+                logger.warning(
+                    "[request_id=%s] ⚠️ %s LLM failed: %s — rule fallback",
+                    request_id, domain, e,
+                )
 
         return self._rule_based_fallback(data, domain, request_id)
 
     def _enrich_llm_result(self, parsed: dict, data: dict, domain: str) -> dict:
-        """
-        Enrich LLM result with calculated values if they're missing or null.
-        Ensures production-ready output regardless of LLM response quality.
-        """
         if domain == "salary":
-            # ✅ Fix S1: recommended_increment_pct never null
             if parsed.get("recommended_increment_pct") is None:
                 parsed["recommended_increment_pct"] = self._compute_salary_fallback_increment(data)
-            # ✅ Fix B1: booleans
             parsed = self._normalize_booleans(parsed)
 
         elif domain == "incentive":
-            # ✅ Fix I2: approved_amount_egp never null
             if parsed.get("approved_amount_egp") is None:
                 decision = parsed.get("decision", "deny_bonus")
                 parsed["approved_amount_egp"] = self._compute_incentive_amount(data, decision)
-            # ✅ Fix I4: bonus cap check
             monthly_sal = float(data.get("monthly_salary_egp", 0))
             if monthly_sal > 0:
                 max_auto_approve = monthly_sal * 3.0
@@ -936,7 +1015,6 @@ class HRAgent(BaseAgent):
         return parsed
 
     def _compute_salary_fallback_increment(self, data: dict) -> float:
-        """Calculate recommended increment when LLM doesn't provide it."""
         return _calculate_recommended_increment(
             current_salary_egp           = float(data.get("current_salary_egp", 0)),
             requested_increment_pct      = float(data.get("requested_increment_pct", 0.10)),
@@ -949,7 +1027,6 @@ class HRAgent(BaseAgent):
         )
 
     def _compute_incentive_amount(self, data: dict, decision: str) -> float:
-        """Calculate approved bonus amount when LLM doesn't provide it."""
         if decision in ("deny_bonus", "escalate_to_director", "escalate_to_ceo"):
             return 0.0
         return _calculate_bonus_amount(
@@ -965,7 +1042,6 @@ class HRAgent(BaseAgent):
 
     @staticmethod
     def _normalize_booleans(result: dict) -> dict:
-        """✅ Fix B1: Convert 0/1 integers to proper Python booleans."""
         bool_fields = [
             "is_on_pip", "is_on_probation", "is_critical_talent",
             "llm_used", "escalation_required",
@@ -978,14 +1054,9 @@ class HRAgent(BaseAgent):
     # ── Private: JSON Parser ──────────────────────────────────────────────────
 
     def _parse_llm_json(self, content: str, request_id: str) -> Optional[dict]:
-        """
-        Parse LLM response as JSON.
-        Handles: clean JSON, ```json fences, partial extraction.
-        """
         if not content:
             return None
 
-        # Strip markdown fences if present
         cleaned = content.strip()
         if cleaned.startswith("```"):
             lines   = cleaned.splitlines()
@@ -1006,7 +1077,6 @@ class HRAgent(BaseAgent):
         except json.JSONDecodeError:
             pass
 
-        # Fallback: look for JSON block inside text
         start = cleaned.find("{")
         end   = cleaned.rfind("}") + 1
         if start >= 0 and end > start:
@@ -1016,7 +1086,6 @@ class HRAgent(BaseAgent):
             except json.JSONDecodeError:
                 pass
 
-        # Last resort: keyword extraction
         lower = content.lower()
         decision = (
             "approve"  if "approve"  in lower else
@@ -1046,7 +1115,6 @@ class HRAgent(BaseAgent):
         llm_override: Optional[dict] = None,
         extra_flags:  Optional[list] = None,
     ) -> dict:
-        """Build the final leave result dict."""
         confidence     = ml_result.get("confidence", 0.5)
         breakdown      = ml_result.get("breakdown", {})
         key_factors    = ml_result.get("key_factors", [])
@@ -1106,13 +1174,11 @@ class HRAgent(BaseAgent):
     def _rule_based_fallback(self, data: dict, domain: str, request_id: str) -> dict:
         """
         ✅ v4.1: Smart rule-based fallback with proper calculations.
-        No more "rule-based fallback: perf=90%" messages!
+        ✅ v4.2: Also serves as the immediate QuotaGuard fallback path.
         """
         perf = float(data.get("performance_score", 0.75))
 
         if domain == "salary":
-            # ✅ v6.0: Delegate entirely to SalaryDecisionEngine
-            # No more if/elif chains here — engine handles all priority logic
             return self._salary_engine_decision(data, request_id, llm_used=False)
 
         elif domain == "incentive":
@@ -1125,35 +1191,24 @@ class HRAgent(BaseAgent):
             budget_left     = float(data.get("incentive_budget_remaining_egp", 999999))
             perf_trend      = str(data.get("perf_trend", "stable"))
 
-            # ✅ Fix I1: correct decision logic
             if incentive_type == "overtime_compensation":
-                decision = "approve_bonus"
-                conf     = 0.99
+                decision, conf = "approve_bonus", 0.99
             elif is_on_pip:
-                decision = "deny_bonus"
-                conf     = 0.95
+                decision, conf = "deny_bonus", 0.95
             elif kpi < 0.70 and incentive_type == "performance_bonus":
-                decision = "deny_bonus"
-                conf     = 0.90
+                decision, conf = "deny_bonus", 0.90
             elif kpi >= 0.85 and perf >= 0.80:
-                # ✅ High performer = approve (not partial!)
                 if monthly_sal > 0 and requested_amt > monthly_sal * 3:
-                    decision = "escalate_to_ceo"
-                    conf     = 0.95
+                    decision, conf = "escalate_to_ceo", 0.95
                 elif budget_left < requested_amt and budget_left > 0:
-                    decision = "partial_bonus"
-                    conf     = 0.85
+                    decision, conf = "partial_bonus", 0.85
                 else:
-                    decision = "approve_bonus"
-                    conf     = 0.85
+                    decision, conf = "approve_bonus", 0.85
             elif kpi >= 0.70:
-                decision = "partial_bonus"
-                conf     = 0.75
+                decision, conf = "partial_bonus", 0.75
             else:
-                decision = "deny_bonus"
-                conf     = 0.85
+                decision, conf = "deny_bonus", 0.85
 
-            # ✅ Fix I2: always calculate approved amount
             approved_amt = _calculate_bonus_amount(
                 requested_amount_egp             = requested_amt,
                 monthly_salary_egp               = monthly_sal,
@@ -1164,21 +1219,14 @@ class HRAgent(BaseAgent):
                 incentive_budget_remaining_egp   = budget_left,
                 incentive_type                   = incentive_type,
             )
-
             if decision in ("deny_bonus", "escalate_to_director", "escalate_to_ceo"):
                 approved_amt = 0.0
 
-            # ✅ Fix S2 equivalent: professional reason
             reason = _build_incentive_reason(
-                decision=decision,
-                kpi_achievement=kpi,
-                performance_score=perf,
-                perf_trend=perf_trend,
-                incentive_type=incentive_type,
-                approved_amount=approved_amt,
-                requested_amount=requested_amt,
-                is_on_pip=is_on_pip,
-                is_critical_talent=is_critical,
+                decision=decision, kpi_achievement=kpi, performance_score=perf,
+                perf_trend=perf_trend, incentive_type=incentive_type,
+                approved_amount=approved_amt, requested_amount=requested_amt,
+                is_on_pip=is_on_pip, is_critical_talent=is_critical,
                 monthly_salary_egp=monthly_sal,
             )
 
@@ -1188,17 +1236,17 @@ class HRAgent(BaseAgent):
             )
 
             return {
-                "decision":                  decision,
-                "confidence":                conf,
-                "risk":                      self._classify_risk(conf),
-                "reason":                    reason,
-                "approved_amount_egp":       approved_amt,
-                "is_on_pip":                 is_on_pip,
-                "is_critical_talent":        is_critical,
-                "flags":                     ["⚠️ LLM unavailable — rule-based fallback for incentive"],
-                "request_id":                request_id,
-                "llm_used":                  False,
-                "model_source":              "rule_fallback",
+                "decision":            decision,
+                "confidence":          conf,
+                "risk":                self._classify_risk(conf),
+                "reason":              reason,
+                "approved_amount_egp": approved_amt,
+                "is_on_pip":           is_on_pip,
+                "is_critical_talent":  is_critical,
+                "flags":               ["⚠️ LLM unavailable — rule-based fallback for incentive"],
+                "request_id":          request_id,
+                "llm_used":            False,
+                "model_source":        "rule_fallback",
             }
 
         elif domain == "absence":
@@ -1208,10 +1256,8 @@ class HRAgent(BaseAgent):
             med_cert   = bool(data.get("medical_certificate_provided", False))
             dur_hours  = float(data.get("duration_hours", 8))
 
-            # Egyptian Labor Law logic
             if unexcused >= 3:
-                decision = "escalate_to_hr_director"
-                conf     = 0.97
+                decision, conf = "escalate_to_hr_director", 0.97
                 classification = "unexcused"
                 payroll_deduct = round(dur_hours / 8, 1)
                 escalation_required = True
@@ -1222,8 +1268,7 @@ class HRAgent(BaseAgent):
                     "Double payroll deduction applies as per company policy."
                 )
             elif prev_warn == "formal" and unexcused >= 1:
-                decision = "suspension_review"
-                conf     = 0.92
+                decision, conf = "suspension_review", 0.92
                 classification = "unexcused"
                 payroll_deduct = round(dur_hours / 8, 1)
                 escalation_required = True
@@ -1233,8 +1278,7 @@ class HRAgent(BaseAgent):
                     "Per Egyptian Labor Law Art. 69, suspension or termination review is mandatory."
                 )
             elif abs_type == "sick" and not med_cert and dur_hours > 16:
-                decision = "formal_warning"
-                conf     = 0.90
+                decision, conf = "formal_warning", 0.90
                 classification = "unexcused"
                 payroll_deduct = round(dur_hours / 8, 1)
                 escalation_required = False
@@ -1244,10 +1288,9 @@ class HRAgent(BaseAgent):
                     "Payroll deduction applied for uncertified sick days."
                 )
             elif unexcused == 2:
-                decision = "formal_warning"
-                conf     = 0.88
+                decision, conf = "formal_warning", 0.88
                 classification = "unexcused"
-                payroll_deduct = round(dur_hours / 8 * 2, 1)  # double deduction
+                payroll_deduct = round(dur_hours / 8 * 2, 1)
                 escalation_required = False
                 reason = (
                     f"Formal warning issued: 2nd unexcused absence in 90 days. "
@@ -1255,10 +1298,9 @@ class HRAgent(BaseAgent):
                     "One more unexcused absence will trigger HR Director escalation."
                 )
             elif unexcused == 1:
-                decision = "written_warning"
-                conf     = 0.85
+                decision, conf = "written_warning", 0.85
                 classification = "unexcused"
-                payroll_deduct = round(dur_hours / 8, 1)      # single deduction
+                payroll_deduct = round(dur_hours / 8, 1)
                 escalation_required = False
                 reason = (
                     "Written warning issued: First unexcused absence recorded. "
@@ -1266,8 +1308,7 @@ class HRAgent(BaseAgent):
                     "Employee has been notified of the consequences of repeated absence."
                 )
             elif abs_type in ("sick", "emergency") and (med_cert or dur_hours <= 16):
-                decision = "record_only"
-                conf     = 0.90
+                decision, conf = "record_only", 0.90
                 classification = "excused_paid"
                 payroll_deduct = 0.0
                 escalation_required = False
@@ -1277,8 +1318,7 @@ class HRAgent(BaseAgent):
                     "Absence has been documented in the employee's attendance record."
                 )
             else:
-                decision = "record_only"
-                conf     = 0.80
+                decision, conf = "record_only", 0.80
                 classification = abs_type
                 payroll_deduct = 0.0
                 escalation_required = False
@@ -1293,61 +1333,56 @@ class HRAgent(BaseAgent):
             )
 
             return {
-                "decision":              decision,
-                "classification":        classification,
-                "confidence":            conf,
-                "risk":                  self._classify_risk(conf),
-                "reason":                reason,
+                "decision":               decision,
+                "classification":         classification,
+                "confidence":             conf,
+                "risk":                   self._classify_risk(conf),
+                "reason":                 reason,
                 "payroll_deduction_days": payroll_deduct,
-                "escalation_required":   escalation_required,
-                "flags":                 ["⚠️ LLM unavailable — rule-based fallback for absence"],
-                "request_id":            request_id,
-                "llm_used":              False,
-                "model_source":          "rule_fallback",
+                "escalation_required":    escalation_required,
+                "flags":                  ["⚠️ LLM unavailable — rule-based fallback for absence"],
+                "request_id":             request_id,
+                "llm_used":               False,
+                "model_source":           "rule_fallback",
             }
 
         elif domain == "attendance":
-            days_present   = int(data.get("days_present", 20))
-            working_days   = int(data.get("working_days", 22))
-            unexcused_abs  = int(data.get("unexcused_absences", 0))
-            ytd_warnings   = int(data.get("ytd_warnings", 0))
-            att_rate       = days_present / max(working_days, 1)
+            days_present  = int(data.get("days_present", 20))
+            working_days  = int(data.get("working_days", 22))
+            unexcused_abs = int(data.get("unexcused_absences", 0))
+            ytd_warnings  = int(data.get("ytd_warnings", 0))
+            att_rate      = days_present / max(working_days, 1)
 
             if att_rate < 0.70:
-                decision = "escalate_to_hr_director"
-                conf     = 0.95
+                decision, conf = "escalate_to_hr_director", 0.95
                 reason = (
                     f"Critical attendance issue: Attendance rate of {att_rate:.1%} "
                     f"({days_present}/{working_days} days) is severely below the 70% minimum threshold. "
                     "Immediate HR Director intervention required per company attendance policy."
                 )
             elif att_rate < 0.85 or unexcused_abs >= 3:
-                decision = "formal_warning"
-                conf     = 0.85
+                decision, conf = "formal_warning", 0.85
                 reason = (
                     f"Formal warning required: Attendance rate {att_rate:.1%} is below the 85% threshold "
                     f"with {unexcused_abs} unexcused absence(s). "
                     "A formal warning letter must be issued and documented in the personnel file."
                 )
             elif ytd_warnings >= 3:
-                decision = "formal_warning"
-                conf     = 0.82
+                decision, conf = "formal_warning", 0.82
                 reason = (
                     f"Formal warning required: {ytd_warnings} YTD warnings on record. "
                     "Despite current month attendance being acceptable, the cumulative warning "
                     "history requires formal documentation and HR follow-up."
                 )
             elif att_rate < 0.92:
-                decision = "counseling_session"
-                conf     = 0.80
+                decision, conf = "counseling_session", 0.80
                 reason = (
                     f"Attendance counseling recommended: Rate of {att_rate:.1%} is below the "
                     "95% green threshold. A supportive counseling session should be scheduled "
                     "to identify any underlying issues and prevent further deterioration."
                 )
             else:
-                decision = "no_action"
-                conf     = 0.90
+                decision, conf = "no_action", 0.90
                 reason = (
                     f"No action required: Attendance rate of {att_rate:.1%} meets the 95% green threshold. "
                     "Employee is maintaining a satisfactory attendance record."
@@ -1359,35 +1394,31 @@ class HRAgent(BaseAgent):
             )
 
             return {
-                "decision":    decision,
-                "confidence":  conf,
-                "risk":        self._classify_risk(conf),
-                "reason":      reason,
-                "flags":       ["⚠️ LLM unavailable — rule-based fallback for attendance"],
-                "request_id":  request_id,
-                "llm_used":    False,
+                "decision":     decision,
+                "confidence":   conf,
+                "risk":         self._classify_risk(conf),
+                "reason":       reason,
+                "flags":        ["⚠️ LLM unavailable — rule-based fallback for attendance"],
+                "request_id":   request_id,
+                "llm_used":     False,
                 "model_source": "rule_fallback",
             }
 
         else:
-            decision = "escalate"
-            conf     = 0.50
-            reason   = f"Unknown domain '{domain}' — escalated for human review"
             return {
-                "decision":    decision,
-                "confidence":  conf,
-                "risk":        "high",
-                "reason":      reason,
-                "flags":       [f"❌ Unknown domain '{domain}'"],
-                "request_id":  request_id,
-                "llm_used":    False,
+                "decision":     "escalate",
+                "confidence":   0.50,
+                "risk":         "high",
+                "reason":       f"Unknown domain '{domain}' — escalated for human review",
+                "flags":        [f"❌ Unknown domain '{domain}'"],
+                "request_id":   request_id,
+                "llm_used":     False,
                 "model_source": "rule_fallback",
             }
 
     # ── Private: Emergency Fallback ───────────────────────────────────────────
 
     def _emergency_fallback(self, data: dict, error: str) -> dict:
-        """Complete system failure fallback — always escalates."""
         request_id = data.get("request_id", generate_request_id())
         logger.error(
             "[request_id=%s] 🚨 [HRAgent] Emergency fallback: %s",
@@ -1414,27 +1445,20 @@ class HRAgent(BaseAgent):
 
     # ── Private: Domain Error Fallback ────────────────────────────────────────
 
-    def _domain_error_fallback(
-        self,
-        data:       dict,
-        domain:     str,
-        error:      str,
-        request_id: str,
-    ) -> dict:
-        """Fallback for non-leave domain errors."""
+    def _domain_error_fallback(self, data: dict, domain: str, error: str, request_id: str) -> dict:
         logger.error(
             "[request_id=%s] 🚨 %s domain error: %s",
             request_id, domain.upper(), error,
         )
         return {
-            "decision":    "escalate",
-            "confidence":  0.5,
-            "risk":        "high",
-            "reason":      f"⚠️ {domain.capitalize()} processing error — human review required.",
-            "flags":       [f"❌ Error: {error[:100]}"],
-            "request_id":  request_id,
-            "domain":      domain,
-            "llm_used":    False,
+            "decision":     "escalate",
+            "confidence":   0.5,
+            "risk":         "high",
+            "reason":       f"⚠️ {domain.capitalize()} processing error — human review required.",
+            "flags":        [f"❌ Error: {error[:100]}"],
+            "request_id":   request_id,
+            "domain":       domain,
+            "llm_used":     False,
             "model_source": "error_fallback",
             "_agent_error": True,
         }

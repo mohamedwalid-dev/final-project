@@ -39,7 +39,7 @@ NEW_INVOICE_SCAN_SEC = int(os.getenv("NEW_INVOICE_SCAN_INTERVAL_SEC", 600))
 
 def _get_db():
     """Return shared FinanceDB instance (Motor async)."""
-    from core.mongo_connect import get_finance_db
+    from core.node_finance_proxy import get_finance_db
     return get_finance_db()
 
 
@@ -49,8 +49,8 @@ async def _write_audit(db, action: str, invoice_id, request_id: str, details: st
     بدل write_audit_log() من core.db.
     """
     try:
-        from bson import ObjectId
-        entity_oid = ObjectId(str(invoice_id)) if invoice_id else None
+        
+        entity_oid = str(invoice_id) if invoice_id else None
         await db.write_finance_audit(
             domain          = "invoice",
             entity_id       = entity_oid,
@@ -153,12 +153,17 @@ async def job_scan_new_invoices() -> None:
     """
     Scan new invoices that haven't been risk-assessed yet.
 
-    MongoDB: بنستخدم FinanceDB.invoices aggregate بدل SQL JOIN مع customers.
-    Criteria: status='pending' AND (ai_risk_score == 0 OR لا يوجد) AND created خلال 24 ساعة.
+    ⚠️ v3.1 (Node API migration): كان بيستخدم FinanceDB.invoices.aggregate()
+    مع $lookup على customers (Mongo مباشر). دلوقتي بيستخدم
+    NodeFinanceProxy.get_pending_unassessed_invoices() اللي بتنادي
+    GET /finance/invoices?status=pending وتفلتر ai_risk_score + created_at
+    (آخر 24 ساعة) في بايثون بدل aggregate pipeline.
+
+    ملحوظة: لو الـ Node endpoint مش بيرجّع customer_name/credit_score/industory
+    مضمّنين جوه الـ invoice، الحقول دي هترجع قيم افتراضية (unknown / 650)
+    لحد ما يتعمل endpoint مخصص بـ join حقيقي في Node.
     """
     from core.event_bus import event_bus
-    from datetime import datetime, timezone, timedelta
-    from bson import ObjectId
 
     logger.info("⏰ [Finance Scheduler] Scanning new invoices...")
 
@@ -167,48 +172,7 @@ async def job_scan_new_invoices() -> None:
     invoices_fired = 0
 
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-
-        # Aggregate: join customers لجيب customer_name + credit_score + industry
-        pipeline = [
-            {
-                "$match": {
-                    "status":        "pending",
-                    "created_at":    {"$gte": cutoff},
-                    "$or": [
-                        {"ai_risk_score": {"$exists": False}},
-                        {"ai_risk_score": 0},
-                        {"ai_risk_score": None},
-                    ],
-                }
-            },
-            {
-                "$lookup": {
-                    "from":         "customers",
-                    "localField":   "customer_id",
-                    "foreignField": "_id",
-                    "as":           "_customer",
-                }
-            },
-            {
-                "$unwind": {
-                    "path":                       "$_customer",
-                    "preserveNullAndEmptyArrays": True,
-                }
-            },
-            {
-                "$addFields": {
-                    "customer_name": "$_customer.name",
-                    "credit_score":  "$_customer.credit_score",
-                    "industry":      "$_customer.industry",
-                }
-            },
-            {"$project": {"_customer": 0}},
-            {"$sort":  {"created_at": -1}},
-            {"$limit": 50},
-        ]
-
-        invoices       = await db.invoices.aggregate(pipeline).to_list(50)
+        invoices       = await db.get_pending_unassessed_invoices(hours=24, limit=50)
         invoices_found = len(invoices)
 
         if not invoices:
@@ -218,7 +182,7 @@ async def job_scan_new_invoices() -> None:
         logger.info("   🧾 Found %d new invoice(s) to assess", invoices_found)
 
         for invoice in invoices:
-            invoice_id  = str(invoice.get("_id", ""))
+            invoice_id  = str(invoice.get("_id", invoice.get("id", "")))
             customer_id = str(invoice.get("customer_id", ""))
 
             result = await event_bus.publish("invoice_created", {
@@ -251,23 +215,6 @@ async def job_scan_new_invoices() -> None:
             "❌ [Finance Scheduler] New invoice scan failed: %s", e, exc_info=True
         )
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 🎛️  HANDLER REGISTRATION
-# ══════════════════════════════════════════════════════════════════════════════
-
-def register_finance_handlers(orchestrator) -> None:
-    """Register all finance event handlers to EventBus."""
-    from core.event_bus import event_bus
-
-    event_bus.subscribe("invoice_overdue",  _build_invoice_overdue_handler(orchestrator))
-    event_bus.subscribe("invoice_created",  _build_new_invoice_handler(orchestrator))
-    event_bus.subscribe("payment_received", _build_payment_handler(orchestrator))
-
-    logger.info(
-        "✅ [Finance Bridge] Handlers registered — "
-        "invoice_overdue / invoice_created / payment_received"
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -315,11 +262,11 @@ def _build_invoice_overdue_handler(orchestrator):
 
         # ── 1. Save to MongoDB ────────────────────────────────────────────────
         try:
-            from bson import ObjectId
+            
             saved_id = await db.save_finance_decision({
                 "agent_type":   "finance_agent_v3.0",
                 "entity":       "invoices",
-                "entity_id":    ObjectId(str(invoice_id)) if invoice_id else None,
+                "entity_id":    str(invoice_id) if invoice_id else None,
                 "event_id":     event_id,
                 "decision":     decision,
                 "confidence":   confidence,
@@ -335,11 +282,11 @@ def _build_invoice_overdue_handler(orchestrator):
 
         # ── 2. Finance Audit ──────────────────────────────────────────────────
         try:
-            from bson import ObjectId
+            
             await db.write_finance_audit(
                 domain          = "invoice",
-                entity_id       = ObjectId(str(invoice_id)) if invoice_id else None,
-                customer_id     = ObjectId(str(customer_id)) if customer_id and customer_id != "?" else None,
+                entity_id       = str(invoice_id) if invoice_id else None,
+                customer_id     = str(customer_id) if customer_id and customer_id != "?" else None,
                 decision        = decision,
                 risk_score      = risk_score,
                 confidence      = confidence,
@@ -407,11 +354,11 @@ def _build_new_invoice_handler(orchestrator):
 
         # Save to MongoDB
         try:
-            from bson import ObjectId
+            
             saved_id = await db.save_finance_decision({
                 "agent_type":   "finance_agent_v3.0",
                 "entity":       "invoices",
-                "entity_id":    ObjectId(str(invoice_id)) if invoice_id else None,
+                "entity_id":    str(invoice_id) if invoice_id else None,
                 "event_id":     event_id,
                 "decision":     decision,
                 "confidence":   confidence,
@@ -427,10 +374,10 @@ def _build_new_invoice_handler(orchestrator):
 
         # Finance audit
         try:
-            from bson import ObjectId
+            
             await db.write_finance_audit(
                 domain          = "invoice",
-                entity_id       = ObjectId(str(invoice_id)) if invoice_id else None,
+                entity_id       = str(invoice_id) if invoice_id else None,
                 customer_id     = None,
                 decision        = decision,
                 risk_score      = risk_score,
@@ -497,11 +444,11 @@ def _build_payment_handler(orchestrator):
 
         # Save to MongoDB
         try:
-            from bson import ObjectId
+            
             saved_id = await db.save_finance_decision({
                 "agent_type":   "finance_agent_v3.0",
                 "entity":       "invoices",
-                "entity_id":    ObjectId(str(invoice_id)) if invoice_id else None,
+                "entity_id":    str(invoice_id) if invoice_id else None,
                 "event_id":     event_id,
                 "decision":     decision,
                 "confidence":   confidence,
@@ -517,10 +464,10 @@ def _build_payment_handler(orchestrator):
 
         # Finance audit
         try:
-            from bson import ObjectId
+            
             await db.write_finance_audit(
                 domain          = "invoice",
-                entity_id       = ObjectId(str(invoice_id)) if invoice_id else None,
+                entity_id       = str(invoice_id) if invoice_id else None,
                 customer_id     = None,
                 decision        = decision,
                 risk_score      = risk_score,
@@ -549,3 +496,33 @@ def _build_payment_handler(orchestrator):
             logger.debug("metrics_bridge.on_invoice_decision (payment) failed: %s", e)
 
     return _handle_payment
+
+async def register_finance_handlers(orchestrator) -> dict:
+    """Register all finance event handlers with the event bus."""
+    from core.event_bus import event_bus
+
+    if orchestrator is None:
+        raise ValueError(
+            "register_finance_handlers() requires a real orchestrator instance — "
+            "pass the same `orchestrator = Orchestrator()` created in main.py. "
+            "There is no FinanceOrchestrator fallback in this codebase."
+        )
+
+    handlers = {
+        "invoice_overdue":  _build_invoice_overdue_handler(orchestrator),
+        "invoice_created":  _build_new_invoice_handler(orchestrator),
+        "payment_received": _build_payment_handler(orchestrator),
+    }
+
+    registered = {}
+    for event_name, handler in handlers.items():
+        try:
+            event_bus.subscribe(event_name, handler)
+            registered[event_name] = True
+            logger.info("   ✅ Subscribed handler → %s", event_name)
+        except Exception as e:
+            registered[event_name] = False
+            logger.error("   ❌ Failed to subscribe %s: %s", event_name, e)
+
+    logger.info("◄ Finance handlers registered: %s", [k for k, v in registered.items() if v])
+    return registered

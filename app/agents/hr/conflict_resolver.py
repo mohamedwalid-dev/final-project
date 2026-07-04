@@ -3,6 +3,14 @@
 =========================================
 File: app/agents/hr/conflict_resolver.py
 
+ℹ️ NODE.JS / DB NOTE:
+    This file has no MongoDB/Motor dependency and makes no HTTP calls to
+    the Node.js API. It only analyzes in-memory dicts (ml_result, payload,
+    breakdown) that are already passed in by the caller (hr_agent.py) and
+    returns a structured analysis dict — no database or network I/O
+    happens inside this module. There is nothing to repoint for the
+    Node.js migration — left otherwise identical to v1.0.
+
 🎯 وظيفته:
     لما الـ ML Layer والـ Rules Layer يختلفوا في القرار،
     الـ Conflict Resolver يوضح:

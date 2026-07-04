@@ -32,8 +32,8 @@ v4.0 (unchanged behavior):
     ✅ predictor._to_features() builds all features internally
 """
 
-from __future__ import annotations
 
+from __future__ import annotations
 import json
 import logging
 import os

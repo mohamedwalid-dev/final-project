@@ -34,6 +34,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
 
+from bson import ObjectId
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -48,7 +49,7 @@ finance_realtime_router = APIRouter()
 
 def _get_db():
     """Return shared FinanceDB instance (Motor async)."""
-    from core.mongo_connect import get_finance_db
+    from core.node_finance_proxy import get_finance_db
     return get_finance_db()
 
 
@@ -121,23 +122,16 @@ async def _safe_get_overdue_invoices(
     status: Optional[str] = None,
 ) -> list:
     """
-    يجيب invoices من FinanceDB.get_overdue_invoices() أو get_pending_invoices().
-    بدل SQL fallback في core.db.
-
-    لو status محدد وغير overdue → بنفلتر من invoices collection مباشرةً.
+    ⚠️ v4.1 (Node API migration): كان بيفلتر عبر db.invoices.find() مباشرة
+    (Mongo). دلوقتي بيستخدم NodeFinanceProxy.get_invoices(status=...) اللي
+    بينادي GET /finance/invoices?status=... عبر NodeAPIClient.
     """
     try:
         db = _get_db()
 
         if status and status != "overdue":
-            # فلترة حسب status محدد
-            cursor = db.invoices.find(
-                {"status": status},
-                limit=limit,
-            ).sort("due_date", 1)
-            docs = await cursor.to_list(limit)
-            # serialize ObjectId
-            return [_serialize_doc(d) for d in docs]
+            invoices = await db.get_invoices(status=status, limit=limit, skip=0)
+            return [_serialize_doc(d) for d in invoices]
 
         # Default: overdue invoices (بتيجي مع overdue_days_calc)
         invoices = await db.get_overdue_invoices(min_days=1, limit=limit)
@@ -150,11 +144,52 @@ async def _safe_get_overdue_invoices(
 
 
 async def _safe_get_decision_history(days: int = 7) -> list:
-    """
-    يجيب decision history آخر N يوم للـ charts.
+    DECISION_MAP = {
+    "safe_to_collect":    "approve",
+    "approve":            "approve",
+    "invoice_registered": "approve",
+    "soft_follow_up":     "soft",
+    "hard_follow_up":     "hard",
+    "payment_plan":       "plan",
+    "suspend_service":    "suspend",
+    "legal_escalation":   "legal",
+    "write_off":          "legal",
+}
 
-    MongoDB: بنعمل aggregation على finance_decisions collection.
-    بدل SQL pivot query في core.finance_db.
+
+def _empty_history_skeleton(days: int) -> list:
+    today = datetime.now(timezone.utc).date()
+    return [
+        {
+            "day":     str(today - timedelta(days=days - 1 - i)),
+            "approve": 0, "soft": 0, "hard": 0,
+            "plan":    0, "suspend": 0, "legal": 0,
+        }
+        for i in range(days)
+    ]
+
+
+def _parse_decision_date(raw) -> Optional[str]:
+    """يرجّع 'YYYY-MM-DD' من created_at (str ISO أو datetime) — أو None لو تعذر."""
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, datetime):
+            return raw.date().isoformat()
+        if isinstance(raw, str):
+            cleaned = raw.replace("Z", "+00:00")
+            return datetime.fromisoformat(cleaned).date().isoformat()
+    except Exception:
+        return None
+    return None
+
+async def _safe_get_decision_history(days: int = 7) -> list:
+    """
+    ✅ v4.2 (Node API migration — endpoint جاهز): بيستخدم
+    NodeFinanceProxy.get_recent_decisions(days=...) اللي بتنادي
+    GET /finance/decisions/history?days=... في Node (route جديد مبني
+    فوق FinanceDecision.find() + created_at range) ويعمل الـ pivot
+    by day/decision-type يدوي في بايثون.
 
     يرجع:
         list of { day, approve, soft, hard, plan, suspend, legal }
@@ -163,55 +198,36 @@ async def _safe_get_decision_history(days: int = 7) -> list:
         db     = _get_db()
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
-        pipeline = [
-            {
-                "$match": {
-                    "created_at": {"$gte": cutoff},
-                    "decision":   {"$ne": None},
-                }
-            },
-            {
-                "$group": {
-                    "_id": {
-                        "day":      {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
-                        "decision": "$decision",
-                    },
-                    "count": {"$sum": 1},
-                }
-            },
-            {"$sort": {"_id.day": 1}},
-        ]
+        decisions = await db.get_recent_decisions(days=days)
 
-        raw = await db.decisions.aggregate(pipeline).to_list(None)
-
-        # Pivot: day → {approve, soft, hard, plan, suspend, legal}
-        DECISION_MAP = {
-            "safe_to_collect":  "approve",
-            "approve":          "approve",
-            "invoice_registered": "approve",
-            "soft_follow_up":   "soft",
-            "hard_follow_up":   "hard",
-            "payment_plan":     "plan",
-            "suspend_service":  "suspend",
-            "legal_escalation": "legal",
-            "write_off":        "legal",
-        }
+        if not isinstance(decisions, list):
+            decisions = []
 
         pivot: dict[str, dict] = {}
-        for r in raw:
-            d   = r["_id"]["day"]
-            dec = r["_id"]["decision"]
-            cnt = int(r["count"])
-            if d not in pivot:
-                pivot[d] = {
-                    "day":     d,
+        for dec in decisions:
+            day_str = _parse_decision_date(dec.get("created_at"))
+            if not day_str:
+                continue
+            try:
+                day_date = datetime.fromisoformat(day_str).date()
+            except Exception:
+                continue
+            if day_date < cutoff.date():
+                continue
+
+            decision_type = dec.get("decision")
+            if not decision_type:
+                continue
+
+            if day_str not in pivot:
+                pivot[day_str] = {
+                    "day":     day_str,
                     "approve": 0, "soft": 0, "hard": 0,
                     "plan":    0, "suspend": 0, "legal": 0,
                 }
-            key = DECISION_MAP.get(dec, "approve")
-            pivot[d][key] = pivot[d].get(key, 0) + cnt
+            key = DECISION_MAP.get(decision_type, "approve")
+            pivot[day_str][key] = pivot[day_str].get(key, 0) + 1
 
-        # لو في أيام مفيهاش data → نضيف صفوف فاضية عشان الـ chart يكون متكامل
         today = datetime.now(timezone.utc).date()
         for i in range(days):
             day_str = str(today - timedelta(days=days - 1 - i))
@@ -227,17 +243,7 @@ async def _safe_get_decision_history(days: int = 7) -> list:
     except Exception as e:
         logger.warning("⚠️ _safe_get_decision_history() failed: %s", e)
 
-    # Empty N-day skeleton
-    today = datetime.now(timezone.utc).date()
-    return [
-        {
-            "day":     str(today - timedelta(days=days - 1 - i)),
-            "approve": 0, "soft": 0, "hard": 0,
-            "plan":    0, "suspend": 0, "legal": 0,
-        }
-        for i in range(days)
-    ]
-
+    return _empty_history_skeleton(days)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 🔧  Shared serializer
@@ -245,7 +251,7 @@ async def _safe_get_decision_history(days: int = 7) -> list:
 
 def _serialize_doc(doc: dict) -> dict:
     """Convert ObjectId + datetime → JSON-safe strings (safe for SSE)."""
-    from bson import ObjectId
+    
     out = {}
     for k, v in doc.items():
         if isinstance(v, ObjectId):

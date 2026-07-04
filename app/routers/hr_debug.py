@@ -99,7 +99,7 @@ async def debug_existing_leave(leave_id: str):
 
     leave_id هنا ObjectId string (MongoDB).
     """
-    from core.mongo_connect import get_hr_db
+    from core.node_hr_proxy import get_hr_db
     from agents.hr.hr_agent import HRAgent
     from workflows.hr.decision_rules import DecisionValidationLayer
 

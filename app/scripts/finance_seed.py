@@ -1,5 +1,5 @@
 """
-🌱 Finance Seed Script — v2.0 (MongoDB)
+🌱 Finance Seed Script — v3.0 (Node.js API backend)
 =========================================
 File: app/scripts/finance_seed.py
 
@@ -8,6 +8,27 @@ Used by:
     - finance_seeder.py       → python finance_seeder.py
 
 run_seed() is async — awaitable from FastAPI routes.
+
+v3 — migrated off direct MongoDB (Motor) access to NodeFinanceProxy
+     (core/node_finance_proxy.py), which routes every read/write through
+     the Node.js/Express API instead of touching `db.customers` /
+     `db.invoices` collections directly. Two consequences worth noting:
+
+    1. NO RESET SUPPORT. The old v2 script could `await db.customers.drop()`
+       etc. before reseeding. NodeFinanceProxy has no delete-all/drop
+       endpoint — only per-record `delete_customer(id)` / `delete_invoice(id)`
+       exist in finance.routes.js, and there's no bulk-list-everything
+       endpoint to loop over safely either. Rather than bolt on a slow,
+       partial, and easy-to-get-wrong N+1 "delete everything one at a time"
+       path, the `reset` parameter has been removed entirely. If a real
+       reset is needed, clear the data on the Node/Mongo side directly
+       (or ask the Node team for a bulk-delete/reset endpoint) and then
+       call run_seed() again.
+    2. "ALREADY SEEDED" CHECK VIA get_customers(limit=1). There is no
+       count_documents() equivalent over HTTP. We treat "at least one
+       customer already exists" as "already seeded" and skip, same
+       intent as the old count-based check, just cheaper (limit=1
+       instead of pulling everything).
 """
 
 from __future__ import annotations
@@ -89,49 +110,100 @@ def _status_for_overdue(overdue_days: int, risk_label: str) -> str:
     return "overdue"
 
 
+def _extract_customer_id(res) -> Optional[str]:
+    """Node's POST /finance/customers controller response shape isn't
+    pinned down anywhere in node_api_client.py's docstring (only GET
+    shapes are confirmed there), so this is defensive rather than
+    assuming a single exact shape:
+      - dict with {"customer": {"_id"|"id": ...}}   (nested, like hr's leave/review/absence)
+      - dict with {"customer_id": ...}               (flat, like hr's absence_id/review_id)
+      - dict with {"_id"|"id": ...} directly          (bare object)
+      - list containing one such dict                 (seen elsewhere in this API)
+    Returns None (not "mock_id") on failure — for seeding we'd rather
+    skip linking invoices to a bad id and log it than silently attach
+    invoices to a fake "mock_id" customer.
+    """
+    if isinstance(res, list):
+        res = res[0] if res else {}
+    if not isinstance(res, dict):
+        return None
+
+    nested = res.get("customer")
+    if isinstance(nested, dict):
+        _id = nested.get("_id") or nested.get("id")
+        if _id:
+            return str(_id)
+
+    _id = res.get("customer_id")
+    if _id:
+        return str(_id)
+
+    _id = res.get("_id") or res.get("id")
+    if _id:
+        return str(_id)
+
+    return None
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 🌱  run_seed  — main entry point
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def run_seed(
-    reset:          bool = False,
-    customer_count: int  = 25,
+    customer_count: int = 25,
+    reset: Optional[bool] = None,
 ) -> dict:
     """
-    Seed MongoDB with realistic finance test data.
+    Seed finance data via the Node.js API (NodeFinanceProxy).
 
     Args:
-        reset:          Drop all collections before seeding.
         customer_count: How many customers to create.
+        reset: ⚠️ ACCEPTED BUT IGNORED (no-op). Kept only so existing
+            callers like finance_seed_routes.py
+            (`run_seed(reset=config.reset, ...)`) don't hard-crash with
+            TypeError while they still pass this kwarg. NodeFinanceProxy
+            has no delete-all/drop endpoint (see module docstring) —
+            there is nothing this parameter can actually trigger. If
+            `reset=True` is passed, a warning is logged so it's obvious
+            in the logs that no reset happened, instead of silently
+            pretending it did. The real fix is to remove `reset` from
+            finance_seed_routes.py's call (and ideally from its request
+            schema) once that route is updated; this parameter should
+            be deleted at that point rather than kept indefinitely.
 
     Returns:
         Summary dict with counts.
+
+    Note: no real reset support — see module docstring. This always
+    skips if any customer already exists on the Node side.
     """
-    from core.mongo_connect import get_finance_db
+    from core.node_finance_proxy import get_finance_db
     from models.finance_models import build_customer, build_invoice
+
+    if reset:
+        logger.warning(
+            "⚠️ [FinanceSeed] reset=True was passed but is a no-op — "
+            "NodeFinanceProxy has no delete-all/drop endpoint. No data "
+            "was cleared. Update the caller (e.g. finance_seed_routes.py) "
+            "to stop passing reset, or clear data on the Node/Mongo side "
+            "directly before calling run_seed()."
+        )
 
     db = get_finance_db()
 
-    # ── Optional reset ────────────────────────────────────────────────────────
-    if reset:
-        logger.info("🗑️ [FinanceSeed] Dropping all finance collections...")
-        await db.customers.drop()
-        await db.invoices.drop()
-        await db.decisions.drop()
-        await db.audit.drop()
-        await db.clog.drop()
-        await db.legal.drop()
-        await db.init_indexes()
-        logger.info("✅ [FinanceSeed] Collections dropped and re-indexed")
-
     # ── Skip if already seeded ────────────────────────────────────────────────
-    existing = await db.customers.count_documents({})
-    if existing > 0 and not reset:
-        logger.info("⚠️ [FinanceSeed] Already seeded (%d customers). Skipping.", existing)
+    try:
+        existing = await db.get_customers(limit=1)
+    except Exception as e:
+        logger.warning("⚠️ [FinanceSeed] could not check existing customers via Node API: %s", e)
+        existing = []
+
+    if existing:
+        logger.info("⚠️ [FinanceSeed] Already seeded (at least 1 customer found via Node API). Skipping.")
         return {
-            "skipped":          True,
-            "existing_customers": existing,
-            "reason":           "Data already present. Use reset=True to reseed.",
+            "skipped": True,
+            "reason": "Data already present on the Node API. No reset support — "
+                      "clear data on the Node/Mongo side directly if you need to reseed.",
         }
 
     # ── Seed customers ────────────────────────────────────────────────────────
@@ -140,6 +212,7 @@ async def run_seed(
 
     customer_ids   = []
     customer_risks = []
+    failed_customers = 0
 
     for i, (name, profile) in enumerate(zip(names, profiles)):
         doc = build_customer({
@@ -151,14 +224,35 @@ async def run_seed(
             "account_age_months": random.randint(3, 72),
             "service_status":     "active",
         })
-        result = await db.customers.insert_one(doc)
-        customer_ids.append(result.inserted_id)
+        try:
+            res = await db.create_customer(doc)
+        except Exception as e:
+            logger.warning("⚠️ [FinanceSeed] create_customer failed for %r: %s", name, e)
+            failed_customers += 1
+            continue
+
+        cid = _extract_customer_id(res)
+        if not cid:
+            logger.warning(
+                "⚠️ [FinanceSeed] create_customer for %r succeeded but no id could "
+                "be extracted from the response (%r) — skipping invoices for this customer",
+                name, res,
+            )
+            failed_customers += 1
+            continue
+
+        customer_ids.append(cid)
         customer_risks.append(profile)
 
-    logger.info("👤 [FinanceSeed] %d customers created", len(customer_ids))
+    logger.info(
+        "👤 [FinanceSeed] %d customers created via Node API%s",
+        len(customer_ids),
+        f" ({failed_customers} failed)" if failed_customers else "",
+    )
 
     # ── Seed invoices ─────────────────────────────────────────────────────────
-    invoice_count  = 0
+    invoice_count    = 0
+    failed_invoices  = 0
     status_summary: dict[str, int] = {}
 
     for cid, profile in zip(customer_ids, customer_risks):
@@ -184,19 +278,29 @@ async def run_seed(
                 "status":      status,
                 "description": f"Invoice — {risk_label} risk customer",
             })
-            await db.invoices.insert_one(doc)
+            try:
+                await db.create_invoice(doc)
+            except Exception as e:
+                logger.warning("⚠️ [FinanceSeed] create_invoice failed for customer %s: %s", cid, e)
+                failed_invoices += 1
+                continue
+
             invoice_count += 1
             status_summary[status] = status_summary.get(status, 0) + 1
 
     logger.info(
-        "🧾 [FinanceSeed] %d invoices created | breakdown: %s",
-        invoice_count, status_summary,
+        "🧾 [FinanceSeed] %d invoices created via Node API%s | breakdown: %s",
+        invoice_count,
+        f" ({failed_invoices} failed)" if failed_invoices else "",
+        status_summary,
     )
 
     return {
-        "seeded":          True,
-        "customers":       len(customer_ids),
-        "invoices":        invoice_count,
+        "seeded":           True,
+        "customers":        len(customer_ids),
+        "customers_failed": failed_customers,
+        "invoices":         invoice_count,
+        "invoices_failed":  failed_invoices,
         "status_breakdown": status_summary,
-        "timestamp":       _utcnow().isoformat(),
+        "timestamp":        _utcnow().isoformat(),
     }

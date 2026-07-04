@@ -1,5 +1,5 @@
 """
-📊 Audit Logger — v2.0 (MongoDB)
+📊 Audit Logger — v2.1 (MongoDB via Node API)
 ==================================
 File: app/audit/logger.py
 
@@ -16,6 +16,34 @@ Collections used:
     - hr_domain_audit   → HR events  (via HRDB)
     - finance_audit     → Finance events (via FinanceDB)
     - audit_generic     → fallback for other stages
+
+v2.1 Changes:
+    🔧 FIX — _write_to_mongo()'s generic fallback branch (the one that
+       POSTs to plain "/audit") used to let NodeAPIError bubble straight
+       up out of a fire-and-forget asyncio.create_task() in log(), which
+       showed up in logs as:
+           ERROR | asyncio | Task exception was never retrieved
+           core.node_api_client.NodeAPIError: [NodeAPI:/audit] 404 Not Found
+       There is no generic POST /audit route in the Node.js API today
+       (only /hr/audit and /finance/audit are real routes — see
+       main.py's docstring). A 404 here is therefore an EXPECTED,
+       recurring condition, not a crash. The fallback branch now catches
+       NodeAPIError specifically:
+         - status_code == 404  → log once at DEBUG and fall back to the
+           in-memory store (_logs), same as the outer except already
+           does for every other exception type.
+         - anything else (timeout, 5xx, 401, ...) → re-raised, so alog()
+           / the outer except in log()'s background task still see it
+           and fall back to in-memory too — behavior for real failures
+           is unchanged.
+       This does not fix *why* an entry ends up in the generic fallback
+       branch in the first place (i.e. being logged with a stage/domain
+       combination that isn't "hr" or "finance" shaped) — it just stops
+       that already-known, already-documented gap from crashing an
+       untracked background task. If entries are landing here that you
+       expected to go to /hr/audit or /finance/audit, check the
+       stage/employee_id/domain kwargs passed into log()/alog() at the
+       call site.
 """
 
 from __future__ import annotations
@@ -25,10 +53,16 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from core.node_api_client import get_node_api_client, NodeAPIError
+
 _py_logger = logging.getLogger(__name__)
 
 # ── In-memory fallback (لو MongoDB مش متاح) ───────────────────────────────────
 _logs: list[dict] = []
+
+# One-shot warning flag so a missing generic /audit route doesn't spam
+# the log every single time an entry falls into that branch.
+_generic_audit_route_missing_warned = False
 
 
 def _utcnow() -> datetime:
@@ -127,13 +161,13 @@ class AuditLogger:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 loop.create_task(
-                    self._write_to_mongo(entry, entity_id=entity_id,
-                                         employee_id=employee_id, domain=domain)
+                    self._write_to_mongo_safe(entry, entity_id=entity_id,
+                                              employee_id=employee_id, domain=domain)
                 )
             else:
                 loop.run_until_complete(
-                    self._write_to_mongo(entry, entity_id=entity_id,
-                                         employee_id=employee_id, domain=domain)
+                    self._write_to_mongo_safe(entry, entity_id=entity_id,
+                                              employee_id=employee_id, domain=domain)
                 )
         except Exception as e:
             _py_logger.warning("⚠️ [AuditLogger] Sync log fallback: %s", e)
@@ -142,7 +176,33 @@ class AuditLogger:
         self._print(entry)
         return serialised
 
-    # ── MongoDB write ─────────────────────────────────────────────────────────
+    async def _write_to_mongo_safe(
+        self,
+        entry:       dict,
+        entity_id:   Optional[str] = None,
+        employee_id: Optional[int] = None,
+        domain:      Optional[str] = None,
+    ) -> None:
+        """
+        Wrapper around _write_to_mongo() used ONLY by the fire-and-forget
+        asyncio.create_task() path in log(). Since nothing ever awaits or
+        retrieves that task's result, any exception that escapes it would
+        otherwise surface as an untracked "Task exception was never
+        retrieved" error in the logs instead of the normal
+        in-memory-fallback behavior alog()/log() give you everywhere else.
+        This mirrors the except block in alog() so both entry points
+        degrade the same way.
+        """
+        try:
+            await self._write_to_mongo(entry, entity_id=entity_id,
+                                       employee_id=employee_id, domain=domain)
+        except Exception as e:
+            _py_logger.warning(
+                "⚠️ [AuditLogger] Background MongoDB write failed: %s — in-memory fallback", e
+            )
+            _logs.append(self._serialise(entry))
+
+    # ── API write ─────────────────────────────────────────────────────────
 
     async def _write_to_mongo(
         self,
@@ -151,72 +211,100 @@ class AuditLogger:
         employee_id: Optional[int] = None,
         domain:      Optional[str] = None,
     ) -> None:
-        """Route the entry to the right MongoDB collection."""
+        """Route the entry to the right Node.js API endpoint."""
+        global _generic_audit_route_missing_warned
         stage = entry.get("stage", "")
 
+        client = get_node_api_client()
+
         if stage in ("agent", "workflow", "orchestrator") and employee_id is not None:
-            # HR audit via HRDB
-            from core.mongo_connect import get_hr_db
-            db = get_hr_db()
-            await db.write_hr_domain_audit(
-                domain=domain or entry.get("event_type", "general"),
-                entity_id=entity_id,
-                employee_id=employee_id,
-                decision=entry.get("message", "")[:100],
-                confidence=entry.get("data", {}).get("confidence", 0.0),
-                decision_source=stage,
-                llm_used=entry.get("data", {}).get("llm_used", False),
-                execution_ms=entry.get("data", {}).get("execution_ms", 0),
-                request_id=entry.get("id", ""),
-                flags=entry.get("data", {}).get("flags", []),
-                extra_data=entry.get("data", {}),
-            )
+            # HR audit via Node API
+            await client.create_resource("/hr/audit", {
+                "domain": domain or entry.get("event_type", "general"),
+                "entity_id": entity_id,
+                "employee_id": employee_id,
+                "decision": entry.get("message", "")[:100],
+                "confidence": entry.get("data", {}).get("confidence", 0.0),
+                "decision_source": stage,
+                "llm_used": entry.get("data", {}).get("llm_used", False),
+                "execution_ms": entry.get("data", {}).get("execution_ms", 0),
+                "request_id": entry.get("id", ""),
+                "flags": entry.get("data", {}).get("flags", []),
+                "extra_data": entry.get("data", {}),
+            })
 
         elif stage in ("agent", "workflow", "action") and domain == "finance":
-            # Finance audit via FinanceDB
-            from core.mongo_connect import get_finance_db
-            db = get_finance_db()
-            await db.write_finance_audit(
-                domain=entry.get("event_type", "general"),
-                entity_id=entity_id,
-                customer_id=entry.get("data", {}).get("customer_id"),
-                decision=entry.get("message", "")[:100],
-                risk_score=entry.get("data", {}).get("risk_score", 0.0),
-                confidence=entry.get("data", {}).get("confidence", 0.0),
-                decision_source=stage,
-                llm_used=entry.get("data", {}).get("llm_used", False),
-                execution_ms=entry.get("data", {}).get("execution_ms", 0),
-                request_id=entry.get("id", ""),
-                flags=entry.get("data", {}).get("flags", []),
-            )
+            # Finance audit via Node API
+            await client.create_resource("/finance/audit", {
+                "domain": entry.get("event_type", "general"),
+                "entity_id": entity_id,
+                "customer_id": entry.get("data", {}).get("customer_id"),
+                "decision": entry.get("message", "")[:100],
+                "risk_score": entry.get("data", {}).get("risk_score", 0.0),
+                "confidence": entry.get("data", {}).get("confidence", 0.0),
+                "decision_source": stage,
+                "llm_used": entry.get("data", {}).get("llm_used", False),
+                "execution_ms": entry.get("data", {}).get("execution_ms", 0),
+                "request_id": entry.get("id", ""),
+                "flags": entry.get("data", {}).get("flags", []),
+            })
 
         else:
-            # Generic fallback collection
-            from core.mongo_connect import get_hr_db
-            db = get_hr_db()
-            col = db.db["audit_generic"]
+            # ─────────────────────────────────────────────────────────────
+            # Generic fallback endpoint — ⚠️ there is NO generic POST
+            # /audit route in the Node.js API today (only /hr/audit and
+            # /finance/audit are real, domain-scoped routes — see
+            # main.py's module docstring / _AUDIT_LOGS_DISABLED_DETAIL).
+            # Any entry that lands here (stage not in
+            # agent/workflow/orchestrator/action, or missing
+            # employee_id/domain="finance") will reliably 404. That's
+            # expected today, not a crash — catch it specifically and
+            # fall back to the in-memory store, same as every other
+            # write failure in this class already does. Anything other
+            # than a 404 (timeout, 5xx, auth, etc.) is a real failure and
+            # still propagates so the caller's except block handles it.
+            # ─────────────────────────────────────────────────────────────
             doc = {**self._serialise(entry)}
             if entity_id:   doc["entity_id"]   = entity_id
-            if employee_id: doc["employee_id"]  = employee_id
-            if domain:      doc["domain"]       = domain
-            await col.insert_one(doc)
+            if employee_id: doc["employee_id"] = employee_id
+            if domain:      doc["domain"]      = domain
+
+            try:
+                await client.create_resource("/audit", doc)
+            except NodeAPIError as e:
+                if e.status_code == 404:
+                    if not _generic_audit_route_missing_warned:
+                        _py_logger.warning(
+                            "⚠️ [AuditLogger] Generic POST /audit route not "
+                            "implemented on the Node side — entries that don't "
+                            "match the HR (stage in agent/workflow/orchestrator "
+                            "+ employee_id) or Finance (stage in "
+                            "agent/workflow/action + domain='finance') shape "
+                            "will fall back to in-memory logging. "
+                            "(this warning only shows once per process)"
+                        )
+                        _generic_audit_route_missing_warned = True
+                    _logs.append(self._serialise(entry))
+                else:
+                    # Real failure (timeout, 5xx, 401, circuit open, ...) —
+                    # let it propagate so alog()/_write_to_mongo_safe()'s
+                    # own except block logs it and falls back too.
+                    raise
 
     # ── Read ──────────────────────────────────────────────────────────────────
 
     async def aget_all(self, limit: int = 500) -> list[dict]:
-        """Return full audit trail from MongoDB (newest first) + in-memory fallback."""
+        """Return full audit trail from Node.js API (newest first) + in-memory fallback."""
         logs = []
         try:
-            from core.mongo_connect import get_hr_db
-            db  = get_hr_db()
-            col = db.db["audit_generic"]
-            cursor = col.find({}).sort("timestamp", -1).limit(limit)
-            docs = await cursor.to_list(None)
-            for d in docs:
-                d.pop("_id", None)
-                if isinstance(d.get("timestamp"), datetime):
-                    d["timestamp"] = d["timestamp"].isoformat()
-                logs.append(d)
+            client = get_node_api_client()
+            # Try to get generic logs from API
+            api_logs = await client._request("GET", f"/audit?limit={limit}")
+            if isinstance(api_logs, list):
+                for d in api_logs:
+                    if isinstance(d.get("timestamp"), datetime):
+                        d["timestamp"] = d["timestamp"].isoformat()
+                    logs.append(d)
         except Exception as e:
             _py_logger.warning("⚠️ [AuditLogger] aget_all failed: %s", e)
 

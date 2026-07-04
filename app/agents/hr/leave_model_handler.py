@@ -1,17 +1,32 @@
 """
-🤖 Leave Model Handler — Production v5.1
+🤖 Leave Model Handler — Production v5.2
 ==========================================
 File: app/agents/hr/leave_model_handler.py
 
-✅ v5.1 Patches:
+ℹ️ NODE.JS / DB NOTE:
+    This file has no MongoDB/Motor dependency and makes no HTTP calls to
+    the Node.js API. It is a pure ML inference layer: it loads
+    leave_approval_model.pkl (+ scaler.pkl / encoders.pkl / model_metadata.json)
+    from local disk via joblib and returns a decision dict. There is
+    nothing here to repoint at core.node_api_client / core.node_hr_proxy —
+    no changes were needed for the Node.js migration. Left otherwise
+    identical to v5.2.
+
+✅ v5.1 Patches (inherited):
     Fix 1 — Confidence Hard Cap (max=0.97, min=0.03)
     Fix 1 — Suspicious confidence warning (>= 0.99)
     Fix 1 — raw_confidence preserved for debugging
     Fix 1 — diagnose_confidence() method added
+
+✅ v5.2 Patches (new):
+    Fix 2 — Thread-safe singleton via double-checked locking (eliminates TOCTOU)
+    Fix 2 — load() is guarded so it never runs twice concurrently
+    Fix 2 — _load_attempted flag prevents repeated disk hits when model is absent
 """
 
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -52,7 +67,7 @@ INPUT_DEFAULTS = {
     "overtime_hours":      0,
 }
 
-# ── FIX 1: Confidence Caps ────────────────────────────────────────────────────
+# ── Confidence Caps ────────────────────────────────────────────────────────────
 CONFIDENCE_MAX = 0.97   # مفيش model حقيقي بيدي > 97%
 CONFIDENCE_MIN = 0.03   # مفيش model حقيقي بيدي < 3%
 
@@ -121,61 +136,97 @@ def sanitize_input(data: dict) -> tuple[dict, list[str]]:
 class LeaveModelHandler:
 
     def __init__(self):
-        self._model:        Optional[object]  = None
-        self._scaler:       Optional[object]  = None
-        self._encoders:     dict              = {}
-        self._feature_cols: list[str]         = []
-        self._metadata:     dict              = {}
-        self._loaded:       bool              = False
+        self._model:           Optional[object] = None
+        self._scaler:          Optional[object] = None
+        self._encoders:        dict             = {}
+        self._feature_cols:    list[str]        = []
+        self._metadata:        dict             = {}
+        self._loaded:          bool             = False
+        # FIX-2: guards so load() never runs twice concurrently
+        self._load_lock:       threading.Lock   = threading.Lock()
+        self._load_attempted:  bool             = False   # True once load() has run
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load(self) -> bool:
-        try:
-            if not MODEL_PATH.exists():
-                logger.warning(
-                    "⚠️ [ModelHandler] Model not found at %s. "
-                    "Run: python training/hr_train.py", MODEL_PATH,
-                )
-                return False
-
-            self._model        = joblib.load(MODEL_PATH)
-            self._scaler       = joblib.load(SCALER_PATH)
-            enc_data           = joblib.load(ENCODER_PATH)
-            self._encoders     = enc_data["encoders"]
-            self._feature_cols = enc_data["feature_cols"]
-
-            if META_PATH.exists():
-                with open(META_PATH, "r", encoding="utf-8") as f:
-                    self._metadata = json.load(f)
-
-            self._loaded = True
-
-            trained_at = self._metadata.get("trained_at", "unknown")
-            acc        = self._metadata.get("evaluation", {}).get("accuracy", "?")
-            auc        = self._metadata.get("evaluation", {}).get("roc_auc", "?")
-            t          = self._metadata.get("thresholds", {})
-            edge       = self._metadata.get("edge_case_testing")
-            cost       = self._metadata.get("business_costs")
-
-            logger.info(
-                "✅ [ModelHandler] Loaded | trained=%s | accuracy=%s | AUC=%s | "
-                "t_approve=%s | t_escalate=%s%s%s",
-                trained_at[:10], acc, auc,
-                t.get("approve", "?"), t.get("escalate", "?"),
-                f" | edge_pass={edge['loose_rate']:.0%}" if edge and edge.get("loose_rate") else "",
-                f" | monthly_cost={cost['monthly_cost_egp']:.0f}EGP"
-                if cost and cost.get("monthly_cost_egp") else "",
-            )
+        """
+        FIX-2: _load_lock ensures only one thread enters the joblib.load() calls.
+        _load_attempted prevents repeated disk hits when the model files are
+        absent — without this, every request would stat() the model path.
+        """
+        # Fast path — already loaded or already tried and failed
+        if self._loaded:
             return True
-
-        except Exception as e:
-            logger.error("❌ [ModelHandler] Failed to load model: %s", e, exc_info=True)
-            self._loaded = False
+        if self._load_attempted:
             return False
 
+        with self._load_lock:
+            # Re-check inside the lock (another thread may have beaten us)
+            if self._loaded:
+                return True
+            if self._load_attempted:
+                return False
+
+            # Mark as attempted *before* the I/O so a second thread never
+            # waits on the lock and then re-runs a failing load sequence.
+            self._load_attempted = True
+
+            try:
+                if not MODEL_PATH.exists():
+                    logger.warning(
+                        "⚠️ [ModelHandler] Model not found at %s. "
+                        "Run: python training/hr_train.py", MODEL_PATH,
+                    )
+                    return False
+
+                self._model        = joblib.load(MODEL_PATH)
+                self._scaler       = joblib.load(SCALER_PATH)
+                enc_data           = joblib.load(ENCODER_PATH)
+                self._encoders     = enc_data["encoders"]
+                self._feature_cols = enc_data["feature_cols"]
+
+                if META_PATH.exists():
+                    with open(META_PATH, "r", encoding="utf-8") as f:
+                        self._metadata = json.load(f)
+
+                self._loaded = True
+
+                trained_at = self._metadata.get("trained_at", "unknown")
+                acc        = self._metadata.get("evaluation", {}).get("accuracy", "?")
+                auc        = self._metadata.get("evaluation", {}).get("roc_auc", "?")
+                t          = self._metadata.get("thresholds", {})
+                edge       = self._metadata.get("edge_case_testing")
+                cost       = self._metadata.get("business_costs")
+
+                logger.info(
+                    "✅ [ModelHandler] Loaded | trained=%s | accuracy=%s | AUC=%s | "
+                    "t_approve=%s | t_escalate=%s%s%s",
+                    trained_at[:10], acc, auc,
+                    t.get("approve", "?"), t.get("escalate", "?"),
+                    f" | edge_pass={edge['loose_rate']:.0%}" if edge and edge.get("loose_rate") else "",
+                    f" | monthly_cost={cost['monthly_cost_egp']:.0f}EGP"
+                    if cost and cost.get("monthly_cost_egp") else "",
+                )
+                return True
+
+            except Exception as e:
+                logger.error("❌ [ModelHandler] Failed to load model: %s", e, exc_info=True)
+                self._loaded = False
+                return False
+
     def reload(self) -> bool:
-        self._loaded = False
+        """
+        FIX-2: Reset both flags so load() re-runs from scratch.
+        Called via POST /model/reload after retraining.
+        """
+        with self._load_lock:
+            self._loaded         = False
+            self._load_attempted = False
+            self._model          = None
+            self._scaler         = None
+            self._encoders       = {}
+            self._feature_cols   = []
+            self._metadata       = {}
         return self.load()
 
     def is_loaded(self) -> bool:
@@ -183,7 +234,11 @@ class LeaveModelHandler:
 
     def get_info(self) -> dict:
         if not self._loaded:
-            return {"loaded": False, "path": str(MODEL_PATH)}
+            return {
+                "loaded":          False,
+                "path":            str(MODEL_PATH),
+                "load_attempted":  self._load_attempted,
+            }
         return {
             "loaded":          True,
             "model_type":      self._metadata.get("model_type", "unknown"),
@@ -201,16 +256,17 @@ class LeaveModelHandler:
             "leakage_check":   self._metadata.get("leakage_validation"),
             "edge_case_tests": self._metadata.get("edge_case_testing"),
             "business_costs":  self._metadata.get("business_costs"),
-            # v5.1 additions
             "confidence_cap":  {"max": CONFIDENCE_MAX, "min": CONFIDENCE_MIN},
+            "load_attempted":  self._load_attempted,
         }
 
     def predict(self, input_data: dict) -> dict:
         """
-        v5.1: Confidence hard cap + raw_confidence preserved + suspicious warning.
+        v5.2: Thread-safe load guard — model.load() is called at most once,
+        even under concurrent requests hitting an unloaded handler.
         """
         if not self._loaded:
-            self.load()
+            self.load()   # FIX-2: safe under concurrent calls — lock inside load()
 
         if not self._loaded:
             logger.warning(
@@ -230,10 +286,9 @@ class LeaveModelHandler:
             X_scaled     = self._scaler.transform(X.reshape(1, -1))
             proba        = self._model.predict_proba(X_scaled)[0]
 
-            # ── FIX 1: Confidence Sanity Check + Hard Cap ─────────────────────
+            # ── Confidence Sanity Check + Hard Cap ────────────────────────────
             raw_confidence = float(proba[1])
 
-            # Red flag: مفيش model طبيعي بيدي >= 0.99
             if raw_confidence >= 0.99:
                 logger.warning(
                     "⚠️ [ModelHandler] SUSPICIOUS confidence=%.4f — "
@@ -242,7 +297,6 @@ class LeaveModelHandler:
                     raw_confidence,
                 )
 
-            # Hard cap: 0.97 max / 0.03 min
             confidence = max(CONFIDENCE_MIN, min(CONFIDENCE_MAX, raw_confidence))
 
             if confidence != raw_confidence:
@@ -250,7 +304,7 @@ class LeaveModelHandler:
                     "📊 [ModelHandler] Confidence capped: %.4f → %.4f",
                     raw_confidence, confidence,
                 )
-            # ── END FIX 1 ──────────────────────────────────────────────────────
+            # ── END confidence cap ─────────────────────────────────────────────
 
             try:
                 from config.hr_thresholds import get_thresholds_from_metadata
@@ -264,7 +318,6 @@ class LeaveModelHandler:
             t_approve  = thresholds["approve"]
             t_escalate = thresholds.get("escalate", 0.42)
 
-            # Outlier: raise approve threshold slightly for safety
             effective_t_approve = t_approve + (0.05 if is_outlier else 0.0)
 
             if confidence >= effective_t_approve:
@@ -293,7 +346,7 @@ class LeaveModelHandler:
             return {
                 "approved":        decision == "approve",
                 "confidence":      round(confidence, 4),
-                "raw_confidence":  round(raw_confidence, 4),   # ← v5.1: للـ debugging
+                "raw_confidence":  round(raw_confidence, 4),
                 "decision":        decision,
                 "tier":            tier,
                 "breakdown":       breakdown,
@@ -310,14 +363,14 @@ class LeaveModelHandler:
 
     def diagnose_confidence(self, n_samples: int = 100) -> dict:
         """
-        🔍 FIX 1: Confidence Distribution Diagnostic.
+        🔍 Confidence Distribution Diagnostic.
 
-        يكشف:
+        Detects:
             - Overfitting    → pct_above_99 > 10%
             - Leakage        → raw mean > 0.90 + high pct_above_99
             - Collapsed dist → std < 0.05
 
-        يُستدعى من: GET /model/diagnose
+        Called from: GET /model/diagnose
         """
         if not self._loaded:
             return {"error": "Model not loaded", "status": "🔴 NOT LOADED"}
@@ -341,7 +394,7 @@ class LeaveModelHandler:
             raw_list.append(pred.get("raw_confidence", pred["confidence"]))
             cap_list.append(pred["confidence"])
 
-        raw   = np.array(raw_list)
+        raw    = np.array(raw_list)
         capped = np.array(cap_list)
 
         pct_above_99 = float((raw > 0.99).mean())
@@ -363,30 +416,30 @@ class LeaveModelHandler:
             )
 
         buckets = {
-            "0.00–0.20": int((raw < 0.20).sum()),
-            "0.20–0.40": int(((raw >= 0.20) & (raw < 0.40)).sum()),
-            "0.40–0.60": int(((raw >= 0.40) & (raw < 0.60)).sum()),
-            "0.60–0.80": int(((raw >= 0.60) & (raw < 0.80)).sum()),
-            "0.80–0.95": int(((raw >= 0.80) & (raw < 0.95)).sum()),
+            "0.00–0.20":    int((raw < 0.20).sum()),
+            "0.20–0.40":    int(((raw >= 0.20) & (raw < 0.40)).sum()),
+            "0.40–0.60":    int(((raw >= 0.40) & (raw < 0.60)).sum()),
+            "0.60–0.80":    int(((raw >= 0.60) & (raw < 0.80)).sum()),
+            "0.80–0.95":    int(((raw >= 0.80) & (raw < 0.95)).sum()),
             "0.95–1.00 ⚠️": int((raw >= 0.95).sum()),
         }
 
         status = (
-            "🔴 PROBLEMATIC" if red_flags
+            "🔴 PROBLEMATIC"    if red_flags
             else "🟡 REVIEW SUGGESTED" if pct_above_95 > 0.15
             else "✅ HEALTHY"
         )
 
         return {
-            "status":        status,
-            "n_samples":     n_samples,
+            "status":            status,
+            "n_samples":         n_samples,
             "raw_stats": {
-                "mean":         round(float(raw.mean()), 4),
-                "std":          round(float(raw.std()), 4),
-                "min":          round(float(raw.min()), 4),
-                "max":          round(float(raw.max()), 4),
-                "pct_above_99": round(pct_above_99, 3),
-                "pct_above_95": round(pct_above_95, 3),
+                "mean":          round(float(raw.mean()), 4),
+                "std":           round(float(raw.std()), 4),
+                "min":           round(float(raw.min()), 4),
+                "max":           round(float(raw.max()), 4),
+                "pct_above_99":  round(pct_above_99, 3),
+                "pct_above_95":  round(pct_above_95, 3),
             },
             "cap_applied_count": capped_count,
             "cap_applied_pct":   round(capped_count / n_samples, 3),
@@ -592,7 +645,7 @@ class LeaveModelHandler:
         return {
             "approved":        decision == "approve",
             "confidence":      confidence,
-            "raw_confidence":  confidence,   # same in fallback
+            "raw_confidence":  confidence,
             "decision":        decision,
             "tier":            tier,
             "breakdown":       {
@@ -612,13 +665,23 @@ class LeaveModelHandler:
         }
 
 
-# ── Singleton ─────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Singleton
+#
+# FIX-2: Double-checked locking on the module-level singleton, identical to the
+# pattern used in core/mongo_connect.py.  _handler_lock ensures only one thread
+# constructs + loads the handler; subsequent calls take the fast (lock-free) path.
+# ══════════════════════════════════════════════════════════════════════════════
+
 _handler_instance: Optional[LeaveModelHandler] = None
+_handler_lock      = threading.Lock()
 
 
 def get_model_handler() -> LeaveModelHandler:
     global _handler_instance
-    if _handler_instance is None:
-        _handler_instance = LeaveModelHandler()
-        _handler_instance.load()
+    if _handler_instance is None:                   # fast path
+        with _handler_lock:
+            if _handler_instance is None:           # slow path — inside lock
+                _handler_instance = LeaveModelHandler()
+                _handler_instance.load()
     return _handler_instance

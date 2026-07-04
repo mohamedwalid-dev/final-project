@@ -33,7 +33,7 @@ async def fix_is_on_pip(dry_run: bool = False, verbose: bool = False) -> None:
     Back-fill `is_on_pip: False` on absence_events docs that are missing the field.
     In MongoDB we don't ALTER TABLE — we just $set the missing field on existing docs.
     """
-    from core.mongo_connect import ensure_mongo_ready, get_hr_db
+    from core.node_hr_proxy import get_hr_db
 
     await ensure_mongo_ready()
     db  = get_hr_db()

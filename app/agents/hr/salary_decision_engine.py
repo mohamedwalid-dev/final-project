@@ -3,6 +3,18 @@
 ============================================
 File: app/agents/hr/salary_decision_engine.py
 
+ℹ️ NODE.JS / DB NOTE:
+    This file has no MongoDB/Motor dependency and makes no HTTP calls to
+    the Node.js API. It is a pure rule + weighted-scoring engine: it takes
+    a plain dict payload (e.g. from POST /hr/salary-reviews after the Node
+    controller hands it to the AI agent) and returns a SalaryDecisionResult
+    — no database or network I/O happens inside this module. There is
+    nothing here to repoint at core.node_api_client / core.node_hr_proxy —
+    no changes were needed for the Node.js migration. Left otherwise
+    identical to v6.0. (Persisting the resulting decision — e.g. via
+    POST /hr/salary-reviews/:id/status or /hr/audit — happens in the
+    calling layer, not in this engine.)
+
 🎯 المشكلة اللي بيحلها:
     BEFORE (broken flow):
         hr_agent._rule_based_fallback() → "defer"    ← قرار أول

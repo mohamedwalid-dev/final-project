@@ -27,12 +27,13 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from bson import ObjectId
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from core.event_bus import event_bus
-from core.mongo_connect import get_hr_db, get_finance_db, get_shared_mongo_client
+from core.node_hr_proxy import get_hr_db
+from core.node_finance_proxy import get_finance_db
 
 logger = logging.getLogger(__name__)
 

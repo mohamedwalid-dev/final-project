@@ -3,6 +3,14 @@
 ================================================
 File: app/agents/hr/hr_prompts.py
 
+ℹ️ NODE.JS / DB NOTE:
+    This file has no MongoDB/Motor dependency and makes no HTTP calls to
+    the Node.js API. It only defines prompt template strings and the
+    HRPromptBuilder factory, which formats a plain dict into system/human
+    prompt pairs for the LLM. Nothing here reads or writes a database.
+    There is nothing to repoint for the Node.js migration — left otherwise
+    identical to v4.0.
+
 🎯 Coverage:
     - Leave Requests      (إجازات)
     - Salary Reviews      (مرتبات)

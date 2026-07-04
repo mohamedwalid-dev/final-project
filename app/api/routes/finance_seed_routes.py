@@ -117,7 +117,7 @@ async def finance_data_status():
     AI decisions made, and outstanding amount.
     """
     try:
-        from core.mongo_connect import get_finance_db
+        from core.node_finance_proxy import get_finance_db
         db = get_finance_db()
 
         # Customer count
@@ -210,7 +210,7 @@ async def _inline_seed(customer_count: int = 25, reset: bool = False) -> dict:
     """
     import random
     from datetime import timedelta
-    from core.mongo_connect import get_finance_db
+    from core.node_finance_proxy import get_finance_db
     from models.finance_models import build_customer, build_invoice
 
     db = get_finance_db()

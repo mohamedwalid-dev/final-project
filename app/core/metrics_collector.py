@@ -1,22 +1,27 @@
 """
-📊 Metrics Collector — v3.0 Production (MongoDB/Motor)
+📊 Metrics Collector — v3.1 (Node API migration)
 ========================================================
 File: app/core/metrics_collector.py
 
-v3.0 Changes (Migration: MySQL → MongoDB):
-    ✅ MetricsStorage        → Motor async (بدل pymysql sync)
-    ✅ metrics_events table  → MongoDB collection "metrics_events"
-    ✅ metrics_snapshots     → MongoDB collection "metrics_snapshots"
-    ✅ _build_snapshot()     → Motor aggregation pipelines بدل raw SQL
-    ✅ كل import لـ core.db اتشال تماماً
-    ✅ get_finance_db() singleton من core.mongo_connect
-    ✅ كل SQL queries اتحولت لـ Motor aggregation
+v3.1 Changes (Migration: MongoDB/Motor مباشر → Node.js API):
+    ✅ MetricsStorage        → no-op بالكامل (مفيش endpoint في Node
+                                لـ metrics_events / metrics_snapshots حالياً)
+    ✅ _build_snapshot()     → بيستخدم NodeFinanceProxy.get_finance_dashboard_stats()
+                                (اللي بتنادي GET /finance/dashboard) بدل الـ
+                                aggregation pipelines المباشرة على Mongo
+    ✅ كل import لـ core.db / Motor collections اتشال تماماً
+
+⚠️ ملحوظات مهمة عن الدقة بعد التحويل:
+    - الداشبورد بيقرأ من /finance/dashboard بس، مش من نافذة زمنية مضبوطة
+      (24h / اليوم) — الـ endpoint الحالي بيرجّع decisions_30d و actions_7d
+      كنافذة ثابتة، فبعض الحقول (decisions_today, avg_confidence,
+      avg_risk_score, avg_decision_ms, avg_overdue_days) بتفضل بقيمتها
+      الافتراضية (صفر) لحد ما يتعمل endpoint أدق في Node.
+    - الـ snapshot مش بيتخزن تاريخياً (MetricsStorage كلها no-op) — بس
+      بيتحسب live ويتبعت للـ WebSocket clients في كل نداء.
 
 v2.2 logic (unchanged):
     ✅ EXCLUDED_DECISIONS — real decisions only (no skipped/duplicate)
-    ✅ avg_confidence / avg_risk_score / avg_decision_ms — real decisions فقط
-    ✅ decisions_today = real decisions today only
-    ✅ actions_executed من finance_collection_log (MongoDB clog collection)
     ✅ True async-safe singleton (double-checked locking)
 """
 
@@ -31,7 +36,6 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from pymongo import ASCENDING, DESCENDING, IndexModel
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +59,7 @@ def _utcnow() -> datetime:
 # ── DB helper ─────────────────────────────────────────────────────────────────
 
 def _get_db():
-    from core.mongo_connect import get_finance_db
+    from core.node_finance_proxy import get_finance_db
     return get_finance_db()
 
 
@@ -133,96 +137,30 @@ class MetricsSnapshot:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 💾  METRICS STORAGE — Motor async
+# 💾  METRICS STORAGE — no-op (Node API migration)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MetricsStorage:
+    """
+    ⚠️ v3.1 (Node API migration): كانت بتكتب/تقرا من
+    db.db["metrics_events"] / db.db["metrics_snapshots"] (Motor مباشرة).
+    مفيش endpoint مكافئ في Node دلوقتي، فكل العمليات بقت no-op آمن.
+    الـ snapshot لسه بيتحسب live في _build_snapshot() (من /finance/dashboard)
+    وبيتبعت للـ WebSocket clients — بس مش بيتخزن تاريخياً.
+    """
 
     async def _ensure_indexes(self) -> None:
-        """
-        بدل CREATE TABLE IF NOT EXISTS — نعمل indexes على الـ collections.
-        """
-        try:
-            db = _get_db()
-
-            await db.db["metrics_events"].create_indexes([
-                IndexModel([("event_id", ASCENDING)], unique=True),
-                IndexModel([("metric_type", ASCENDING)]),
-                IndexModel([("category", ASCENDING)]),
-                IndexModel([("ts", DESCENDING)]),
-                IndexModel([("entity_type", ASCENDING), ("entity_id", ASCENDING)]),
-                # TTL: حذف events قديمة بعد 30 يوم
-                IndexModel(
-                    [("ts", ASCENDING)],
-                    expireAfterSeconds=30 * 86400,
-                    name="ttl_events",
-                ),
-            ])
-
-            await db.db["metrics_snapshots"].create_indexes([
-                IndexModel([("window_type", ASCENDING)]),
-                IndexModel([("created_at", DESCENDING)]),
-                # TTL: حذف snapshots قديمة بعد 7 أيام
-                IndexModel(
-                    [("created_at", ASCENDING)],
-                    expireAfterSeconds=7 * 86400,
-                    name="ttl_snapshots",
-                ),
-            ])
-        except Exception as e:
-            logger.warning("⚠️ MetricsStorage index init failed: %s", e)
+        logger.debug("⏭️ MetricsStorage._ensure_indexes skipped — no direct MongoDB access")
+        return
 
     async def store_event(self, event: MetricEvent) -> None:
-        """
-        بدل INSERT IGNORE INTO metrics_events:
-        upsert=True + event_id كـ unique key.
-        """
-        try:
-            db  = _get_db()
-            doc = event.to_dict()
-            # نحول ts من string لـ datetime للـ TTL index
-            doc["ts_dt"] = _utcnow()
-
-            await db.db["metrics_events"].update_one(
-                {"event_id": event.event_id},
-                {"$setOnInsert": doc},
-                upsert=True,
-            )
-        except Exception as e:
-            logger.debug("MetricsStorage store_event failed: %s", e)
+        return
 
     async def store_snapshot(self, snapshot: MetricsSnapshot) -> None:
-        """
-        بدل INSERT INTO metrics_snapshots:
-        insert_one مع datetime field للـ TTL.
-        """
-        try:
-            db  = _get_db()
-            doc = snapshot.to_dict()
-            doc["window_type"] = snapshot.window
-            doc["created_at"]  = _utcnow()
-
-            await db.db["metrics_snapshots"].insert_one(doc)
-        except Exception as e:
-            logger.debug("MetricsStorage store_snapshot failed: %s", e)
+        return
 
     async def get_latest_snapshot(self, window: str = "realtime") -> Optional[dict]:
-        """
-        بدل SELECT snapshot FROM metrics_snapshots ORDER BY created_at DESC LIMIT 1:
-        Motor find_one مع sort.
-        """
-        try:
-            db  = _get_db()
-            doc = await db.db["metrics_snapshots"].find_one(
-                {"window_type": window},
-                sort=[("created_at", DESCENDING)],
-            )
-            if doc:
-                doc.pop("_id", None)
-            return doc
-        except Exception as e:
-            logger.debug("get_latest_snapshot failed: %s", e)
-            return None
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -320,7 +258,7 @@ class MetricsCollector:
         self._running = True
         asyncio.create_task(self._process_loop())
         asyncio.create_task(self._snapshot_loop())
-        logger.info("✅ MetricsCollector v3.0 started (snap_ttl=%.1fs) | id=%s",
+        logger.info("✅ MetricsCollector v3.1 started (snap_ttl=%.1fs) | id=%s",
                     self._snap_ttl, id(self))
 
     def stop(self) -> None:
@@ -369,9 +307,16 @@ class MetricsCollector:
 
     async def _build_snapshot(self) -> MetricsSnapshot:
         """
-        ✅ v3.0 (MongoDB):
-        كل الـ SQL queries اتحولت لـ Motor aggregation pipelines.
-        EXCLUDED_DECISIONS بتتفلتر في الـ $match بدل SQL NOT IN.
+        ✅ v3.1 (Node API migration): بيستخدم NodeFinanceProxy.get_finance_dashboard_stats()
+        (بتنادي GET /finance/dashboard) بدل الـ aggregation pipelines المباشرة
+        على Mongo (invoices/decisions/clog collections).
+
+        ⚠️ جزء من الحقول مش متاحة من الـ endpoint الحالي فبتفضل بقيمتها
+        الافتراضية (صفر) لحد ما يتعمل endpoint أدق:
+            - avg_overdue_days, avg_confidence, avg_risk_score, avg_decision_ms
+            - decisions_today (عندنا decisions_30d بس، مش يوم بيوم)
+            - emails_sent/escalations/calls_scheduled/payment_plans بالتفصيل
+              (عندنا actions_7d كـ breakdown عام بس، مش aggregated بنفس الأسامي)
         """
         snap = MetricsSnapshot(window="realtime")
         snap.active_ws_clients = self.broadcaster.client_count
@@ -386,38 +331,12 @@ class MetricsCollector:
             self._error_count / max(self._event_count, 1) * 100, 2
         )
 
-        # ── Finance Stats ─────────────────────────────────────────────────────
         try:
             db = _get_db()
+            stats = await db.get_finance_dashboard_stats()
 
-            inv_pipeline = [
-                {
-                    "$group": {
-                        "_id":               None,
-                        "total_invoices":    {"$sum": 1},
-                        "overdue":           {"$sum": {"$cond": [{"$eq": ["$status", "overdue"]},      1, 0]}},
-                        "legal":             {"$sum": {"$cond": [{"$eq": ["$status", "legal"]},        1, 0]}},
-                        "paid":              {"$sum": {"$cond": [{"$eq": ["$status", "paid"]},         1, 0]}},
-                        "outstanding_amount":{"$sum": {
-                            "$cond": [
-                                {"$in": ["$status", ["overdue", "legal", "suspended"]]},
-                                "$amount", 0,
-                            ]
-                        }},
-                        "collected_amount":  {"$sum": {"$cond": [{"$eq": ["$status", "paid"]}, "$amount", 0]}},
-                        # avg overdue days للـ overdue فقط
-                        "avg_overdue_ms":    {"$avg": {
-                            "$cond": [
-                                {"$eq": ["$status", "overdue"]},
-                                {"$subtract": [_utcnow(), "$due_date"]},
-                                None,
-                            ]
-                        }},
-                    }
-                },
-            ]
-            inv_docs = await db.invoices.aggregate(inv_pipeline).to_list(1)
-            inv      = inv_docs[0] if inv_docs else {}
+            inv  = stats.get("invoices", {}) or {}
+            risk = stats.get("risk", {}) or {}
 
             snap.total_invoices   = int(inv.get("total_invoices") or 0)
             snap.overdue_invoices = int(inv.get("overdue") or 0)
@@ -425,122 +344,16 @@ class MetricsCollector:
             snap.paid_invoices    = int(inv.get("paid") or 0)
             snap.outstanding_egp  = float(inv.get("outstanding_amount") or 0)
             snap.collected_egp    = float(inv.get("collected_amount") or 0)
-            snap.avg_overdue_days = round(
-                float(inv.get("avg_overdue_ms") or 0) / 86_400_000, 1
-            )
 
             total_rev = snap.outstanding_egp + snap.collected_egp
             snap.collection_rate_pct = round(
                 snap.collected_egp / total_rev * 100, 1
             ) if total_rev > 0 else 0.0
 
-            # High-risk count
-            snap.high_risk_count = await db.invoices.count_documents({
-                "ai_risk_score": {"$gte": 0.70},
-                "status":        {"$nin": ["paid", "written_off"]},
-            })
+            snap.high_risk_count = int(risk.get("high_risk_count") or 0)
 
-        except Exception as e:
-            logger.debug("Snapshot finance stats failed: %s", e)
-
-        # ── Action Stats (last 24h) ───────────────────────────────────────────
-        try:
-            db      = _get_db()
-            since1d = _utcnow() - timedelta(days=1)
-
-            action_pipeline = [
-                {"$match": {"sent_at": {"$gte": since1d}}},
-                {
-                    "$group": {
-                        "_id":                 None,
-                        "emails_sent":         {"$sum": {"$cond": [{"$eq": ["$action_type", "email"]},                1, 0]}},
-                        "legal_escalations":   {"$sum": {"$cond": [{"$eq": ["$action_type", "legal_escalation"]},    1, 0]}},
-                        "calls_scheduled":     {"$sum": {"$cond": [{"$eq": ["$action_type", "call_scheduled"]},      1, 0]}},
-                        "system_actions":      {"$sum": {"$cond": [{"$eq": ["$action_type", "system"]},              1, 0]}},
-                        "total":               {"$sum": 1},
-                    }
-                },
-            ]
-            action_docs = await db.clog.aggregate(action_pipeline).to_list(1)
-            summary     = action_docs[0] if action_docs else {}
-
-            snap.emails_sent      = int(summary.get("emails_sent") or 0)
-            snap.escalations      = int(summary.get("legal_escalations") or 0)
-            snap.calls_scheduled  = int(summary.get("calls_scheduled") or 0)
-            snap.payment_plans    = int(summary.get("system_actions") or 0)
-            snap.actions_executed = int(summary.get("total") or 0)
-
-        except Exception as e:
-            logger.debug("Snapshot action stats failed: %s", e)
-
-        # ── AI Decision Stats — real decisions only ───────────────────────────
-        #
-        # EXCLUDED: skipped / duplicate / already_claimed / …
-        # INCLUDED: soft_follow_up / hard_follow_up / legal_escalation / …
-        #
-        try:
-            db = _get_db()
-
-            since24h   = _utcnow() - timedelta(hours=24)
-            today_start = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-
-            # ── 24h real decisions ────────────────────────────────────────────
-            pipeline_24h = [
-                {
-                    "$match": {
-                        "created_at": {"$gte": since24h},
-                        "decision":   {"$nin": EXCLUDED_DECISIONS},
-                    }
-                },
-                {
-                    "$group": {
-                        "_id":        None,
-                        "total_24h":  {"$sum": 1},
-                        "avg_conf":   {"$avg": "$confidence"},
-                        "avg_risk":   {"$avg": "$risk_score"},
-                        "avg_ms":     {"$avg": "$execution_ms"},
-                    }
-                },
-            ]
-            docs_24h  = await db.decisions.aggregate(pipeline_24h).to_list(1)
-            row_24h   = docs_24h[0] if docs_24h else {}
-
-            # ── Today's real decisions ────────────────────────────────────────
-            pipeline_today = [
-                {
-                    "$match": {
-                        "created_at": {"$gte": today_start},
-                        "decision":   {"$nin": EXCLUDED_DECISIONS},
-                    }
-                },
-                {"$count": "today_count"},
-            ]
-            docs_today      = await db.decisions.aggregate(pipeline_today).to_list(1)
-            decisions_today = int(docs_today[0]["today_count"]) if docs_today else 0
-
-            # ── Decision breakdown (today) ────────────────────────────────────
-            pipeline_breakdown = [
-                {
-                    "$match": {
-                        "created_at": {"$gte": today_start},
-                        "decision":   {"$nin": EXCLUDED_DECISIONS},
-                    }
-                },
-                {
-                    "$group": {
-                        "_id":   "$decision",
-                        "count": {"$sum": 1},
-                    }
-                },
-            ]
-            breakdown_rows = await db.decisions.aggregate(pipeline_breakdown).to_list(None)
-
-            snap.ai_decisions_made = int(row_24h.get("total_24h") or 0)
-            snap.decisions_today   = decisions_today
-            snap.avg_confidence    = round(float(row_24h.get("avg_conf") or 0), 3)
-            snap.avg_risk_score    = round(float(row_24h.get("avg_risk") or 0), 3)
-            snap.avg_decision_ms   = round(float(row_24h.get("avg_ms") or 0), 1)
-
+            # ── decisions_30d breakdown → أقرب تقريب متاح لـ decisions_approve/soft/... ──
+            decisions_30d = stats.get("decisions_30d", []) or []
             _decision_map = {
                 "safe_to_collect":    "decisions_approve",
                 "approve":            "decisions_approve",
@@ -556,24 +369,49 @@ class MetricsCollector:
                 "payment_complete":   "decisions_approve",
                 "partial_payment":    "decisions_review",
             }
-            for row in breakdown_rows:
-                dec        = str(row.get("_id") or "")
-                cnt        = int(row.get("count") or 0)
+            total_30d = 0
+            for row in decisions_30d:
+                dec = str(row.get("decision") or "")
+                cnt = int(row.get("count") or 0)
+                total_30d += cnt
                 field_name = _decision_map.get(dec)
                 if field_name and hasattr(snap, field_name):
                     setattr(snap, field_name, getattr(snap, field_name) + cnt)
 
+            # ai_decisions_made مفيهوش نافذة 24h دقيقة من الـ endpoint الحالي —
+            # بنستخدم مجموع آخر 30 يوم كأقرب تقريب متاح (أدق قيمة هتيجي
+            # لما يتعمل endpoint بنافذة زمنية قابلة للتحديد).
+            snap.ai_decisions_made = total_30d
+            snap.decisions_today   = 0  # مش متاحة — مفيش breakdown يومي في الـ endpoint الحالي
+
+            # ── actions_7d breakdown → أقرب تقريب لـ emails/escalations/... ──
+            actions_7d = stats.get("actions_7d", []) or []
+            _action_map = {
+                "email":                 "emails_sent",
+                "legal_escalation":      "escalations",
+                "call_scheduled":        "calls_scheduled",
+                "system":                "payment_plans",
+                "suspension":            "suspensions",
+                "write_off":             "write_offs",
+            }
+            actions_total = 0
+            for row in actions_7d:
+                act = str(row.get("action_type") or "")
+                cnt = int(row.get("count") or 0)
+                actions_total += cnt
+                field_name = _action_map.get(act)
+                if field_name and hasattr(snap, field_name):
+                    setattr(snap, field_name, getattr(snap, field_name) + cnt)
+            snap.actions_executed = actions_total
+
             logger.debug(
-                "📊 AI decisions — 24h=%d today=%d "
-                "(approve=%d soft=%d hard=%d plan=%d suspend=%d escalate=%d reject=%d)",
-                snap.ai_decisions_made, snap.decisions_today,
-                snap.decisions_approve, snap.decisions_soft, snap.decisions_hard,
-                snap.decisions_plan, snap.decisions_suspend,
-                snap.decisions_escalate, snap.decisions_reject,
+                "📊 [Metrics] snapshot from /finance/dashboard — "
+                "invoices=%d overdue=%d decisions_30d=%d actions_7d=%d",
+                snap.total_invoices, snap.overdue_invoices, total_30d, actions_total,
             )
 
         except Exception as e:
-            logger.debug("Snapshot AI stats failed: %s", e)
+            logger.debug("Snapshot build (Node dashboard) failed: %s", e)
 
         return snap
 
@@ -584,7 +422,6 @@ class MetricsCollector:
             try:
                 event = await asyncio.wait_for(self._queue.get(), timeout=2.0)
                 self._event_count += 1
-                # ✅ store_event async مباشرة (Motor) بدل run_in_executor
                 asyncio.create_task(self.storage.store_event(event))
                 await self.broadcaster.broadcast_metric(event)
             except asyncio.TimeoutError:
@@ -656,4 +493,4 @@ async def start_metrics_collector() -> None:
         logger.warning("⚠️ start_metrics_collector() اتنادى أكتر من مرة — ignored.")
         return
     await collector.start()
-    logger.info("✅ MetricsCollector v3.0 ready | id=%s", id(collector))
+    logger.info("✅ MetricsCollector v3.1 ready | id=%s", id(collector))

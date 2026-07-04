@@ -1,6 +1,6 @@
 """
-main.py — AI Enterprise ERP System v6.1 (MongoDB Edition)
-==========================================================
+main.py — AI Enterprise ERP System v6.5 (Node.js API Edition)
+================================================================
 # uvicorn main:app --host 0.0.0.0 --port 9000 --reload
 
 ✅ v6.0 Migration:
@@ -13,8 +13,56 @@ main.py — AI Enterprise ERP System v6.1 (MongoDB Edition)
 ✅ v6.1 Fix B1:
     - submit_leave_sync        → direct workflow call (bypass idempotency)
     - submit_salary_review     → direct workflow call
-    - submit_incentive_request → direct workflow call
+    - submit_incenwtive_request → direct workflow call
     - submit_absence_event     → direct workflow call
+
+✅ v6.4 — Node.js API Bridge Layer ("Method 1"):
+    - New: core/node_api_client.py — async, retrying, circuit-breaker-
+      protected client over the Node.js/Express HR + Finance REST API
+      (http://localhost:5005/v1/*).
+    - New: agents/tools/node_api_tools.py — 22 LangChain @tool-wrapped
+      functions over that client, registered onto the agentic
+      coordinator at startup.
+    - New: GET /health/node-api — reachability + circuit-breaker status
+      for the Node.js dependency.
+
+✅ v6.5 — FULL Node.js API Migration (2026-07):
+    - REMOVED every direct MongoDB/Motor call. get_hr_db() and
+      get_finance_db() now ALWAYS return the Node.js-backed proxies
+      (core/node_hr_proxy.py / core/node_finance_proxy.py) — there is
+      no more direct `hr_db.db["..."]` collection access anywhere in
+      this file. Every single route goes through NodeAPIClient →
+      Node.js/Express → MongoDB.
+    - /employees, /employees/{id}: DISABLED (503). There is no
+      /hr/employees route in hr.routes.js today — confirmed against
+      the actual route file. Re-enable once that route exists in Node.
+    - /employees/{id}/salary-reviews, /employees/{id}/incentives: now
+      use NodeHRProxy.get_employee_salary_reviews() /
+      get_employee_incentives() (N+1 client-side filtering — see
+      node_hr_proxy.py docstrings for why; there's no
+      /hr/salary-reviews/employee/:id or /hr/incentive-requests/employee/:id
+      route yet, unlike leaves/absences which do have one).
+    - /events/pending, /events/{id}/done: DISABLED (503). No
+      /hr/events or generic /events route exists in Node — the
+      MongoDB-native event-bus/scheduler queue has no Node equivalent.
+    - /decisions (generic HR decision log), /memory/*: DISABLED (503).
+      No /hr/decisions or /hr/memory route exists in Node.
+    - /audit/logs (generic, cross-domain): DISABLED (503). Node only
+      exposes /hr/audit/:domain/:entity_id (domain+entity scoped), not
+      a flat "all audit logs" listing. Domain-scoped audit endpoints
+      (/leaves/{id}/audit, /salary-reviews/{id}/audit, etc.) are
+      UNCHANGED and fully working.
+    - /audit/leaves: now uses hr_db.get_leaves() (GET /hr/leaves)
+      instead of the old direct hr_db.leaves.find() Motor cursor.
+    - /dashboard/analytics: now uses hr_db.get_leaves() instead of the
+      old direct hr_db.leaves.find() Motor cursor.
+    - /health/detailed: MongoDB ping replaced with a Node API bridge
+      ping (there is no direct Mongo connection left to ping from this
+      service).
+    - Nothing else changed. Every route that already went through
+      get_hr_db()/get_finance_db() method calls (not raw .db[...]
+      access) keeps working exactly as before, now fully backed by the
+      Node.js REST API end to end.
 """
 
 import json
@@ -22,10 +70,42 @@ import logging
 import os
 import asyncio
 import pickle
+import time
 import warnings
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional, List
+from core.cache_manager import get_cache_manager, CacheKeys
+
+_AGENT_DEBUG_LOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "debug-d1730a.log",
+)
+
+
+def _agent_debug_log(
+    location: str,
+    message: str,
+    data: Optional[dict] = None,
+    hypothesis_id: str = "",
+    run_id: str = "pre-fix",
+) -> None:
+    # #region agent log
+    try:
+        payload = {
+            "sessionId": "d1730a",
+            "timestamp": int(time.time() * 1000),
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "hypothesisId": hypothesis_id,
+            "runId": run_id,
+        }
+        with open(_AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as _df:
+            _df.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        pass
+    # #endregion
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, status
@@ -38,30 +118,15 @@ from dotenv import load_dotenv
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# ── MongoDB ───────────────────────────────────────────────────────────────────
-
-# core/ssl_patch.py
-from core.mongo_client import _apply_windows_tls_patch as apply_windows_tls_patch
-
-__all__ = ["apply_windows_tls_patch"]
-
-
-from core.mongo_connect import (
-    get_finance_db,
-    get_hr_db,
-    ensure_mongo_ready,
-)
 
 from orchestrator.orchestrator import Orchestrator
 from config.settings import get_settings
-from models.finance_models import serialize_doc
+from utils.serialize_utils import serialize_doc
 from core.trigger import (
     start_trigger_engine,
     stop_trigger_engine,
     get_scheduler_status,
     job_scan_pending_leaves,
-    job_scan_pending_tickets,
-    job_scan_new_leads,
     job_process_event_queue,
     job_scan_pending_salary_reviews,
     job_scan_pending_incentives,
@@ -85,6 +150,28 @@ from core.finance_realtime import finance_realtime_router
 from core.metrics_collector import start_metrics_collector, get_metrics_collector
 from fastapi import WebSocket, WebSocketDisconnect
 
+# ── Agentic Layer (Self-planning · Tool use · Multi-agent · Reflection) ────────
+# Additive package — does NOT modify any existing module. See
+# app/orchestrator/agentic/ for the full implementation.
+from orchestrator.agentic import agentic_router, get_agentic_coordinator
+
+# ── v6.4: Node.js API Bridge Layer ("Method 1" — AI talks to APIs only) ───────
+from core.node_api_client import (
+    init_node_api_client,
+    init_node_api_client_async,
+    close_node_api_client,
+    get_node_api_client,
+    NodeAPIError,   # ✅ needed for the dedicated exception handler below
+)
+from agents.tools.node_api_tools import NODE_API_TOOLS
+
+# ── v6.5: get_hr_db() / get_finance_db() now ALWAYS resolve to the
+# Node.js-backed proxies. These are the ONLY db accessors used anywhere
+# in this file from now on — there is no more direct Motor/pymongo
+# import left in main.py.
+from core.node_hr_proxy import get_hr_db
+from core.node_finance_proxy import get_finance_db
+
 
 load_dotenv()
 settings = get_settings()
@@ -96,6 +183,106 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Suppress PyMongo background task noise ────────────────────────────────────
+# Kept even though this service no longer opens its own Motor connection —
+# some shared dependencies (workflows, training modules) may still import
+# pymongo transitively. Harmless no-op otherwise.
+for _noisy_logger in ("pymongo.client", "pymongo.connection", "pymongo.serverSelection"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
+# ── Background Health Cache ────────────────────────────────────────────────────
+import time as _monotime
+
+HEALTH_PING_INTERVAL_SEC = 30
+_health_cache: dict = {
+    "db_status":        "initializing",
+    "redis_status":     "initializing",
+    "last_checked":     None,
+    "db_latency_ms":    0,
+    "redis_latency_ms": 0,
+    "scheduler_status": {"running": False, "jobs_count": 0},
+    "ml_info":          {"loaded": False},
+}
+_health_cache_lock = asyncio.Lock()
+_health_cache_task: Optional[asyncio.Task] = None
+
+
+async def _update_health_cache() -> None:
+    """Background coroutine: pings the Node.js API bridge + Redis and
+    updates _health_cache every 30s. There is no direct MongoDB
+    connection from this service anymore — "db_status" here reflects
+    the Node.js API's reachability, since that's what actually gates
+    every read/write this service does."""
+    while True:
+        try:
+            db_status, db_latency = "healthy (API)", 0
+            try:
+                t0 = _monotime.perf_counter()
+                client = get_node_api_client()
+                await client.ping(timeout_sec=2.0)
+                db_latency = int((_monotime.perf_counter() - t0) * 1000)
+            except Exception as e:
+                db_status = f"degraded (API): {str(e)[:80]}"
+
+            redis_status, redis_latency = "healthy", 0
+            try:
+                t0 = _monotime.perf_counter()
+                await asyncio.wait_for(get_cache_manager().ping(), timeout=0.5)
+                redis_latency = int((_monotime.perf_counter() - t0) * 1000)
+            except Exception:
+                redis_status = "degraded: unreachable (fallback active)"
+
+            try:
+                scheduler_status = get_scheduler_status()
+            except Exception as e:
+                scheduler_status = {"running": False, "jobs_count": 0, "error": str(e)[:80]}
+
+            try:
+                ml_info = get_model_handler().get_info()
+            except Exception as e:
+                ml_info = {"loaded": False, "error": str(e)[:80]}
+
+            async with _health_cache_lock:
+                _health_cache.update({
+                    "db_status":        db_status,
+                    "redis_status":     redis_status,
+                    "last_checked":     datetime.utcnow().isoformat() + "Z",
+                    "db_latency_ms":    db_latency,
+                    "redis_latency_ms": redis_latency,
+                    "scheduler_status": scheduler_status,
+                    "ml_info":          ml_info,
+                })
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug("_update_health_cache error: %s", e)
+
+        try:
+            await asyncio.sleep(HEALTH_PING_INTERVAL_SEC)
+        except asyncio.CancelledError:
+            break
+
+
+# ── Finance In-Memory Cache ────────────────────────────────────────────────────
+_DASHBOARD_MEM_CACHE:  dict = {}
+_MODEL_INFO_MEM_CACHE: dict = {}
+
+DASHBOARD_CACHE_TTL_SEC  = 30
+MODEL_INFO_CACHE_TTL_SEC = 120
+
+
+def _mem_cache_get(store: dict, key: str):
+    entry = store.get(key)
+    if entry and _monotime.monotonic() < entry["expires_at"]:
+        return entry["data"]
+    store.pop(key, None)
+    return None
+
+
+def _mem_cache_set(store: dict, key: str, data, ttl_sec: int):
+    store[key] = {"data": data, "expires_at": _monotime.monotonic() + ttl_sec}
+
+
 orchestrator   = Orchestrator()
 leave_workflow = LeaveApprovalWorkflow()
 
@@ -106,14 +293,14 @@ leave_workflow = LeaveApprovalWorkflow()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 AI Enterprise ERP v6.1 (MongoDB) starting up...")
+    logger.info("🚀 AI Enterprise ERP v6.5 (Node.js API Edition) starting up...")
 
-    # ── MongoDB Atlas init ─────────────────────────────────────────────────
+    # ── Node API init ──────────────────────────────────────────────────────
     try:
-        await ensure_mongo_ready()
-        logger.info("✅ MongoDB Atlas connected & indexes ready (Finance + HR)")
+        await init_node_api_client_async()
+        logger.info("✅ Node API Client initialized (with eager login if configured)")
     except Exception as e:
-        logger.error("❌ MongoDB Atlas init failed: %s", e)
+        logger.error("❌ Node API Client init failed: %s", e)
         raise
 
     # ── ML Model warm-up ──────────────────────────────────────────────────
@@ -137,6 +324,11 @@ async def lifespan(app: FastAPI):
     await start_trigger_engine(orchestrator)
     logger.info("✅ Trigger Engine started")
 
+    # ── Health Cache background pinger ─────────────────────────────────────
+    global _health_cache_task
+    _health_cache_task = asyncio.create_task(_update_health_cache())
+    logger.info("✅ Health cache background pinger started")
+
     # ── Finance risk model ────────────────────────────────────────────────
     try:
         fin_pred = _load_fin_predictor()
@@ -151,17 +343,82 @@ async def lifespan(app: FastAPI):
         logger.warning("⚠️ Finance risk model startup load failed: %s", e)
 
     print("\n" + "═" * 60)
-    print(f"  🧠  {settings.APP_NAME}  —  ERP v6.1 (MongoDB)")
+    print(f"  🧠  {settings.APP_NAME}  —  ERP v6.5 (Node.js API Edition)")
     print(f"  📦  Version     : {settings.APP_VERSION}")
     print(f"  🤖  LLM         : {settings.GEMINI_MODEL} ({settings.LLM_PROVIDER})")
     print(f"  🌡️   Temperature : {settings.LLM_TEMPERATURE}")
     print(f"  ⚡  Triggers     : Scheduler + DB Watcher + Webhooks")
     print(f"  🔑  API Key     : {'✅ Set' if settings.GOOGLE_API_KEY else '❌ Missing!'}")
+    print(f"  🔌  Data Layer  : Node.js/Express REST API only (no direct MongoDB)")
     print(f"  📖  Docs        : http://localhost:9000/docs")
     print("═" * 60 + "\n")
 
     await start_metrics_collector()
     logger.info("✅ MetricsCollector started")
+
+    # ── v6.4: Node.js API Bridge Layer init ─────────────────────────────────
+    try:
+        node_api_client = get_node_api_client()
+        ping_result = await node_api_client.ping()
+        if ping_result.get("reachable"):
+            logger.info(
+                "✅ Node.js API bridge ready — base_url reachable | latency=%dms",
+                ping_result.get("latency_ms", -1),
+            )
+        else:
+            logger.warning(
+                "⚠️ Node.js API bridge initialized but NOT reachable right now "
+                "(%s) — tools will retry/circuit-break per call, this is "
+                "non-fatal at startup in case Node.js is still booting.",
+                ping_result.get("error", "unknown"),
+            )
+    except Exception as e:
+        logger.warning("⚠️ Node.js API bridge init failed (non-fatal): %s", e)
+
+    # ── Agentic Layer wiring ───────────────────────────────────────────────
+    # ✅ FIX (2026-07): the coordinator was never meant to own tool
+    # registration — hasattr(coordinator, "register_tools") was always
+    # False because AgenticCoordinator only exposes wire_agents() (message
+    # bus) + run_goal() (plan/act/reflect). The actual registry for
+    # planner-callable tools is orchestrator/agentic/tools.py's
+    # ToolRegistry, and it now auto-registers every NODE_API_TOOLS entry
+    # (wrapped via _wrap_langchain_tool, prefixed "node_api.") the first
+    # time get_tool_registry() runs — see that file's module docstring.
+    # No manual registration call is needed here anymore; importing
+    # get_tool_registry() eagerly below just forces that auto-registration
+    # to happen at startup (so failures surface in the startup log, same
+    # as before) instead of lazily on the first /agentic/* request.
+    try:
+        coordinator = get_agentic_coordinator()
+        coordinator.wire_agents()
+
+        from orchestrator.agentic.tools import get_tool_registry
+        registry = get_tool_registry()
+        node_api_tool_count = sum(
+            1 for name in registry.names() if name.startswith("node_api.")
+        )
+        logger.info(
+            "✅ Tool registry ready — %d tools total (%d from NODE_API_TOOLS)",
+            len(registry.names()), node_api_tool_count,
+        )
+        logger.info("✅ Agentic layer ready — /agentic/* (plan·tools·bus·reflection)")
+    except Exception as e:
+        logger.warning("⚠️ Agentic layer wiring failed (non-fatal): %s", e)
+
+    # ── Redis Cache ────────────────────────────────────────────────────────
+    try:
+        cache_ok = await get_cache_manager().ping()
+        if cache_ok:
+            logger.info("✅ Redis cache connected — dashboard caching active")
+            _health_cache["redis_status"] = "healthy"
+        else:
+            logger.warning("⚠️ Redis unreachable — fallback active")
+            _health_cache["redis_status"] = "degraded: unreachable (fallback active)"
+    except Exception as e:
+        logger.warning("⚠️ Redis check failed at startup (non-fatal): %s", e)
+        _health_cache["redis_status"] = "degraded: startup check failed"
+
+    # ── Dashboard Cache Warmup disabled because of Node API switch ────────
 
     yield
 
@@ -169,6 +426,20 @@ async def lifespan(app: FastAPI):
     stop_trigger_engine()
     get_metrics_collector().stop()
     logger.info("🔴 MetricsCollector stopped")
+    if _health_cache_task is not None:
+        _health_cache_task.cancel()
+        try:
+            await _health_cache_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("🔴 Health cache background pinger stopped")
+    # v6.4: close the Node.js API bridge's pooled httpx connections cleanly
+    # on shutdown, same pattern as the trigger engine / metrics collector
+    # above — avoids leaking open sockets on reload/restart.
+    try:
+        await close_node_api_client()
+    except Exception as e:
+        logger.debug("close_node_api_client() error during shutdown: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,10 +451,13 @@ app = FastAPI(
     description=(
         "Autonomous ERP powered by AI agents (LangChain + Google Gemini).\n\n"
         "**Modules:** HR · Leaves · Salary · Incentives · Absences · "
-        "Tickets · Leads · CRM · Events · Memory · Audit\n\n"
-        "**v6.1:** Direct Workflow submit — bypasses event-bus idempotency"
+        "Events · Audit\n\n"
+        "**v6.1:** Direct Workflow submit — bypasses event-bus idempotency\n\n"
+        "**v6.5:** Full Node.js API migration — every route reads/writes "
+        "through the Node.js/Express REST API. No direct MongoDB connection "
+        "left in this service."
     ),
-    version="6.1.0",
+    version="6.5.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -201,9 +475,53 @@ app.include_router(webhook_router, prefix="/webhooks", tags=["🌐 Webhooks"])
 app.include_router(finance_seed_router, prefix="/finance", tags=["💰 Finance - Seed"])
 app.include_router(finance_realtime_router, prefix="/finance", tags=["📡 Finance - Live"])
 
+# 🧠 Agentic layer — autonomous plan→act→reflect loop + agent message bus
+app.include_router(agentic_router, prefix="/agentic", tags=["🧠 Agentic"])
+
 import os
 os.makedirs("app/static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+# ✅ FIX (2026-07): NodeAPIError already carries a real, meaningful
+# status_code from the Node.js API's own response (400 for validation
+# errors, 401 for auth, 404 for missing routes, 5xx after retries/circuit
+# open — see core/node_api_client.py's NodeAPIError + _request()). Without
+# a dedicated handler, every NodeAPIError fell through to the generic
+# Exception handler below, which always answers 500 regardless of the
+# real cause — so a simple bad-input error (e.g. an employee_id that
+# isn't a valid MongoDB ObjectId) looked identical to an actual server
+# crash from the caller's point of view. This handler must be registered
+# BEFORE @app.exception_handler(Exception): FastAPI/Starlette matches the
+# most specific registered exception type, so NodeAPIError (a subclass of
+# Exception) is caught here first and never reaches the generic handler.
+@app.exception_handler(NodeAPIError)
+async def node_api_error_handler(request: Request, exc: NodeAPIError):
+    status_code = exc.status_code or 502  # 502 Bad Gateway: upstream (Node) failed with no code we can trust
+    is_client_error = status_code is not None and 400 <= status_code < 500
+
+    if is_client_error:
+        logger.warning(
+            "⚠️ NodeAPIError (client error, endpoint=%s): %s",
+            exc.endpoint, exc,
+        )
+    else:
+        logger.error(
+            "❌ NodeAPIError (upstream/server error, endpoint=%s): %s",
+            exc.endpoint, exc, exc_info=True,
+        )
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status":      "error",
+            "detail":      str(exc),
+            "type":        "NodeAPIError",
+            "node_endpoint": exc.endpoint,
+            "path":        str(request.url),
+            "timestamp":   datetime.utcnow().isoformat() + "Z",
+        },
+    )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -249,6 +567,11 @@ FIN_ENGINEERED_V3 = [
     "rolling_avg_delay", "overdue_x_industry", "credit_age_interaction",
 ]
 FIN_FEATURE_NAMES = FIN_BASE_FEATURES + FIN_ENGINEERED_V2 + FIN_ENGINEERED_V3
+
+_FIN_ML_EXCLUDED = {
+    "overdue_days", "overdue_days_normalized", "overdue_x_industry",
+    "payment_delay", "is_late", "is_bad_payer",
+}
 
 _FIN_MODEL_DIR  = os.path.join(os.path.dirname(__file__), "models", "finance")
 _FIN_MODEL_PATH = os.path.join(_FIN_MODEL_DIR, "payment_risk_v8.pkl")
@@ -367,6 +690,47 @@ def _fin_array_to_dict(row: np.ndarray) -> dict:
     return {k: float(v) for k, v in zip(keys, row)}
 
 
+def _fin_api_row_to_ml_dict(row: np.ndarray) -> dict:
+    d = _fin_array_to_dict(row)
+    age = float(d["customer_age_normalized"])
+    return {
+        k: v for k, v in {
+            "amount_normalized": d["amount_normalized"],
+            "customer_age_normalized": age,
+            "years_with_company_normalized": float(np.clip(age * 0.6, 0, 1)),
+            "invoice_frequency": d["invoice_frequency"],
+            "industry_risk_factor": d["industry_risk_factor"],
+            "seasonal_factor": d["seasonal_factor"],
+            "hist_paid_ratio": d["paid_ratio"],
+            "hist_late_ratio": d["late_ratio"],
+            "hist_avg_delay_normalized": d["avg_delay_normalized"],
+            "paid_ratio": d["paid_ratio"],
+            "late_ratio": d["late_ratio"],
+            "on_time_ratio": d["on_time_ratio"],
+            "credit_score_normalized": d["credit_score_normalized"],
+        }.items() if k not in _FIN_ML_EXCLUDED
+    }
+
+
+def _fin_align_v8_features(v8_predictor, X_full: np.ndarray) -> np.ndarray:
+    from training.finance_train import (
+        BASE_FEATURES, CREDIT_FEATURES, INCOME_FEATURES,
+        BEHAVIORAL_FEATURES, ENGINEERED_FEATURES,
+    )
+    feature_names = getattr(v8_predictor, "feature_names", None) or []
+    if not feature_names or X_full.shape[1] == len(feature_names):
+        return X_full
+    all_features = (
+        BASE_FEATURES + CREDIT_FEATURES + INCOME_FEATURES +
+        BEHAVIORAL_FEATURES + ENGINEERED_FEATURES
+    )
+    col_index = {name: i for i, name in enumerate(all_features)}
+    indices = [col_index[c] for c in feature_names if c in col_index]
+    if len(indices) == len(feature_names):
+        return X_full[:, indices]
+    return X_full[:, : len(feature_names)]
+
+
 class FinanceRiskPredictor:
     def __init__(self, ensemble, decision_engine, shap_importance=None):
         self.ensemble        = ensemble
@@ -391,7 +755,19 @@ class FinanceRiskPredictor:
         return results
 
 
+FEATURE_COLUMNS_PATH_FOR_API = os.path.join(
+    os.path.dirname(__file__), "models", "finance", "finance_feature_columns.pkl"
+)
+
+
 class _V8FinanceRiskPredictor(FinanceRiskPredictor):
+    """
+    PATCHED — adds the same column-alignment fix that
+    agents/finance/risk_model_handler.py (v4.2) already has, so
+    /finance/predict-risk and /finance/predict-risk/batch stop
+    crashing with "Feature shape mismatch, expected 38, got 41".
+    """
+
     def __init__(self, v8_predictor, decision_engine, shap_importance=None):
         super().__init__(
             ensemble        = v8_predictor.ensemble,
@@ -399,20 +775,66 @@ class _V8FinanceRiskPredictor(FinanceRiskPredictor):
             shap_importance = shap_importance or {},
         )
         self._v8 = v8_predictor
+        self._saved_columns = self._load_saved_columns()
 
-    def predict(self, X_base: np.ndarray) -> dict:
+    @staticmethod
+    def _load_saved_columns():
+        try:
+            if os.path.exists(FEATURE_COLUMNS_PATH_FOR_API):
+                with open(FEATURE_COLUMNS_PATH_FOR_API, "rb") as f:
+                    cols = pickle.load(f)
+                logger.info(
+                    "✅ [predict-risk fix] Loaded %d training feature columns from %s",
+                    len(cols), FEATURE_COLUMNS_PATH_FOR_API,
+                )
+                return cols
+        except Exception as e:
+            logger.error("❌ [predict-risk fix] Could not load feature columns: %s", e)
+        logger.warning(
+            "⚠️  [predict-risk fix] finance_feature_columns.pkl not found — "
+            "alignment disabled, shape mismatch may still occur."
+        )
+        return None
+
+    def _align(self, X41):
+        """Reindex the 41-col array down to whatever columns the model actually trained on."""
+        import numpy as np
+        if self._saved_columns is None or X41.shape[1] == len(self._saved_columns):
+            return X41
+        from training.finance_train import (
+            BASE_FEATURES, CREDIT_FEATURES, INCOME_FEATURES,
+            BEHAVIORAL_FEATURES, ENGINEERED_FEATURES,
+        )
+        all_features = (
+            BASE_FEATURES + CREDIT_FEATURES + INCOME_FEATURES +
+            BEHAVIORAL_FEATURES + ENGINEERED_FEATURES
+        )
+        col_index = {name: i for i, name in enumerate(all_features)}
+        indices = [col_index[c] for c in self._saved_columns if c in col_index]
+        if len(indices) != len(self._saved_columns):
+            logger.warning(
+                "⚠️  [predict-risk fix] Could not align all columns (%d/%d found) — "
+                "using X as-is, mismatch may still occur.",
+                len(indices), len(self._saved_columns),
+            )
+            return X41
+        return X41[:, indices]
+
+    def predict(self, X_base):
         from training.finance_train import safe_preprocess as _v8_safe_preprocess
         X41   = _api_input_to_v8_features(X_base)
+        X41   = self._align(X41)                       # ← THE ACTUAL FIX
         X41   = _v8_safe_preprocess(X41)
         prob  = float(_fin_ensemble_predict_proba(self._v8.ensemble, X41)[0])
         result = self.decision_engine.decide(prob)
         return self.decision_engine.explain(result, self.shap_importance)
 
-    def predict_batch(self, X_base: np.ndarray) -> list:
+    def predict_batch(self, X_base):
         from training.finance_train import safe_preprocess as _v8_safe_preprocess
         results = []
         for row in X_base:
             X41  = _api_input_to_v8_features(row.reshape(1, -1))
+            X41  = self._align(X41)                    # ← THE ACTUAL FIX
             X41  = _v8_safe_preprocess(X41)
             prob = float(_fin_ensemble_predict_proba(self._v8.ensemble, X41)[0])
             r    = self.decision_engine.decide(prob)
@@ -579,6 +1001,16 @@ def _load_fin_predictor() -> Optional[FinanceRiskPredictor]:
                 "✅ Finance risk model v%s loaded | reject>=%.2f review>=%.2f",
                 version, reject, review,
             )
+            try:
+                import numpy as _np
+                _dummy = _np.zeros((1, len(FIN_BASE_FEATURES)), dtype=_np.float64)
+                _fin_predictor.predict(_dummy)
+                logger.info("✅ [predict-risk fix] Startup self-test predict() succeeded")
+            except Exception as self_test_err:
+                logger.error(
+                    "❌ [predict-risk fix] Startup self-test predict() FAILED — "
+                    "model will be unusable until fixed: %s", self_test_err,
+                )
             return _fin_predictor
 
         logger.warning("⚠️ Finance model pickle has no 'predictor' or 'ensemble' key")
@@ -671,27 +1103,6 @@ class LeaveStatusUpdate(BaseModel):
         if v not in {"approved", "rejected"}:
             raise ValueError("status must be 'approved' or 'rejected'")
         return v
-
-
-class TicketCreate(BaseModel):
-    customer_id: Optional[str] = None
-    subject:     str  = Field(..., min_length=5, max_length=200)
-    description: str  = Field(..., min_length=10)
-    priority:    str  = Field("medium")
-
-    @validator("priority")
-    def validate_priority(cls, v):
-        if v not in {"low", "medium", "high", "urgent"}:
-            raise ValueError("priority must be: low | medium | high | urgent")
-        return v
-
-
-class LeadCreate(BaseModel):
-    name:   str           = Field(..., min_length=2, max_length=100)
-    email:  EmailStr
-    phone:  Optional[str] = Field(None, max_length=20)
-    source: str           = Field("manual")
-    notes:  str           = Field("", max_length=500)
 
 
 class DecisionCreate(BaseModel):
@@ -792,7 +1203,12 @@ class AbsenceEventRequest(BaseModel):
 
     @validator("absence_type_claimed")
     def validate_absence_type(cls, v):
-        allowed = {"unexcused", "sick", "emergency", "annual", "unpaid", "غياب بدون إذن"}
+        # ⚠️ FIX: aligned with Node's ABSENCE_TYPES_CLAIMED enum
+        # (models/hr.model.js) — the old set here ("sick", "annual",
+        # "unpaid", the Arabic value) no longer matches what Node
+        # actually accepts and would fail Mongoose validation on
+        # every non-"unexcused"/"emergency" submission.
+        allowed = {"unexcused", "unexcused_no_permission", "medical", "emergency", "approved_late", "other"}
         if v not in allowed:
             raise ValueError(f"absence_type_claimed must be one of: {allowed}")
         return v
@@ -813,27 +1229,35 @@ class AbsenceEventRequest(BaseModel):
 async def root():
     return {
         "system":   settings.APP_NAME,
-        "version":  "6.1.0",
+        "version":  "6.5.0",
         "status":   "🟢 operational",
-        "database": "MongoDB Atlas",
+        "database": "Node.js/Express REST API (MongoDB Atlas behind it)",
         "llm":      settings.GEMINI_MODEL,
         "agents":   [
             "HR Leave Approval (ML + Gemini AI)",
             "Salary Review Agent",
             "Incentive Agent",
             "Absence Management Agent",
-            "Support Agent",
-            "CRM Agent",
         ],
         "modules":  [
             "HR", "Leaves", "Salary Reviews", "Incentives",
-            "Absence Management", "Tickets", "Leads", "Events", "Memory", "Audit",
+            "Absence Management", "Audit",
         ],
         "triggers": {
             "scheduler":  "active",
             "db_watcher": "active",
             "webhooks":   "active — /webhooks/*",
         },
+        "integrations": {
+            "node_api_bridge": "active — ALL HR/Finance data reads/writes go through the Node.js REST API",
+        },
+        "disabled_pending_node_routes": [
+            "/employees (no /hr/employees route in Node yet)",
+            "/events/* (no /hr/events route in Node)",
+            "/decisions (generic HR decision log — no /hr/decisions route in Node)",
+            "/memory/* (no /hr/memory route in Node)",
+            "/audit/logs (generic — Node only exposes /hr/audit/:domain/:entity_id)",
+        ],
         "docs":   "/docs",
         "health": "/health",
     }
@@ -841,22 +1265,81 @@ async def root():
 
 @app.get("/health", tags=["System"])
 async def health():
+    """
+    ⚡ Lightweight health check — pure cache read, < 10ms guaranteed.
+    Everything here — db (Node API bridge), redis, scheduler, ml — comes
+    from _health_cache, refreshed every 30s by _update_health_cache().
+    For real-time check: GET /health/detailed
+    For the Node.js API bridge specifically: GET /health/node-api
+    """
+    t0 = _monotime.perf_counter()
+
+    cached = dict(_health_cache)
+
+    cached_db    = cached.get("db_status",    "initializing")
+    cached_redis = cached.get("redis_status", "initializing")
+    last_checked = cached.get("last_checked")
+    db_latency   = cached.get("db_latency_ms", 0)
+    scheduler    = cached.get("scheduler_status", {}) or {}
+    ml_info      = cached.get("ml_info", {}) or {}
+
+    overall    = "healthy" if "degraded" not in cached_db else "degraded"
+    latency_ms = int((_monotime.perf_counter() - t0) * 1000)
+
+    return {
+        "status":          overall,
+        "version":         "6.5.0",
+        "database":        "Node.js/Express REST API",
+        "db_status":       cached_db,
+        "db_latency_ms":   db_latency,
+        "redis_status":    cached_redis,
+        "pipeline":        "active",
+        "llm_provider":    settings.LLM_PROVIDER,
+        "llm_model":       settings.GEMINI_MODEL,
+        "api_key_set":     bool(settings.GOOGLE_API_KEY),
+        "trigger_engine":  "running" if scheduler.get("running") else "stopped",
+        "scheduled_jobs":  scheduler.get("jobs_count", 0),
+        "ml_model": {
+            "loaded":     ml_info.get("loaded", False),
+            "accuracy":   ml_info.get("accuracy"),
+            "roc_auc":    ml_info.get("roc_auc"),
+            "trained_at": ml_info.get("trained_at"),
+        },
+        "health_cache": {
+            "last_checked": last_checked,
+            "interval_sec": HEALTH_PING_INTERVAL_SEC,
+            "latency_ms":   latency_ms,
+        },
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+@app.get("/health/detailed", tags=["System"])
+async def health_detailed():
+    """🔍 Full system health check — includes Node API bridge ping, ML
+    model, scheduler status. There is no direct MongoDB connection left
+    in this service, so "db_status" here reflects the Node.js API's
+    reachability (same dependency that every route in this file relies
+    on for reads/writes)."""
     scheduler  = get_scheduler_status()
     ml_handler = get_model_handler()
     ml_info    = ml_handler.get_info()
 
     db_status = "healthy"
     try:
-        hr_db = get_hr_db()
-        await hr_db.db.command("ping")
+        client = get_node_api_client()
+        ping_result = await client.ping(timeout_sec=3.0)
+        if not ping_result.get("reachable"):
+            db_status = f"degraded: {ping_result.get('error', 'unreachable')}"
     except Exception as e:
         db_status = f"degraded: {e}"
+
+    redis_status = "healthy" if await get_cache_manager().ping() else "degraded: unreachable (fallback active)"
 
     overall = "healthy" if db_status == "healthy" else "degraded"
     return {
         "status":          overall,
-        "version":         "6.1.0",
-        "database":        "MongoDB Atlas",
+        "version":         "6.5.0",
+        "database":        "Node.js/Express REST API",
         "db_status":       db_status,
         "pipeline":        "active",
         "llm_provider":    settings.LLM_PROVIDER,
@@ -870,7 +1353,47 @@ async def health():
             "roc_auc":    ml_info.get("roc_auc"),
             "trained_at": ml_info.get("trained_at"),
         },
+        "cache": {"redis": redis_status},
         "timestamp":       datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@app.get("/health/node-api", tags=["System"])
+async def health_node_api():
+    """
+    🔌 v6.4 — Node.js API Bridge health check.
+    Reports whether the Node.js/Express HR+Finance REST API
+    (NODE_API_BASE_URL) is currently reachable, plus the AI Agent's
+    circuit-breaker state for it. This is now this service's ONLY data
+    dependency — there is no MongoDB fallback.
+
+    - reachable: false + circuit not open  -> transient, or NODE_API_BASE_URL
+      is misconfigured. Check NODE_API_BASE_URL and that the Node.js
+      process is actually running on that host/port.
+    - circuit.open: true -> the bridge has seen NODE_API_CB_FAILURE_THRESHOLD
+      consecutive failures and is failing fast for NODE_API_CB_COOLDOWN_SEC
+      to avoid piling up latency against a dead backend. It will
+      automatically retry after the cooldown.
+    """
+    client = get_node_api_client()
+    ping_result = await client.ping()
+    circuit = client.circuit_status
+
+    overall = "healthy"
+    if circuit.get("open"):
+        overall = "degraded: circuit breaker open"
+    elif not ping_result.get("reachable"):
+        overall = "degraded: unreachable"
+
+    return {
+        "status":        overall,
+        "base_url":      os.getenv("NODE_API_BASE_URL", "http://localhost:5005/v1"),
+        "reachable":     ping_result.get("reachable"),
+        "latency_ms":    ping_result.get("latency_ms"),
+        "error":         ping_result.get("error"),
+        "circuit_breaker": circuit,
+        "tools_registered": len(NODE_API_TOOLS),
+        "timestamp":     datetime.utcnow().isoformat() + "Z",
     }
 
 
@@ -882,8 +1405,6 @@ async def health():
 async def trigger_run_now(job_name: str):
     jobs = {
         "leaves":           job_scan_pending_leaves,
-        "tickets":          job_scan_pending_tickets,
-        "leads":            job_scan_new_leads,
         "events":           job_process_event_queue,
         "salary-reviews":   job_scan_pending_salary_reviews,
         "incentives":       job_scan_pending_incentives,
@@ -917,28 +1438,34 @@ async def trigger_events_history(event_type: Optional[str] = None, limit: int = 
 # ─────────────────────────────────────────────────────────────────────────────
 # Employees
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ v6.5: DISABLED. There is no /hr/employees route in hr.routes.js today
+# (confirmed against the actual route file — only leaves, salary-reviews,
+# absence-events, incentive-requests, audit, and balance-audit exist).
+# These endpoints now return 503 instead of silently returning empty data
+# from the Mock collections, so callers get a clear, honest signal instead
+# of a fake "0 employees" response. Re-enable once GET /hr/employees(/:id)
+# exists on the Node side — wire it into NodeHRProxy the same way
+# get_leaves()/get_salary_reviews() etc. are wired, then restore these two
+# routes to call it.
+
+_EMPLOYEES_DISABLED_DETAIL = (
+    "Employees endpoint is disabled: there is no /hr/employees route in "
+    "the Node.js API yet (hr.routes.js only defines leaves, "
+    "salary-reviews, absence-events, incentive-requests, audit, and "
+    "balance-audit). Add GET /hr/employees(/:id) to hr.routes.js + "
+    "hr.controller.js, wire it into core/node_hr_proxy.py, then this "
+    "route can be re-enabled."
+)
+
 
 @app.get("/employees", tags=["HR - Employees"])
-async def list_employees(active_only: bool = True):
-    hr_db = get_hr_db()
-    filt  = {"status": "active"} if active_only else {}
-    cursor = hr_db.db["employees"].find(filt).sort("name", 1)
-    employees = await cursor.to_list(None)
-    employees = [hr_db._serialize(e) for e in employees]
-    return {"count": len(employees), "employees": employees}
+async def list_employees(active_only: bool = True, limit: int = 100, skip: int = 0):
+    raise HTTPException(status_code=503, detail=_EMPLOYEES_DISABLED_DETAIL)
 
 
 @app.get("/employees/{employee_id}", tags=["HR - Employees"])
 async def get_employee_by_id(employee_id: str):
-    hr_db = get_hr_db()
-    try:
-        from bson import ObjectId
-        emp = await hr_db.db["employees"].find_one({"_id": ObjectId(employee_id)})
-    except Exception:
-        emp = await hr_db.db["employees"].find_one({"employee_id": employee_id})
-    if not emp:
-        raise HTTPException(status_code=404, detail=f"Employee {employee_id} not found")
-    return hr_db._serialize(emp)
+    raise HTTPException(status_code=503, detail=_EMPLOYEES_DISABLED_DETAIL)
 
 
 @app.get("/employees/{employee_id}/leaves", tags=["HR - Leaves"])
@@ -965,6 +1492,10 @@ async def get_employee_balance_history(employee_id: str, limit: int = 20):
 
 @app.get("/employees/{employee_id}/salary-reviews", tags=["HR - Employees"])
 async def employee_salary_history(employee_id: str):
+    """⚠️ v6.5: uses NodeHRProxy.get_employee_salary_reviews() — there is
+    no /hr/salary-reviews/employee/:id route in Node, so this fetches
+    GET /hr/salary-reviews and filters by employee_id client-side. See
+    node_hr_proxy.py docstring for the tradeoffs (N+1-ish, capped scan)."""
     hr_db   = get_hr_db()
     reviews = await hr_db.get_employee_salary_reviews(employee_id)
     return {"employee_id": employee_id, "count": len(reviews), "reviews": reviews}
@@ -972,6 +1503,9 @@ async def employee_salary_history(employee_id: str):
 
 @app.get("/employees/{employee_id}/incentives", tags=["HR - Employees"])
 async def employee_incentive_history(employee_id: str):
+    """⚠️ v6.5: uses NodeHRProxy.get_employee_incentives() — same
+    client-side-filter caveat as salary-reviews above (no
+    /hr/incentive-requests/employee/:id route in Node yet)."""
     hr_db      = get_hr_db()
     incentives = await hr_db.get_employee_incentives(employee_id)
     total_approved = sum(
@@ -1008,7 +1542,7 @@ async def employee_absence_history(employee_id: str, limit: int = 50):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def poll_leave_decision(leave_id: str, timeout: int = 30) -> dict:
-    """Polls MongoDB until leave status changes from pending/in_progress."""
+    """Polls the Node.js API until leave status changes from pending/in_progress."""
     hr_db    = get_hr_db()
     start    = asyncio.get_event_loop().time()
     interval = 0.5
@@ -1067,78 +1601,71 @@ async def _poll_until_terminal(
 # Leaves — Submit (Sync)  *** v6.1 FIX B1: Direct Workflow ***
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.post("/leaves/submit", status_code=status.HTTP_201_CREATED, tags=["HR - Leaves"])
+async def _finalize_leave_submission_bg(leave_id: str, payload: dict) -> None:
+    """
+    v6.3 fix: _create_mongo_event() used to be awaited inside the route,
+    as a SECOND blocking round-trip before the 202 could go out — even
+    though nothing reads it back before the workflow runs. It's
+    audit/history-only, so it now happens here, after the response.
+    v6.5: writes go through hr_db.write_hr_audit() (POST /hr/audit) —
+    there's no generic /hr/events route in Node, so the event-log
+    concept is folded into the same HR audit trail Node already exposes.
+    """
+    event_id = None
+    try:
+        event_id = await _log_hr_event(
+            event_type="leave_requested",
+            entity="leaves",
+            entity_id=leave_id,
+            payload={
+                "leave_id":      leave_id,
+                "employee_id":   payload.get("employee_id"),
+                "employee_name": payload.get("employee_name") or "",
+                "leave_days":    payload.get("requested_days"),
+                "leave_type":    payload.get("leave_type"),
+                "leave_balance": payload.get("leave_balance"),
+                "reason":        payload.get("reason"),
+                "source":        "async_bg_v6.5",
+            },
+        )
+    except Exception as e:
+        logger.warning("⚠️ [leave-bg] event log write failed for #%s: %s", leave_id, e)
+
+    await _run_leave_workflow_bg(leave_id, event_id, payload)
+
+
+@app.post("/leaves/submit", status_code=status.HTTP_202_ACCEPTED, tags=["HR - Leaves"])
 async def submit_leave_sync(body: LeaveApprovalRequest, background_tasks: BackgroundTasks):
-    """🧠 Submit leave request — AI decision returned immediately (Direct Workflow v6.1)."""
+    """
+    🧠 Submit leave request — AI processed in background (v6.3).
+    Returns 202 Accepted immediately (< 200ms target).
+    v6.5: create_leave_request() now routes through NodeHRProxy
+    (POST /hr/leaves) instead of a direct Motor insert.
+    Poll: GET /leaves/{leave_id}/decision
+    """
     hr_db = get_hr_db()
 
     leave_data = body.dict()
     leave_data["leave_days"] = leave_data.pop("requested_days")
     leave_id = await hr_db.create_leave_request(leave_data)
 
-    # Store event for audit trail — but don't process via event bus
-    # v6.1 FIX B1: bypass event_bus idempotency by calling workflow directly
-    event_id = await _create_mongo_event(
-        event_type="leave_requested",
-        entity="leaves",
-        entity_id=leave_id,
-        payload={
-            "leave_id":      leave_id,
-            "employee_id":   body.employee_id,
-            "employee_name": body.employee_name or "",
-            "leave_days":    body.requested_days,
-            "leave_type":    body.leave_type,
-            "leave_balance": body.leave_balance,
-            "reason":        body.reason,
-            "source":        "sync_api_direct",
-        },
-    )
-
     logger.info(
-        "📋 [submit-v6.1] Leave #%s | event #%s | employee=%s — calling workflow directly",
-        leave_id, event_id, body.employee_id,
+        "📋 [submit-v6.5] Leave #%s | employee=%s — queued for background",
+        leave_id, body.employee_id,
     )
 
-    # v6.1 FIX B1: Direct workflow call (no event bus, no polling, no idempotency issues)
-    try:
-        from workflows.hr.leave_approval_workflow import LeaveApprovalWorkflow
-        workflow = LeaveApprovalWorkflow()
-        workflow_payload = {
-            **body.dict(),
-            "leave_id":       leave_id,
-            "requested_days": body.requested_days,
-        }
-        result   = await workflow.async_run(workflow_payload)
-        decision = result.get("decision", "unknown")
-    except Exception as e:
-        logger.error("[submit] Direct workflow failed for leave #%s: %s", leave_id, e)
-        result   = {"decision": "processing", "error": str(e)}
-        decision = "processing"
+    # Event-log write + AI workflow both run AFTER the response — client does NOT wait
+    background_tasks.add_task(_finalize_leave_submission_bg, leave_id, body.dict())
 
-    # Mark event as processed
-    await _create_mongo_event(
-        event_type="leave_processed",
-        entity="leaves",
-        entity_id=leave_id,
-        payload={"decision": decision, "source": "direct_workflow", "event_ref": event_id},
-    )
-
-    background_tasks.add_task(
-        _write_mongo_audit,
-        action       = f"leave_submit_{decision}",
-        entity       = "leaves",
-        entity_id    = leave_id,
-        performed_by = "direct_workflow_v6.1",
-        details      = f"direct_submit | decision={decision} | event_id={event_id}",
-    )
-
-    result["leave_id"]  = leave_id
-    result["event_id"]  = event_id
-    result["submitted"] = True
-
-    logger.info("✅ [submit-v6.1] Leave #%s -> %s (direct workflow)", leave_id, decision)
-    return result
-
+    return {
+        "message":      "Leave request accepted — AI agent will process in background",
+        "leave_id":     leave_id,
+        "db_status":    "pending",
+        "submitted":    True,
+        "decision_url": f"/leaves/{leave_id}/decision",
+        "note":         "Poll /leaves/{leave_id}/decision to get the AI result",
+        "version":      "v6.5-node-api",
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Leaves — Async (background)
@@ -1151,7 +1678,7 @@ async def submit_leave_async(body: LeaveRequest, background_tasks: BackgroundTas
     leave_data["leave_days"] = leave_data.pop("requested_days")
     leave_id   = await hr_db.create_leave_request(leave_data)
 
-    event_id = await _create_mongo_event(
+    event_id = await _log_hr_event(
         event_type="leave_requested",
         entity="leaves",
         entity_id=leave_id,
@@ -1163,7 +1690,7 @@ async def submit_leave_async(body: LeaveRequest, background_tasks: BackgroundTas
     )
 
     background_tasks.add_task(
-        _write_mongo_audit,
+        _write_hr_audit,
         action       = "leave_request_submitted_async",
         entity       = "leaves",
         entity_id    = leave_id,
@@ -1224,7 +1751,7 @@ async def get_leave_decision(leave_id: str):
     if current_status == "pending":
         logger.info("🔄 Leave #%s is pending — triggering event queue on-demand", leave_id)
         try:
-            event_id = await _create_mongo_event(
+            event_id = await _log_hr_event(
                 event_type="leave_requested",
                 entity="leaves",
                 entity_id=leave_id,
@@ -1289,7 +1816,7 @@ async def update_leave(leave_id: str, body: LeaveStatusUpdate, background_tasks:
     if not updated:
         raise HTTPException(status_code=500, detail="Failed to update leave status")
     background_tasks.add_task(
-        _write_mongo_audit,
+        _write_hr_audit,
         action       = f"leave_{body.status}",
         entity       = "leaves",
         entity_id    = leave_id,
@@ -1316,52 +1843,79 @@ _ABSENCE_TERMINAL   = {
 # Salary Reviews  *** v6.1 FIX B1: Direct Workflow ***
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.post("/salary-reviews/submit", status_code=status.HTTP_201_CREATED, tags=["HR - Salary Reviews"])
-async def submit_salary_review(body: SalaryReviewRequest, background_tasks: BackgroundTasks):
-    """💰 Submit Salary Review — AI decision returned immediately (Direct Workflow v6.1)."""
-    hr_db     = get_hr_db()
-    review_id = await hr_db.create_salary_review(body.dict())
+async def _run_salary_workflow_bg(review_id: str, event_id: str, payload: dict) -> None:
+    """Background task: runs SalaryReviewWorkflow and persists the result."""
+    
+    # ✅ Idempotency guard — منع double run
+    hr_db = get_hr_db()
+    current = await hr_db.get_salary_review(review_id)
+    if current and current.get("status") in _SALARY_TERMINAL:
+        logger.info(
+            "⏭️ [salary-bg] Review #%s already terminal (%s) — skipping duplicate run",
+            review_id, current.get("status"),
+        )
+        return
 
-    event_id = await _create_mongo_event(
-        event_type="salary_review",
-        entity="salary_reviews",
-        entity_id=review_id,
-        payload={**body.dict(), "review_id": review_id, "source": "sync_api_direct"},
-    )
-
-    logger.info(
-        "💰 [salary-submit-v6.1] Review #%s | event #%s | employee=%s — calling workflow directly",
-        review_id, event_id, body.employee_id,
-    )
-
-    # v6.1 FIX B1: Direct workflow call
     try:
         from workflows.hr.leave_approval_workflow import SalaryReviewWorkflow
         workflow = SalaryReviewWorkflow()
-        workflow_payload = {**body.dict(), "review_id": review_id}
+        workflow_payload = {**payload, "review_id": review_id}
         result   = await workflow.async_run(workflow_payload)
         decision = result.get("decision", "unknown")
+        logger.info("✅ [salary-bg] Review #%s -> %s", review_id, decision)
     except Exception as e:
-        logger.error("[salary-submit] Direct workflow failed for review #%s: %s", review_id, e)
-        result   = {"decision": "processing", "error": str(e)}
+        logger.error("❌ [salary-bg] Workflow failed for review #%s: %s", review_id, e)
         decision = "processing"
 
-    background_tasks.add_task(
-        _write_mongo_audit,
+    await _write_hr_audit(
         action       = f"salary_review_submit_{decision}",
         entity       = "salary_reviews",
         entity_id    = review_id,
-        performed_by = "direct_workflow_v6.1",
+        performed_by = "bg_workflow_v6.5",
         details      = f"event_id={event_id} | decision={decision}",
     )
 
-    result["review_id"]   = review_id
-    result["event_id"]    = event_id
-    result["submitted"]   = True
-    result["explain_url"] = f"/salary-reviews/{review_id}/explain"
 
-    logger.info("✅ [salary-submit-v6.1] Review #%s -> %s (direct workflow)", review_id, decision)
-    return result
+async def _finalize_salary_submission_bg(review_id: str, payload: dict) -> None:
+    """v6.5: event-log write goes through hr_db.write_hr_audit() — no
+    generic /hr/events route in Node."""
+    event_id = None
+    try:
+        event_id = await _log_hr_event(
+            event_type="salary_review",
+            entity="salary_reviews",
+            entity_id=review_id,
+            payload={**payload, "review_id": review_id, "source": "async_bg_v6.5"},
+        )
+    except Exception as e:
+        logger.warning("⚠️ [salary-bg] event log write failed for #%s: %s", review_id, e)
+
+    await _run_salary_workflow_bg(review_id, event_id, payload)
+
+
+@app.post("/salary-reviews/submit", status_code=status.HTTP_202_ACCEPTED, tags=["HR - Salary Reviews"])
+async def submit_salary_review(body: SalaryReviewRequest, background_tasks: BackgroundTasks):
+    """💰 Submit Salary Review — accepted instantly, AI processes in background.
+    v6.5: create_salary_review() routes through NodeHRProxy (POST /hr/salary-reviews)."""
+    hr_db     = get_hr_db()
+    review_id = await hr_db.create_salary_review(body.dict())
+
+    logger.info(
+        "💰 [salary-submit] Review #%s | employee=%s — queued for background",
+        review_id, body.employee_id,
+    )
+
+    background_tasks.add_task(_finalize_salary_submission_bg, review_id, body.dict())
+
+    return {
+        "message":      "Salary review accepted — AI agent will process in background",
+        "review_id":    review_id,
+        "db_status":    "pending",
+        "submitted":    True,
+        "decision_url": f"/salary-reviews/{review_id}/decision",
+        "explain_url":  f"/salary-reviews/{review_id}/explain",
+        "note":         "Poll /salary-reviews/{review_id}/decision to get the AI result",
+    }
 
 
 @app.get("/salary-reviews/pending", tags=["HR - Salary Reviews"])
@@ -1379,7 +1933,6 @@ async def get_salary_review_by_id(review_id: str):
         raise HTTPException(status_code=404, detail="Salary review not found")
     return review
 
-
 @app.get("/salary-reviews/{review_id}/decision", tags=["HR - Salary Reviews"])
 async def get_salary_review_decision(review_id: str):
     hr_db  = get_hr_db()
@@ -1387,6 +1940,7 @@ async def get_salary_review_decision(review_id: str):
     if not review:
         raise HTTPException(status_code=404, detail=f"Salary review #{review_id} not found")
 
+    # ✅ Already terminal — return immediately
     if review.get("status") in _SALARY_TERMINAL:
         return {
             "review_id": review_id,
@@ -1396,32 +1950,45 @@ async def get_salary_review_decision(review_id: str):
         }
 
     if review.get("status") == "pending":
-        try:
-            await _create_mongo_event(
-                event_type="salary_review",
-                entity="salary_reviews",
-                entity_id=review_id,
-                payload={
-                    "review_id":               review_id,
-                    "employee_id":             str(review.get("employee_id", "")),
-                    "employee_name":           review.get("employee_name", ""),
-                    "current_salary_egp":      float(review.get("current_salary_egp", 0)),
-                    "requested_increment_pct": float(review.get("requested_increment_pct", 0.10)),
-                    "kpi_achievement":         float(review.get("kpi_achievement", 0.80)),
-                    "budget_utilization":      float(review.get("budget_utilization", 0.80)),
-                    "is_on_pip":               bool(review.get("is_on_pip", False)),
-                    "is_on_probation":         bool(review.get("is_on_probation", False)),
-                    "performance_score":       float(review.get("performance_score") or 0.75),
-                    "source":                  "on_demand",
-                },
+        # ✅ FIX 2a: زوّد الانتظار لـ 45 ثانية (Gemini calls بتاخد 15-30s)
+        logger.info("⏳ [on-demand] Salary review #%s — waiting up to 45s for background workflow...", review_id)
+        for i in range(45):
+            await asyncio.sleep(1)
+            review = await hr_db.get_salary_review(review_id)
+            if review.get("status") in _SALARY_TERMINAL:
+                logger.info(
+                    "✅ [on-demand] Review #%s resolved after %ds: %s",
+                    review_id, i + 1, review.get("status"),
+                )
+                break
+
+        # ✅ FIX 2b: بس لو فضل pending بعد 45 ثانية — شغّل on-demand
+        # (مش قبل — لأن الـ background workflow غالبًا لسه شغال)
+        if review.get("status") not in _SALARY_TERMINAL:
+            logger.warning(
+                "⚠️ [on-demand] Review #%s still pending after 45s — "
+                "background workflow may have failed, running on-demand",
+                review_id,
             )
-            await job_process_event_queue()
-        except Exception as e:
-            logger.error("❌ On-demand salary trigger failed for #%s: %s", review_id, e)
+            try:
+                background_payload = {**review, "review_id": review_id}
+                await _run_salary_workflow_bg(review_id, None, background_payload)
+            except Exception as e:
+                logger.error("❌ On-demand salary workflow failed for #%s: %s", review_id, e)
 
-    review = await hr_db.get_salary_review(review_id)
-    return {"review_id": review_id, "status": review.get("status"), "review": review}
+        review = await hr_db.get_salary_review(review_id)
+        return {
+            "review_id": review_id,
+            "decision":  review.get("ai_decision"),
+            "status":    review.get("status"),
+            "review":    review,
+        }
 
+    return {
+        "review_id": review_id,
+        "status":    review.get("status"),
+        "review":    review,
+    }
 
 @app.get("/salary-reviews/{review_id}/audit", tags=["HR - Salary Reviews"])
 async def get_salary_review_audit(review_id: str):
@@ -1480,7 +2047,7 @@ async def get_decision_engine_thresholds():
         LEVEL_INCREMENT_CAPS,
     )
     return {
-        "version": "v6.1",
+        "version": "v6.5",
         "description": "Priority-based multi-factor salary decision engine",
         "priority_rules": {
             "P0": {"trigger": "is_on_pip = true",           "decision": "reject",               "confidence": "0.97"},
@@ -1514,52 +2081,107 @@ async def get_decision_engine_thresholds():
 # Incentive Requests  *** v6.1 FIX B1: Direct Workflow ***
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.post("/incentives/submit", status_code=status.HTTP_201_CREATED, tags=["HR - Incentives"])
-async def submit_incentive_request(body: IncentiveRequest, background_tasks: BackgroundTasks):
-    """🏆 Submit Incentive Request — AI decision returned immediately (Direct Workflow v6.1)."""
-    hr_db        = get_hr_db()
-    incentive_id = await hr_db.create_incentive_request(body.dict())
+async def _run_incentive_workflow_bg(incentive_id: str, event_id: str, payload: dict) -> None:
+    """Background task: runs IncentiveWorkflow and persists the result."""
+    
+    hr_db = get_hr_db()
+    current = await hr_db.get_incentive_request(incentive_id)
+    if current and current.get("status") in _INCENTIVE_TERMINAL:
+        logger.info("⏭️ [incentive-bg] Incentive #%s already terminal — skipping", incentive_id)
+        return
 
-    event_id = await _create_mongo_event(
-        event_type="incentive_request",
-        entity="incentive_requests",
-        entity_id=incentive_id,
-        payload={**body.dict(), "incentive_id": incentive_id, "source": "sync_api_direct"},
-    )
-
-    logger.info(
-        "🏆 [incentive-submit-v6.1] #%s | event #%s | employee=%s — calling workflow directly",
-        incentive_id, event_id, body.employee_id,
-    )
-
-    # v6.1 FIX B1: Direct workflow call
     try:
         from workflows.hr.leave_approval_workflow import IncentiveWorkflow
         workflow = IncentiveWorkflow()
-        workflow_payload = {**body.dict(), "incentive_id": incentive_id}
+        workflow_payload = {**payload, "incentive_id": incentive_id}
         result   = await workflow.async_run(workflow_payload)
         decision = result.get("decision", "unknown")
+        logger.info("✅ [incentive-bg] #%s -> %s", incentive_id, decision)
     except Exception as e:
-        logger.error("[incentive-submit] Direct workflow failed for #%s: %s", incentive_id, e)
-        result   = {"decision": "processing", "error": str(e)}
+        logger.error("❌ [incentive-bg] Workflow failed for #%s: %s", incentive_id, e)
         decision = "processing"
 
-    background_tasks.add_task(
-        _write_mongo_audit,
+    await _write_hr_audit(
         action       = f"incentive_submit_{decision}",
         entity       = "incentive_requests",
         entity_id    = incentive_id,
-        performed_by = "direct_workflow_v6.1",
-        details      = f"type={body.incentive_type} | decision={decision} | event_id={event_id}",
+        performed_by = "bg_workflow_v6.5",
+        details      = f"type={payload.get('incentive_type', '')} | decision={decision} | event_id={event_id}",
     )
 
-    result["incentive_id"]   = incentive_id
-    result["incentive_type"] = body.incentive_type
-    result["event_id"]       = event_id
-    result["submitted"]      = True
 
-    logger.info("✅ [incentive-submit-v6.1] #%s -> %s (direct workflow)", incentive_id, decision)
-    return result
+async def _run_leave_workflow_bg(leave_id: str, event_id: str, payload: dict) -> None:
+    """
+    Background task: LeaveApprovalWorkflow — runs after 202 Accepted returns.
+    Same pattern as _run_salary_workflow_bg.
+    """
+
+    hr_db = get_hr_db()
+    current = await hr_db.get_leave(leave_id)
+    if current and current.get("status") in {"approved", "rejected", "escalated"}:
+        logger.info("⏭️ [leave-bg] Leave #%s already terminal — skipping", leave_id)
+        return
+    t_start = _monotime.perf_counter()
+    try:
+        from workflows.hr.leave_approval_workflow import LeaveApprovalWorkflow
+        workflow = LeaveApprovalWorkflow()
+        workflow_payload = {**payload, "leave_id": leave_id}
+        result   = await workflow.async_run(workflow_payload)
+        decision = result.get("decision", "unknown")
+        latency_ms = int((_monotime.perf_counter() - t_start) * 1000)
+        logger.info("✅ [leave-bg] Leave #%s -> %s | latency=%dms", leave_id, decision, latency_ms)
+    except Exception as e:
+        logger.error("❌ [leave-bg] Workflow failed for #%s: %s", leave_id, e)
+        decision   = "processing"
+        latency_ms = 0
+
+    await _write_hr_audit(
+        action       = f"leave_submit_{decision}",
+        entity       = "leaves",
+        entity_id    = leave_id,
+        performed_by = "bg_workflow_v6.5",
+        details      = f"decision={decision} | event_id={event_id} | latency_ms={latency_ms}",
+    )
+
+
+async def _finalize_incentive_submission_bg(incentive_id: str, payload: dict) -> None:
+    """v6.5: event-log write goes through hr_db.write_hr_audit()."""
+    event_id = None
+    try:
+        event_id = await _log_hr_event(
+            event_type="incentive_request",
+            entity="incentive_requests",
+            entity_id=incentive_id,
+            payload={**payload, "incentive_id": incentive_id, "source": "async_bg_v6.5"},
+        )
+    except Exception as e:
+        logger.warning("⚠️ [incentive-bg] event log write failed for #%s: %s", incentive_id, e)
+
+    await _run_incentive_workflow_bg(incentive_id, event_id, payload)
+
+
+@app.post("/incentives/submit", status_code=status.HTTP_202_ACCEPTED, tags=["HR - Incentives"])
+async def submit_incentive_request(body: IncentiveRequest, background_tasks: BackgroundTasks):
+    """🏆 Submit Incentive Request — accepted instantly, AI processes in background."""
+    hr_db        = get_hr_db()
+    incentive_id = await hr_db.create_incentive_request(body.dict())
+
+    logger.info(
+        "🏆 [incentive-submit] #%s | employee=%s — queued for background",
+        incentive_id, body.employee_id,
+    )
+
+    background_tasks.add_task(_finalize_incentive_submission_bg, incentive_id, body.dict())
+
+    return {
+        "message":        "Incentive request accepted — AI agent will process in background",
+        "incentive_id":   incentive_id,
+        "incentive_type": body.incentive_type,
+        "db_status":      "pending",
+        "submitted":      True,
+        "decision_url":   f"/incentives/{incentive_id}/decision",
+        "note":           "Poll /incentives/{incentive_id}/decision to get the AI result",
+    }
 
 
 @app.get("/incentives/pending", tags=["HR - Incentives"])
@@ -1596,7 +2218,7 @@ async def get_incentive_decision(incentive_id: str):
 
     if req.get("status") == "pending":
         try:
-            await _create_mongo_event(
+            await _log_hr_event(
                 event_type="incentive_request",
                 entity="incentive_requests",
                 entity_id=incentive_id,
@@ -1643,9 +2265,53 @@ async def get_incentive_audit(incentive_id: str):
 # Absence Events  *** v6.1 FIX B1: Direct Workflow ***
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.post("/absences/submit", status_code=status.HTTP_201_CREATED, tags=["HR - Absence Management"])
+async def _run_absence_workflow_bg(absence_id: str, event_id: str, absence_data: dict) -> None:
+    """Background task: runs AbsenceWorkflow and persists the result."""
+    try:
+        from workflows.hr.leave_approval_workflow import AbsenceWorkflow
+        workflow = AbsenceWorkflow()
+        workflow_payload = {**absence_data, "absence_id": absence_id}
+        result   = await workflow.async_run(workflow_payload)
+        decision = result.get("decision", "unknown")
+        logger.info("✅ [absence-bg] #%s -> %s", absence_id, decision)
+    except Exception as e:
+        logger.error("❌ [absence-bg] Workflow failed for #%s: %s", absence_id, e)
+        decision = "processing"
+
+    await _write_hr_audit(
+        action       = f"absence_submit_{decision}",
+        entity       = "absence_events",
+        entity_id    = absence_id,
+        performed_by = "bg_workflow_v6.5",
+        details      = f"type={absence_data.get('absence_type_claimed', '')} | decision={decision} | event_id={event_id}",
+    )
+
+
+async def _finalize_absence_submission_bg(absence_id: str, absence_data: dict) -> None:
+    """v6.5: event-log write goes through hr_db.write_hr_audit()."""
+    event_id = None
+    try:
+        event_id = await _log_hr_event(
+            event_type="absence_event",
+            entity="absence_events",
+            entity_id=absence_id,
+            payload={**absence_data, "absence_id": absence_id, "source": "async_bg_v6.5"},
+        )
+    except Exception as e:
+        logger.warning("⚠️ [absence-bg] event log write failed for #%s: %s", absence_id, e)
+
+    await _run_absence_workflow_bg(absence_id, event_id, absence_data)
+
+
+@app.post("/absences/submit", status_code=status.HTTP_202_ACCEPTED, tags=["HR - Absence Management"])
 async def submit_absence_event(body: AbsenceEventRequest, background_tasks: BackgroundTasks):
-    """🚫 Submit Absence Event — AI decision returned immediately (Direct Workflow v6.1)."""
+    """🚫 Submit Absence Event — accepted instantly, AI processes in background.
+    The live unexcused-count read stays in the hot path on purpose — it
+    feeds absence_data, which both the stored document and the AI workflow
+    depend on, so it has to resolve before we can create the record.
+    v6.5: get_employee_unexcused_count_90d() now derives the count from
+    GET /hr/absence-events/employee/:id (via NodeHRProxy) instead of a
+    direct Motor aggregate."""
     hr_db = get_hr_db()
 
     live_unexcused_90d = body.unexcused_count_90d
@@ -1665,47 +2331,24 @@ async def submit_absence_event(body: AbsenceEventRequest, background_tasks: Back
     absence_data["unexcused_count_90d"] = live_unexcused_90d
 
     absence_id = await hr_db.create_absence_event(absence_data)
-    event_id   = await _create_mongo_event(
-        event_type="absence_event",
-        entity="absence_events",
-        entity_id=absence_id,
-        payload={**absence_data, "absence_id": absence_id, "source": "sync_api_direct"},
-    )
 
     logger.info(
-        "🚫 [absence-submit-v6.1] #%s | event #%s | employee=%s — calling workflow directly",
-        absence_id, event_id, body.employee_id,
+        "🚫 [absence-submit] #%s | employee=%s — queued for background",
+        absence_id, body.employee_id,
     )
 
-    # v6.1 FIX B1: Direct workflow call
-    try:
-        from workflows.hr.leave_approval_workflow import AbsenceWorkflow
-        workflow = AbsenceWorkflow()
-        workflow_payload = {**absence_data, "absence_id": absence_id}
-        result   = await workflow.async_run(workflow_payload)
-        decision = result.get("decision", "unknown")
-    except Exception as e:
-        logger.error("[absence-submit] Direct workflow failed for #%s: %s", absence_id, e)
-        result   = {"decision": "processing", "error": str(e)}
-        decision = "processing"
+    background_tasks.add_task(_finalize_absence_submission_bg, absence_id, absence_data)
 
-    background_tasks.add_task(
-        _write_mongo_audit,
-        action       = f"absence_submit_{decision}",
-        entity       = "absence_events",
-        entity_id    = absence_id,
-        performed_by = "direct_workflow_v6.1",
-        details      = f"type={body.absence_type_claimed} | decision={decision} | event_id={event_id}",
-    )
-
-    result["absence_id"]   = absence_id
-    result["absence_date"] = str(body.absence_date)
-    result["absence_type"] = body.absence_type_claimed
-    result["event_id"]     = event_id
-    result["submitted"]    = True
-
-    logger.info("✅ [absence-submit-v6.1] #%s -> %s (direct workflow)", absence_id, decision)
-    return result
+    return {
+        "message":      "Absence event accepted — AI agent will process in background",
+        "absence_id":   absence_id,
+        "absence_date": str(body.absence_date),
+        "absence_type": body.absence_type_claimed,
+        "db_status":    "pending",
+        "submitted":    True,
+        "decision_url": f"/absences/{absence_id}/decision",
+        "note":         "Poll /absences/{absence_id}/decision to get the AI result",
+    }
 
 
 @app.get("/absences/pending", tags=["HR - Absence Management"])
@@ -1713,6 +2356,7 @@ async def list_pending_absences():
     hr_db  = get_hr_db()
     events = await hr_db.get_pending_absence_events()
     return {"count": len(events), "absences": events}
+
 
 
 @app.get("/absences/{absence_id}", tags=["HR - Absence Management"])
@@ -1744,7 +2388,7 @@ async def get_absence_decision(absence_id: str):
 
     if event.get("status") == "pending":
         try:
-            await _create_mongo_event(
+            await _log_hr_event(
                 event_type="absence_event",
                 entity="absence_events",
                 entity_id=absence_id,
@@ -1790,204 +2434,111 @@ async def get_absence_audit(absence_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tickets
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.post("/tickets", status_code=status.HTTP_201_CREATED, tags=["Support - Tickets"])
-async def create_support_ticket(body: TicketCreate, background_tasks: BackgroundTasks):
-    hr_db = get_hr_db()
-    doc   = {
-        **body.dict(),
-        "status":     "pending",
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
-    }
-    result    = await hr_db.db["tickets"].insert_one(doc)
-    ticket_id = str(result.inserted_id)
-
-    event_id = await _create_mongo_event(
-        event_type="ticket_created",
-        entity="tickets",
-        entity_id=ticket_id,
-        payload={"priority": body.priority, "customer_id": body.customer_id},
-    )
-    background_tasks.add_task(
-        event_bus.publish,
-        "ticket_created",
-        {"ticket_id": ticket_id, "event_id": event_id, **body.dict(), "source": "api"},
-    )
-    background_tasks.add_task(
-        _write_mongo_audit,
-        action       = "ticket_created",
-        entity       = "tickets",
-        entity_id    = ticket_id,
-        performed_by = f"customer_{body.customer_id or 'anonymous'}",
-        details      = body.subject,
-    )
-    logger.info("🎫 Ticket #%s created — priority: %s", ticket_id, body.priority)
-    return {
-        "message":   "Ticket created",
-        "ticket_id": ticket_id,
-        "event_id":  event_id,
-        "priority":  body.priority,
-        "next":      "Support agent will process this automatically",
-    }
-
-
-@app.get("/tickets/pending", tags=["Support - Tickets"])
-async def list_pending_tickets():
-    hr_db   = get_hr_db()
-    cursor  = hr_db.db["tickets"].find({"status": "pending"}).sort("created_at", 1)
-    tickets = [hr_db._serialize(t) async for t in cursor]
-    return {"count": len(tickets), "tickets": tickets}
-
-
-@app.patch("/tickets/{ticket_id}/status", tags=["Support - Tickets"])
-async def update_ticket(ticket_id: str, status_str: str, resolution: str = ""):
-    from bson import ObjectId
-    hr_db  = get_hr_db()
-    result = await hr_db.db["tickets"].update_one(
-        {"_id": ObjectId(ticket_id)},
-        {"$set": {"status": status_str, "resolution": resolution, "updated_at": datetime.utcnow()}},
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    return {"ticket_id": ticket_id, "status": status_str, "updated": True}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Leads
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.post("/leads", status_code=status.HTTP_201_CREATED, tags=["CRM - Leads"])
-async def add_lead(body: LeadCreate, background_tasks: BackgroundTasks):
-    hr_db  = get_hr_db()
-    doc    = {
-        **body.dict(),
-        "status":     "new",
-        "score":      0,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
-    }
-    result  = await hr_db.db["leads"].insert_one(doc)
-    lead_id = str(result.inserted_id)
-
-    event_id = await _create_mongo_event(
-        event_type="lead_added",
-        entity="leads",
-        entity_id=lead_id,
-        payload={"source": body.source, "email": body.email},
-    )
-    background_tasks.add_task(
-        event_bus.publish,
-        "lead_added",
-        {"lead_id": lead_id, "event_id": event_id, **body.dict(), "source": "api"},
-    )
-    background_tasks.add_task(
-        _write_mongo_audit,
-        action       = "lead_created",
-        entity       = "leads",
-        entity_id    = lead_id,
-        performed_by = "crm_api",
-        details      = f"{body.name} — {body.source}",
-    )
-    logger.info("💼 Lead #%s added: %s", lead_id, body.name)
-    return {"message": "Lead added", "lead_id": lead_id, "event_id": event_id, "status": "new"}
-
-
-@app.patch("/leads/{lead_id}/status", tags=["CRM - Leads"])
-async def update_lead(lead_id: str, status_str: str, score: int = 0, notes: str = ""):
-    from bson import ObjectId
-    hr_db  = get_hr_db()
-    result = await hr_db.db["leads"].update_one(
-        {"_id": ObjectId(lead_id)},
-        {"$set": {"status": status_str, "score": score, "notes": notes, "updated_at": datetime.utcnow()}},
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Lead not found")
-    return {"lead_id": lead_id, "status": status_str, "score": score}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Events
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ v6.5: DISABLED. There is no /hr/events or generic /events route in
+# Node — hr.routes.js only exposes domain entities (leaves, salary-reviews,
+# absence-events, incentive-requests) plus /hr/audit and /hr/balance-audit.
+# The old Motor-native "events" collection (pending event-bus queue) has no
+# Node equivalent today. Internal event-bus/scheduler processing
+# (job_process_event_queue etc.) is untouched and keeps working — only
+# these two HTTP introspection endpoints are disabled.
+
+_EVENTS_DISABLED_DETAIL = (
+    "Events endpoint is disabled: there is no /hr/events (or generic "
+    "/events) route in the Node.js API. The internal event-bus/scheduler "
+    "queue has no Node-backed equivalent yet. Add one to hr.routes.js if "
+    "you need external visibility into pending events; the trigger "
+    "engine itself is unaffected and keeps running "
+    "(see /trigger/run-now/{job_name})."
+)
+
 
 @app.get("/events/pending", tags=["System - Events"])
-async def list_pending_events():
-    hr_db  = get_hr_db()
-    cursor = hr_db.db["events"].find({"status": "pending"}).sort("created_at", 1)
-    events = [hr_db._serialize(e) async for e in cursor]
-    return {"count": len(events), "events": events}
+async def list_pending_events(limit: int = 50):
+    raise HTTPException(status_code=503, detail=_EVENTS_DISABLED_DETAIL)
 
 
 @app.post("/events/{event_id}/done", tags=["System - Events"])
 async def mark_event_processed(event_id: str, result: str = "success"):
-    from bson import ObjectId
-    hr_db = get_hr_db()
-    await hr_db.db["events"].update_one(
-        {"_id": ObjectId(event_id)},
-        {"$set": {"status": result, "processed_at": datetime.utcnow()}},
-    )
-    return {"event_id": event_id, "marked_as": result}
+    raise HTTPException(status_code=503, detail=_EVENTS_DISABLED_DETAIL)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AI — Decisions & Memory
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ v6.5: DISABLED. There is no generic /hr/decisions route (only
+# /finance/decisions/:entity_id + /finance/decisions/history, which are
+# Finance-specific and already wired via NodeFinanceProxy elsewhere in
+# this file), and no /hr/memory route at all in hr.routes.js.
+
+_HR_DECISIONS_DISABLED_DETAIL = (
+    "Generic HR decision logging is disabled: there is no /hr/decisions "
+    "route in the Node.js API. Finance decisions ARE available via "
+    "/finance/decisions/{entity_id} (see FinanceDecisionEngine routes) "
+    "— this endpoint was for a separate, generic HR decision log that "
+    "has no Node-backed equivalent yet."
+)
+
+_HR_MEMORY_DISABLED_DETAIL = (
+    "Agent memory endpoint is disabled: there is no /hr/memory route in "
+    "the Node.js API (hr.routes.js has no memory concept at all). Add "
+    "one to hr.routes.js + hr.controller.js, wire it into "
+    "core/node_hr_proxy.py, then re-enable this route."
+)
+
 
 @app.post("/decisions", status_code=status.HTTP_201_CREATED, tags=["AI - Decisions"])
 async def record_decision(body: DecisionCreate):
-    hr_db  = get_hr_db()
-    doc    = {**body.dict(), "created_at": datetime.utcnow()}
-    result = await hr_db.db["decisions"].insert_one(doc)
-    return {"decision_id": str(result.inserted_id), "recorded": True}
+    raise HTTPException(status_code=503, detail=_HR_DECISIONS_DISABLED_DETAIL)
 
 
 @app.get("/memory/{agent}", tags=["AI - Memory"])
 async def get_agent_memory(agent: str):
-    hr_db  = get_hr_db()
-    cursor = hr_db.db["memory"].find({"agent": agent})
-    memory = {doc["key"]: doc["value"] async for doc in cursor}
-    return {"agent": agent, "memory": memory}
+    raise HTTPException(status_code=503, detail=_HR_MEMORY_DISABLED_DETAIL)
 
 
 @app.post("/memory/{agent}/{key}", tags=["AI - Memory"])
 async def set_agent_memory(agent: str, key: str, value: str):
-    hr_db = get_hr_db()
-    await hr_db.db["memory"].update_one(
-        {"agent": agent, "key": key},
-        {"$set": {"value": value, "updated_at": datetime.utcnow()}},
-        upsert=True,
-    )
-    return {"agent": agent, "key": key, "saved": True}
+    raise HTTPException(status_code=503, detail=_HR_MEMORY_DISABLED_DETAIL)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Audit
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ v6.5: /audit/logs (generic, cross-domain) is DISABLED — Node only
+# exposes /hr/audit/:domain/:entity_id (domain+entity scoped, e.g.
+# "leave"/"salary"/"absence"/"incentive" + a specific id), not a flat
+# "every audit log in the system" listing. Domain-scoped audit is fully
+# working via get_hr_domain_audit() (used throughout this file, e.g.
+# /leaves/{id}/audit, /salary-reviews/{id}/audit, etc.) — only this
+# generic listing is unavailable.
+# /audit/leaves now uses hr_db.get_leaves() (GET /hr/leaves) instead of
+# the old direct hr_db.leaves.find() Motor cursor.
+
+_AUDIT_LOGS_DISABLED_DETAIL = (
+    "Generic cross-domain audit log listing is disabled: the Node.js API "
+    "only exposes /hr/audit/:domain/:entity_id (scoped to one domain + "
+    "one entity id), not a flat listing of every audit log in the "
+    "system. Domain-scoped audit trails are fully available — see "
+    "/leaves/{id}/audit, /salary-reviews/{id}/audit, "
+    "/incentives/{id}/audit, /absences/{id}/audit."
+)
+
 
 @app.get("/audit/logs", tags=["Audit"])
 async def get_audit_logs(limit: int = 100):
-    hr_db  = get_hr_db()
-    cursor = hr_db.db["audit_logs"].find().sort("created_at", -1).limit(limit)
-    logs   = [hr_db._serialize(l) async for l in cursor]
-    return {"count": len(logs), "logs": logs}
+    raise HTTPException(status_code=503, detail=_AUDIT_LOGS_DISABLED_DETAIL)
 
 
 @app.get("/audit/leaves", tags=["Audit"])
 async def get_leave_records():
+    """v6.5: uses hr_db.get_leaves() (GET /hr/leaves) instead of the old
+    direct hr_db.leaves.find() Motor cursor — NodeHRProxy has no raw
+    collection access, only the REST-backed get_leaves()."""
     hr_db   = get_hr_db()
-    cursor  = hr_db.leaves.find().sort("created_at", -1).limit(200)
-    records = [hr_db._serialize(r) async for r in cursor]
+    records = await hr_db.get_leaves(limit=200)
     return {"count": len(records), "records": records}
-
-
-@app.get("/audit/escalations", tags=["Audit"])
-async def get_escalation_tickets():
-    hr_db   = get_hr_db()
-    cursor  = hr_db.db["tickets"].find({"priority": "urgent"}).sort("created_at", -1)
-    tickets = [hr_db._serialize(t) async for t in cursor]
-    return {"count": len(tickets), "tickets": tickets}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1996,62 +2547,63 @@ async def get_escalation_tickets():
 
 @app.get("/dashboard/stats", tags=["Dashboard"])
 async def dashboard_stats():
-    hr_db     = get_hr_db()
-    scheduler = get_scheduler_status()
-    ml_info   = get_model_handler().get_info()
+    """
+    📊 Reads pre-computed KPIs from hr_db.get_dashboard_kpis() (GET
+    /hr/dashboard via NodeHRProxy). No live Mongo aggregation here.
 
-    pending_leaves   = await hr_db.get_pending_leaves()
-    pending_salaries = await hr_db.get_pending_salary_reviews()
-    pending_incents  = await hr_db.get_pending_incentive_requests()
-    pending_absences = await hr_db.get_pending_absence_events()
+    Fallback: لو الـ KPI مش موجودة أو قديمة، بنحسبها live مرة واحدة.
+    """
+    hr_db = get_hr_db()
+    kpis  = await hr_db.get_dashboard_kpis()
 
-    pending_tickets_cursor = hr_db.db["tickets"].find({"status": "pending"})
-    pending_tickets        = [t async for t in pending_tickets_cursor]
-    new_leads_cursor       = hr_db.db["leads"].find({"status": "new"})
-    new_leads              = [l async for l in new_leads_cursor]
-    pending_events_cursor  = hr_db.db["events"].find({"status": "pending"})
-    pending_events         = [e async for e in pending_events_cursor]
+    STALE_THRESHOLD_SEC = 300   # لو أقدم من 5 دقايق، الـ scheduler غالبًا متعطل
+
+    is_stale = True
+    if kpis and kpis.get("updated_at"):
+        updated_at = kpis["updated_at"]
+        if isinstance(updated_at, datetime):
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            age_sec  = (datetime.now(timezone.utc) - updated_at).total_seconds()
+            is_stale = age_sec > STALE_THRESHOLD_SEC
+        elif isinstance(updated_at, str):
+            # Node API قد يرجع ISO string بدل datetime object
+            is_stale = False  # عندنا timestamp من Node، نثق فيه كـ "حي" افتراضيًا
+
+    if kpis and not is_stale:
+        updated_at = kpis.get("updated_at")
+        return {
+            "timestamp": updated_at.isoformat() if isinstance(updated_at, datetime) else str(updated_at),
+            "stats":     kpis.get("stats", kpis),
+            "_source":   "node_api",
+        }
+
+    # ── Fallback: compute live (only on cold-start or scheduler outage) ────
+    logger.warning(
+        "⚠️ [/dashboard/stats] dashboard_kpis %s — computing live as fallback",
+        "missing" if not kpis else "stale",
+    )
+    from services.kpi_calculator import calculate_dashboard_kpis
+    fresh_kpis = await calculate_dashboard_kpis()
+
+    try:
+        await hr_db.save_dashboard_kpis(fresh_kpis)
+    except Exception as e:
+        logger.debug("save_dashboard_kpis (fallback path) failed: %s", e)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
-        "stats": {
-            "leaves":  {"pending": len(pending_leaves)},
-            "tickets": {
-                "open":   len(pending_tickets),
-                "urgent": sum(1 for t in pending_tickets if t.get("priority") == "urgent"),
-            },
-            "leads": {"new": len(new_leads)},
-            "hr_domains": {
-                "salary_reviews": {"pending": len(pending_salaries)},
-                "incentives":     {"pending": len(pending_incents)},
-                "absences": {
-                    "pending":  len(pending_absences),
-                    "critical": sum(
-                        1 for a in pending_absences
-                        if int(a.get("unexcused_count_90d", 0)) >= 3
-                    ),
-                },
-            },
-            "system": {
-                "pending_events":  len(pending_events),
-                "scheduler_jobs":  scheduler.get("jobs_count", 0),
-                "trigger_running": scheduler.get("running", False),
-            },
-            "ml_model": {
-                "loaded":     ml_info.get("loaded", False),
-                "accuracy":   ml_info.get("accuracy"),
-                "roc_auc":    ml_info.get("roc_auc"),
-                "trained_at": ml_info.get("trained_at"),
-            },
-        },
+        "timestamp": fresh_kpis["updated_at"].isoformat(),
+        "stats":     fresh_kpis["stats"],
+        "_source":   "live_fallback",
     }
 
 
 @app.get("/dashboard/analytics", tags=["Dashboard"])
 async def get_dashboard_analytics():
+    """v6.5: uses hr_db.get_leaves() (GET /hr/leaves) instead of the old
+    direct hr_db.leaves.find() Motor cursor."""
     hr_db   = get_hr_db()
-    cursor  = hr_db.leaves.find().sort("created_at", -1).limit(200)
-    records = [hr_db._serialize(r) async for r in cursor]
+    records = await hr_db.get_leaves(limit=200)
 
     total    = len(records)
     approved = sum(1 for r in records if r.get("status") == "approved")
@@ -2209,7 +2761,7 @@ async def finance_action_log(
     action_type: Optional[str] = None,
     limit:       int           = 100,
 ):
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
     fin_db = get_finance_db()
     logs   = await fin_db.get_collection_log(
         invoice_id=invoice_id,
@@ -2222,7 +2774,7 @@ async def finance_action_log(
 
 @app.get("/finance/actions/log/{invoice_id}", tags=["Finance Actions"])
 async def finance_action_log_by_invoice(invoice_id: str):
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
     fin_db = get_finance_db()
     logs   = await fin_db.get_collection_log(invoice_id=invoice_id, limit=100)
     return {"invoice_id": invoice_id, "count": len(logs), "logs": serialize_doc(logs)}
@@ -2234,7 +2786,7 @@ async def finance_legal_cases(
     customer_id: Optional[str] = None,
     limit:       int           = 50,
 ):
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
     fin_db = get_finance_db()
     cases  = await fin_db.get_legal_cases(status=status, customer_id=customer_id, limit=limit)
     return {"count": len(cases), "cases": serialize_doc(cases)}
@@ -2242,7 +2794,7 @@ async def finance_legal_cases(
 
 @app.get("/finance/legal/cases/{case_id}", tags=["Finance Actions"])
 async def finance_legal_case_detail(case_id: str):
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
     fin_db = get_finance_db()
     case   = await fin_db.get_legal_case(case_id)
     if not case:
@@ -2252,7 +2804,7 @@ async def finance_legal_case_detail(case_id: str):
 
 @app.post("/finance/legal/cases/{case_id}/update", tags=["Finance Actions"])
 async def finance_update_legal_case(case_id: str, body: LegalCaseUpdateRequest):
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
     fin_db = get_finance_db()
     ok     = await fin_db.update_legal_case_status(
         case_id=case_id,
@@ -2271,7 +2823,7 @@ async def finance_update_legal_case(case_id: str, body: LegalCaseUpdateRequest):
 
 @app.get("/finance/escalation/{invoice_id}", tags=["Finance Actions"])
 async def finance_escalation_status(invoice_id: str):
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
     fin_db = get_finance_db()
     result = await fin_db.get_escalation_status(invoice_id)
     return serialize_doc(result)
@@ -2279,7 +2831,7 @@ async def finance_escalation_status(invoice_id: str):
 
 @app.get("/finance/escalation", tags=["Finance Actions"])
 async def finance_active_escalations():
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
     fin_db      = get_finance_db()
     escalations = await fin_db.get_active_escalations()
     return {"count": len(escalations), "escalations": serialize_doc(escalations)}
@@ -2287,34 +2839,72 @@ async def finance_active_escalations():
 
 @app.get("/finance/actions/dashboard-data", tags=["Finance Actions"])
 async def finance_actions_dashboard_data(days: int = 7):
-    from models.finance_models import serialize_doc
-    fin_db      = get_finance_db()
-    stats       = await fin_db.get_collection_action_stats(days=days)
-    escalations = await fin_db.get_active_escalations()
-    legal       = await fin_db.get_legal_cases(limit=20)
-    recent_log  = await fin_db.get_collection_log(limit=20)
+    """
+    Finance dashboard data — layered cache.
+    L1: in-memory (< 0.1ms)  TTL=30s
+    L2: Redis     (< 5ms)    TTL=30s
+    L3: Node.js API (network-bound) fallback only
+    Target: < 500ms on L1/L2 hit.
+    """
+    from utils.serialize_utils import serialize_doc
 
-    return {
+    t0        = _monotime.perf_counter()
+    cache_key = f"finance:dashboard:days={days}"
+
+    # ── L1: In-memory ─────────────────────────────────────────────────────
+    mem_hit = _mem_cache_get(_DASHBOARD_MEM_CACHE, cache_key)
+    if mem_hit is not None:
+        latency_ms = int((_monotime.perf_counter() - t0) * 1000)
+        return {**mem_hit, "_cache": "memory", "_latency_ms": latency_ms}
+
+    # ── L2: Redis ─────────────────────────────────────────────────────────
+    cache = get_cache_manager()
+    try:
+        redis_hit = await asyncio.wait_for(cache.get_json(cache_key), timeout=0.5)
+        if redis_hit is not None:
+            _mem_cache_set(_DASHBOARD_MEM_CACHE, cache_key, redis_hit, DASHBOARD_CACHE_TTL_SEC)
+            latency_ms = int((_monotime.perf_counter() - t0) * 1000)
+            return {**redis_hit, "_cache": "redis", "_latency_ms": latency_ms}
+    except Exception as _re:
+        logger.debug("⚠️ [dashboard-data] Redis miss: %s", _re)
+
+    # ── L3: Node.js API (cache miss) ────────────────────────────────────────
+    logger.info("📊 [dashboard-data] Cache MISS — querying Node.js API (days=%d)", days)
+    fin_db = get_finance_db()
+    stats, escalations, legal, recent_log = await asyncio.gather(
+        fin_db.get_collection_action_stats(days=days),
+        fin_db.get_active_escalations(),
+        fin_db.get_legal_cases(limit=20),
+        fin_db.get_collection_log(limit=20),
+    )
+    payload = {
         "period_days":        days,
         "action_stats":       serialize_doc(stats),
-        "active_escalations": {
-            "count": len(escalations),
-            "items": serialize_doc(escalations[:10]),
-        },
-        "legal_cases": {
-            "count": len(legal),
-            "items": serialize_doc(legal[:10]),
-        },
-        "recent_actions": serialize_doc(recent_log[:10]),
-        "timestamp":      datetime.utcnow().isoformat() + "Z",
+        "active_escalations": {"count": len(escalations), "items": serialize_doc(escalations[:10])},
+        "legal_cases":        {"count": len(legal),       "items": serialize_doc(legal[:10])},
+        "recent_actions":     serialize_doc(recent_log[:10]),
+        "timestamp":          datetime.utcnow().isoformat() + "Z",
     }
+    _mem_cache_set(_DASHBOARD_MEM_CACHE, cache_key, payload, DASHBOARD_CACHE_TTL_SEC)
+    asyncio.create_task(_safe_finance_cache_write(cache, cache_key, payload, DASHBOARD_CACHE_TTL_SEC))
+    latency_ms = int((_monotime.perf_counter() - t0) * 1000)
+    logger.info("📊 [dashboard-data] Node.js API done | %dms", latency_ms)
+    return {**payload, "_cache": "miss", "_latency_ms": latency_ms}
+
+
+async def _safe_finance_cache_write(cache, key: str, data: dict, ttl: int) -> None:
+    """Fire-and-forget Redis write — never blocks the response."""
+    try:
+        await asyncio.wait_for(cache.set_json(key, data, ttl=ttl), timeout=1.0)
+    except Exception as e:
+        logger.debug("⚠️ [finance-cache] Redis write skipped: %s", e)
 
 
 @app.post("/finance/actions/execute", tags=["Finance Actions"])
 async def finance_execute_action(body: FinanceActionRequest):
     from actions.finance_actions import FinanceActionExecutor
     from agents.base_agent import generate_request_id
-    from models.finance_models import serialize_doc
+    from utils.serialize_utils import serialize_doc
 
     executor   = FinanceActionExecutor()
     request_id = generate_request_id()
@@ -2354,7 +2944,7 @@ class FinanceRiskInput(BaseModel):
     industry_risk_factor:      float = Field(0.35, ge=0.0, le=1.0)
     seasonal_factor:           float = Field(0.35, ge=0.0, le=1.0)
     industry:                  Optional[str] = None
-    invoice_month:             Optional[int] = Field(None, ge=1, le=12)
+    invoice_month:              Optional[int] = Field(None, ge=1, le=12)
 
 
 class FinanceBatchInput(BaseModel):
@@ -2390,10 +2980,25 @@ async def finance_predict_risk(body: FinanceRiskInput):
         industry_factor, seasonal_factor,
     ]])
 
-    result = predictor.predict(X)
+    result = await asyncio.to_thread(predictor.predict, X)
+
+    # #region agent log
+    _agent_debug_log(
+        "main.py:finance_predict_risk",
+        "predict-risk succeeded",
+        {
+            "request_id": request_id,
+            "risk_score": result.get("risk_score"),
+            "decision": result.get("decision"),
+        },
+        hypothesis_id="H1",
+    )
+    # #endregion
 
     t0          = _time.perf_counter()
-    explanation = get_explainability_engine().explain(X, result["risk_score"], result["decision"])
+    explanation = await asyncio.to_thread(
+        get_explainability_engine().explain, X, result["risk_score"], result["decision"]
+    )
     latency_ms  = int((_time.perf_counter() - t0) * 1000)
 
     logger.info(
@@ -2451,12 +3056,14 @@ async def finance_predict_risk_batch(body: FinanceBatchInput):
         ])
 
     X       = np.array(rows)
-    results = predictor.predict_batch(X)
+    results = await asyncio.to_thread(predictor.predict_batch, X)
 
     enriched = []
     for i, (res, rec_row) in enumerate(zip(results, X)):
         feat_arr    = rec_row.reshape(1, -1)
-        explanation = explain_engine.explain(feat_arr, res["risk_score"], res["decision"])
+        explanation = await asyncio.to_thread(
+            explain_engine.explain, feat_arr, res["risk_score"], res["decision"]
+        )
         enriched.append({
             **res,
             "reasons":          explanation.reasons,
@@ -2495,22 +3102,30 @@ async def finance_predict_risk_batch(body: FinanceBatchInput):
         "timestamp":        datetime.utcnow().isoformat() + "Z",
     }
 
-
 @app.get("/finance/model/info", tags=["Finance"])
 def finance_model_info():
+    """
+    Finance ML model metadata.
+    In-memory cache — no disk I/O after first call.
+    Target: < 300ms first call / < 1ms cached.
+    """
+    t0        = _monotime.perf_counter()
+    cache_key = "finance_model_info"
+
+    cached = _mem_cache_get(_MODEL_INFO_MEM_CACHE, cache_key)
+    if cached is not None:
+        return {**cached, "_cache": "memory", "_latency_ms": int((_monotime.perf_counter() - t0) * 1000)}
+
     if not os.path.exists(_FIN_MODEL_PATH):
-        return {
-            "loaded":  False,
-            "message": "Model not found. Run: python training/finance_train.py",
-            "path":    _FIN_MODEL_PATH,
-        }
+        return {"loaded": False, "message": "Model not found. Run: python training/finance_train.py", "path": _FIN_MODEL_PATH}
+
     try:
-        with open(_FIN_MODEL_PATH, "rb") as f:
-            saved = pickle.load(f)
-        meta      = saved.get("metadata", {})
         predictor = _get_fin_predictor()
         engine    = predictor.decision_engine if predictor else None
-        return {
+        with open(_FIN_MODEL_PATH, "rb") as f:
+            saved = pickle.load(f)
+        meta = saved.get("metadata", {})
+        info = {
             "loaded":            True,
             "version":           meta.get("version", "unknown"),
             "trained_at":        meta.get("trained_at"),
@@ -2523,9 +3138,11 @@ def finance_model_info():
             "shap_top10":        dict(list((meta.get("shap_importance") or {}).items())[:10]),
             "path":              _FIN_MODEL_PATH,
         }
+        _mem_cache_set(_MODEL_INFO_MEM_CACHE, cache_key, info, MODEL_INFO_CACHE_TTL_SEC)
+        return {**info, "_cache": "miss", "_latency_ms": int((_monotime.perf_counter() - t0) * 1000)}
     except Exception as e:
         return {"loaded": False, "error": str(e), "path": _FIN_MODEL_PATH}
-
+        
 
 @app.post("/finance/model/reload", tags=["Finance"])
 def finance_model_reload():
@@ -2561,6 +3178,66 @@ def finance_model_thresholds():
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# v6.4 — Node.js API Bridge Diagnostics
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/node-api/tools", tags=["🔌 Node API Bridge"])
+async def list_node_api_tools():
+    """List every LangChain tool registered from agents/tools/node_api_tools.py,
+    so you can confirm from a browser/curl exactly what the AI Agent can call
+    without having to read the source or trigger an actual agent run."""
+    return {
+        "count": len(NODE_API_TOOLS),
+        "base_url": os.getenv("NODE_API_BASE_URL", "http://localhost:5005/v1"),
+        "tools": [
+            {"name": t.name, "description": (t.description or "").strip().split("\n")[0]}
+            for t in NODE_API_TOOLS
+        ],
+    }
+
+
+@app.post("/node-api/cache/clear", tags=["🔌 Node API Bridge"])
+async def clear_node_api_bridge_cache():
+    """Manually bust the Node API bridge's short-TTL read cache. Useful right
+    after a write happened on the Node.js side that this cache might still be
+    masking (cache TTL defaults to NODE_API_CACHE_TTL_SEC, 20s)."""
+    from core.node_api_client import clear_node_api_cache
+    n = clear_node_api_cache()
+    return {"cleared_entries": n, "timestamp": datetime.utcnow().isoformat() + "Z"}
+
+
+@app.get("/node-api/tools/{tool_name}/test", tags=["🔌 Node API Bridge"])
+async def test_node_api_tool(tool_name: str):
+    """Dev-only smoke test: call one Node API bridge tool with its default
+    arguments and return the raw result. Lets you verify the Node.js ->
+    Python bridge end-to-end from a browser without going through Gemini/
+    LangChain planning. NOT authenticated beyond whatever this router
+    already requires — do not expose this route outside a trusted network
+    in production; consider removing or gating it behind an admin check
+    before a public deploy."""
+    tool_map = {t.name: t for t in NODE_API_TOOLS}
+    tool_obj = tool_map.get(tool_name)
+    if not tool_obj:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown tool '{tool_name}'. Available: {sorted(tool_map.keys())}",
+        )
+    try:
+        raw = await tool_obj.ainvoke({})
+    except Exception as e:
+        # Tools that require an id argument (e.g. get_invoice_by_id) will
+        # raise a validation error here since {} omits it — that's expected
+        # and still confirms the tool + client wiring is reachable.
+        return {
+            "tool": tool_name,
+            "note": "Called with no arguments — this tool likely requires one; "
+                    "this confirms wiring, not a full call.",
+            "error": str(e)[:300],
+        }
+    return {"tool": tool_name, "result": json.loads(raw)}
+
+
 @app.websocket("/ws/metrics")
 async def metrics_websocket(websocket: WebSocket):
     await websocket.accept()
@@ -2574,50 +3251,114 @@ async def metrics_websocket(websocket: WebSocket):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Internal Helpers — MongoDB event + audit writers
+# Internal Helpers — HR event + audit writers (Node.js API backed)
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ v6.5: these used to insert directly into MongoDB's "events" and
+# "audit_logs" collections via Motor. There is no generic /hr/events
+# route in Node, so _log_hr_event() now folds the "event" concept into
+# the same /hr/audit trail Node already exposes (POST /hr/audit) —
+# it's tagged with a distinct `action` prefix ("event_") so it's still
+# distinguishable from ordinary audit entries in the trail, and the
+# returned id can still be threaded through to the background workflow
+# exactly like the old Mongo-generated event_id was.
 
-async def _create_mongo_event(
+async def _log_hr_event(
     event_type: str,
     entity:     str,
     entity_id:  str,
     payload:    dict,
 ) -> str:
-    """Insert an event document into the MongoDB 'events' collection."""
-    hr_db  = get_hr_db()
-    doc    = {
-        "event_type": event_type,
-        "entity":     entity,
-        "entity_id":  entity_id,
-        "payload":    payload,
-        "status":     "pending",
-        "created_at": datetime.utcnow(),
+    """Node-backed replacement for the old direct-Mongo _create_mongo_event().
+    Writes to POST /hr/audit (the only HR-side write-log endpoint Node
+    exposes) with action="event_{event_type}", and returns whatever id
+    Node hands back (falls back to entity_id if the controller doesn't
+    echo one) so callers can keep threading it through unchanged.
+
+    ⚠️ FIX: the Node-side HRDomainAudit schema requires a "domain"
+    field (separate from "entity"/"entity_id"). This call used to omit
+    it entirely, which made every single _log_hr_event() call fail
+    Mongoose validation with "domain: Path `domain` is required." —
+    silently swallowed by the except block below, so the entire HR
+    event-log trail was being dropped without any visible error other
+    than a WARNING log line. `entity` (e.g. "leaves", "salary_reviews",
+    "absence_events", "incentive_requests") is a reasonable domain
+    value here — it's already the right granularity and Node's
+    /hr/audit/:domain/:entity_id read endpoint expects a domain string
+    like "leave"/"salary"/"absence"/"incentive" in the rest of this
+    file, so we normalize the plural entity name down to that same
+    singular form for consistency with how audit trails are actually
+    queried elsewhere (see get_hr_domain_audit() call sites)."""
+    hr_db = get_hr_db()
+
+    _entity_to_domain = {
+        "leaves":             "leave",
+        "salary_reviews":     "salary",
+        "absence_events":     "absence",
+        "incentive_requests": "incentive",
     }
-    result = await hr_db.db["events"].insert_one(doc)
-    return str(result.inserted_id)
+    domain = _entity_to_domain.get(entity, entity)
+
+    try:
+        res = await hr_db.write_hr_audit(
+            action=f"event_{event_type}",
+            entity=entity,
+            domain=domain,
+            entity_id=entity_id,
+            performed_by=payload.get("source", "system"),
+            details=json.dumps(payload, default=str)[:2000],
+        )
+        if isinstance(res, dict):
+            return str(res.get("_id") or res.get("id") or entity_id)
+        return entity_id
+    except Exception as e:
+        logger.warning("⚠️ _log_hr_event failed (event_type=%s, entity_id=%s): %s",
+                        event_type, entity_id, e)
+        return entity_id
 
 
-async def _write_mongo_audit(
+_ENTITY_TO_DOMAIN = {
+    "leaves":             "leave",
+    "salary_reviews":     "salary",
+    "absence_events":     "absence",
+    "incentive_requests": "incentive",
+}
+
+
+_ENTITY_TO_DOMAIN = {
+    "leaves":             "leave",
+    "salary_reviews":     "salary",
+    "absence_events":     "absence",
+    "incentive_requests": "incentive",
+}
+
+
+async def _write_hr_audit(
     action:       str,
     entity:       str,
     entity_id:    str,
     performed_by: str,
     details:      str,
 ) -> None:
-    """Insert an audit log document into the MongoDB 'audit_logs' collection."""
+    """Node-backed replacement for the old direct-Mongo _write_mongo_audit().
+    Routes through hr_db.write_hr_audit() → POST /hr/audit.
+
+    ⚠️ FIX: the Node-side HRDomainAudit schema requires a "domain" field
+    this call never sent, so every single background-task audit write
+    (leave/salary/absence/incentive submit-result logging) was failing
+    validation and only surfacing as an ERROR log line, with the audit
+    trail entry silently lost."""
     try:
         hr_db = get_hr_db()
-        doc   = {
-            "action":       action,
-            "entity":       entity,
-            "entity_id":    entity_id,
-            "performed_by": performed_by,
-            "details":      details,
-            "created_at":   datetime.utcnow(),
-        }
-        await hr_db.db["audit_logs"].insert_one(doc)
+        await hr_db.write_hr_audit(
+            action=action,
+            entity=entity,
+            domain=_ENTITY_TO_DOMAIN.get(entity, entity),
+            entity_id=entity_id,
+            performed_by=performed_by,
+            details=details,
+        )
     except Exception as e:
-        logger.error("_write_mongo_audit failed: %s", e)
+        logger.error("_write_hr_audit failed: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2627,4 +3368,3 @@ async def _write_mongo_audit(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=9000, reload=True, log_level="info")
-

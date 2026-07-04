@@ -57,156 +57,57 @@ def _utcnow() -> datetime:
 
 class MongoEventQueue:
     """
-    Persistent event queue stored in MongoDB collection "event_queue".
-    بيتستخدم تلقائيًا لما Redis يبقى unavailable.
+    ⚠️ v3.1 (Node API migration) — DISABLED.
 
-    بدل DBEventQueue (كانت MySQL):
-        - _ensure_table()   → _ensure_indexes()   (Motor async)
-        - enqueue()         → insert_one()
-        - claim_batch()     → findOneAndUpdate × N  (atomic claim بدون SQL FOR UPDATE)
-        - ack()             → update_one (status=done)
-        - nack()            → update_one (retry_count++)
-        - get_stats()       → aggregate pipeline
+    الكلاس ده كان بيعمل atomic claim (findOneAndUpdate) مباشرة على
+    MongoDB — العملية دي مستحيل تتحول بأمان لـ REST calls عادية من غير
+    endpoint مخصص في Node بيعمل نفس الـ atomic operation جوه MongoDB
+    نفسه (مثلاً POST /events/claim-batch). محاولة "تقليدها" بـ عدة
+    REST calls (find ثم update) هتفتح race condition حقيقي بين أكتر
+    من worker.
+
+    القرار الحالي: الـ MongoDB fallback queue معطّلة بالكامل.
+    النظام بيعتمد على Redis Streams بس (RedisStreamBackend تحت — دي
+    مش Mongo، مربوطة بـ Redis مباشرة ومفيهاش مشكلة). لو Redis وقع،
+    الأحداث مش هتتخزن fallback — هيتسجل error واضح بدل فقدان صامت
+    أو race condition.
+
+    لما يتعمل endpoint في Node بيوفر atomic claim حقيقي، رجّع تفعيل
+    الكلاس ده وابنيه فوق NodeAPIClient بدل Motor مباشرة.
     """
 
     def _get_col(self):
-        """بنجيب الـ collection من FinanceDB."""
-        from core.mongo_connect import get_finance_db
-        return get_finance_db().db["event_queue"]
+        raise NotImplementedError(
+            "MongoEventQueue معطّلة (Node API migration) — "
+            "مفيش اتصال MongoDB مباشر متاح دلوقتي."
+        )
 
     async def _ensure_indexes(self) -> None:
-        """Indexes على event_queue — idempotent."""
-        try:
-            from pymongo import IndexModel, ASCENDING
-            col = self._get_col()
-            await col.create_indexes([
-                IndexModel([("event_id", ASCENDING)], unique=True),
-                IndexModel([("status", ASCENDING)]),
-                IndexModel([("event_type", ASCENDING)]),
-                IndexModel([("created_at", ASCENDING)]),
-                # TTL: حذف done/dead events بعد 7 أيام تلقائيًا
-                IndexModel(
-                    [("created_at", ASCENDING)],
-                    expireAfterSeconds=7 * 86400,
-                    partialFilterExpression={"status": {"$in": ["done", "dead"]}},
-                    name="ttl_done_dead",
-                ),
-            ])
-        except Exception as e:
-            logger.warning("⚠️ MongoEventQueue index init failed: %s", e)
+        # no-op — لا داعي لعمل indexes على قاعدة بيانات مش متصلين بيها
+        logger.debug("⏭️ MongoEventQueue._ensure_indexes skipped — queue disabled")
+        return
 
     async def enqueue(self, event_type: str, payload: dict) -> str:
-        """Insert event into MongoDB queue. Returns event_id."""
-        await self._ensure_indexes()
-        event_id = f"db-{uuid.uuid4().hex}"
-        try:
-            col = self._get_col()
-            await col.insert_one({
-                "event_id":    event_id,
-                "event_type":  event_type,
-                "payload":     json.dumps(payload, default=str),
-                "status":      "pending",
-                "retry_count": 0,
-                "claimed_by":  None,
-                "claimed_at":  None,
-                "processed_at":None,
-                "error_msg":   None,
-                "created_at":  _utcnow(),
-            })
-            logger.debug("📥 [MongoQueue] Enqueued %s → %s", event_type, event_id)
-            return event_id
-        except Exception as e:
-            logger.error("❌ [MongoQueue] Enqueue failed: %s", e)
-            return ""
+        logger.error(
+            "❌ [MongoQueue] enqueue('%s') called but MongoDB fallback queue "
+            "is DISABLED — event may be LOST if Redis is also down. "
+            "Build a Node endpoint for atomic event claiming to re-enable this.",
+            event_type,
+        )
+        return ""
 
     async def claim_batch(self, batch_size: int = 10) -> list[dict]:
-        """
-        Atomically claim a batch of pending events.
-
-        بدل SQL:
-            SELECT ... FOR UPDATE SKIP LOCKED
-            UPDATE ... SET status='processing'
-
-        بنستخدم find_one_and_update في loop — كل مرة بنحاول نـ claim واحد.
-        لو فضى pending → نوقف.
-        """
-        col    = self._get_col()
-        claimed = []
-
-        for _ in range(batch_size):
-            try:
-                doc = await col.find_one_and_update(
-                    {
-                        "status":      "pending",
-                        "retry_count": {"$lt": MAX_RETRIES},
-                    },
-                    {
-                        "$set": {
-                            "status":     "processing",
-                            "claimed_by": CONSUMER_NAME,
-                            "claimed_at": _utcnow(),
-                        }
-                    },
-                    sort=[("created_at", 1)],
-                    return_document=True,   # بنرجع الـ doc بعد التعديل
-                )
-                if doc is None:
-                    break   # مفيش pending تاني
-                claimed.append(doc)
-            except Exception as e:
-                logger.error("❌ [MongoQueue] Claim failed: %s", e)
-                break
-
-        return claimed
+        # مفيش pending أبداً — الكلاس معطّل
+        return []
 
     async def ack(self, doc_id) -> None:
-        """Mark event as successfully processed."""
-        try:
-            col = self._get_col()
-            await col.update_one(
-                {"_id": doc_id},
-                {"$set": {"status": "done", "processed_at": _utcnow()}},
-            )
-        except Exception as e:
-            logger.warning("⚠️ [MongoQueue] ACK failed id=%s: %s", doc_id, e)
+        return
 
     async def nack(self, doc_id, error: str) -> None:
-        """Mark event as failed — increment retry counter."""
-        try:
-            col = self._get_col()
-            # بنجيب retry_count الحالي عشان نحدد لو وصل الـ max
-            doc = await col.find_one({"_id": doc_id}, {"retry_count": 1})
-            current_retries = int(doc.get("retry_count", 0)) if doc else 0
-            new_retries     = current_retries + 1
-            new_status      = "dead" if new_retries >= MAX_RETRIES else "pending"
-
-            await col.update_one(
-                {"_id": doc_id},
-                {
-                    "$set": {
-                        "retry_count": new_retries,
-                        "status":      new_status,
-                        "error_msg":   error[:1000],
-                        "claimed_by":  None,
-                        "claimed_at":  None,
-                    }
-                },
-            )
-        except Exception as e:
-            logger.warning("⚠️ [MongoQueue] NACK failed id=%s: %s", doc_id, e)
+        return
 
     async def get_stats(self) -> dict:
-        """Aggregation بدل SQL GROUP BY على status."""
-        try:
-            col      = self._get_col()
-            pipeline = [
-                {"$group": {"_id": "$status", "count": {"$sum": 1}}},
-            ]
-            docs = await col.aggregate(pipeline).to_list(None)
-            return {d["_id"]: d["count"] for d in docs}
-        except Exception:
-            return {}
-
+        return {"status": "disabled", "reason": "Node API migration — no direct MongoDB access"}
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 🔴  REDIS STREAMS BACKEND  (unchanged — لا علاقة بـ MySQL)
@@ -404,12 +305,16 @@ class PersistentEventBus:
         published_redis = await self._redis.publish(event_type, event_id, payload)
 
         if not published_redis:
-            # ✅ Fallback to MongoDB — NEVER lose the event
-            db_id = await self._db_queue.enqueue(event_type, payload)
-            logger.info(
-                "📥 [EventBus] Published to MongoDB queue: %s → %s",
-                event_type, db_id,
+            # ⚠️ MongoDB fallback queue معطّلة (Node API migration) —
+            # الـ event مش هيتخزن fallback. اتسجل تحذير واضح بدل ما نأمّن
+            # أمان وهمي عن طريق fallback مكسور.
+            logger.error(
+                "🔴 [EventBus] Redis unavailable AND MongoDB fallback is "
+                "DISABLED — event '%s' (id=%s) will NOT be persisted. "
+                "Fix Redis connection or build a Node atomic-claim endpoint.",
+                event_type, event_id,
             )
+            self._stats["failed"] += 1
         else:
             logger.debug("📤 [EventBus] Published to Redis: %s → %s", event_type, event_id)
 
@@ -432,33 +337,28 @@ class PersistentEventBus:
         )
 
         # ✅ Ensure MongoDB indexes once at startup
-        await self._db_queue._ensure_indexes()
+        # MongoDB fallback queue معطّلة — مفيش indexes نعملها
+        logger.warning(
+            "⚠️ [EventBus] MongoDB fallback queue is DISABLED (Node API "
+            "migration). Consumer relies on Redis Streams only."
+        )
 
         while self._running:
             try:
-                # ── Try Redis ─────────────────────────────────────────────
-                if self._redis._available or self._redis._redis is None:
-                    events = await self._redis.read_batch(event_types, batch_size=20)
-                    if events:
-                        for event in events:
-                            await self._dispatch_redis(event)
-                        continue
+                # ── Try Redis (المصدر الوحيد المتاح دلوقتي) ────────────────
+                events = await self._redis.read_batch(event_types, batch_size=20)
+                if events:
+                    for event in events:
+                        await self._dispatch_redis(event)
+                    continue
 
-                # ── MongoDB Fallback ──────────────────────────────────────
-                rows = await self._db_queue.claim_batch(batch_size=10)
-                for row in rows:
-                    await self._dispatch_db(row)
-
-                if not rows:
-                    await asyncio.sleep(2)
-
+                await asyncio.sleep(2)
             except asyncio.CancelledError:
                 logger.info("🛑 [EventBus] Consumer stopping...")
                 break
             except Exception as e:
                 logger.error("❌ [EventBus] Consumer loop error: %s", e, exc_info=True)
                 await asyncio.sleep(5)
-
     async def _dispatch_redis(self, event: dict) -> None:
         event_type = event["event_type"]
         handlers   = self._handlers.get(event_type, [])

@@ -154,7 +154,7 @@ async def main(reset: bool = False, customer_count: int = 10):
     print("🌱 Finance Database Seeder v2.0 (MongoDB)")
     print("=" * 55)
 
-    from core.mongo_connect import ensure_mongo_ready, get_finance_db
+    from core.node_finance_proxy import get_finance_db
     await ensure_mongo_ready()
     db = get_finance_db()
 

@@ -1,4 +1,3 @@
-# Local MongoDB for dev (no SSL). Start: docker compose -f docker-compose.mongo.yml up -d
 services:
   mongodb:
     image: mongo:7
@@ -11,5 +10,21 @@ services:
     environment:
       MONGO_INITDB_DATABASE: ERP
 
+  redis:
+    image: redis:7-alpine
+    container_name: ERP_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ERP_redis_data:/data
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
 volumes:
   ERP_DB_mongo_data:
+  ERP_redis_data:

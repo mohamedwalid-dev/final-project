@@ -3,6 +3,14 @@
 ===============================================
 File: app/agents/hr/hr_tools.py
 
+ℹ️ NODE.JS / DB NOTE:
+    This file has no MongoDB/Motor dependency and makes no HTTP calls to
+    the Node.js API. Every @tool function here is pure logic — it takes
+    typed arguments (numbers, strings, bools) and returns a plain string
+    verdict computed locally. Nothing imports core.node_hr_proxy or
+    core.node_api_client. There is nothing here to repoint for the
+    Node.js migration — left otherwise identical to v4.0.
+
 Tools Coverage:
     ✅ Leave Policy Check
     ✅ Team Risk Assessment

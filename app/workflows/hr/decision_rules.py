@@ -3,6 +3,17 @@
 ====================================================================
 File: app/workflows/hr/decision_rules.py
 
+NOTE (Node.js API migration pass):
+    This file was reviewed for MongoDB / Node-API compatibility issues.
+    None were found — every class here (DecisionValidationLayer,
+    SalaryValidationLayer, IncentiveValidationLayer, AbsenceValidationLayer,
+    AttendanceValidationLayer) is pure business-rules logic operating only
+    on the `agent_result` / `payload` dicts passed in. The only I/O is
+    `AuditLogger()` from audit.logger, which is a local/file logger, not a
+    database or HTTP client — it does not talk to MongoDB or the Node API,
+    so it needs no changes for this migration.
+    Content below is unchanged from v5.1.
+
 ✅ v5.0 Features:
     1. Full automation — NO human decisions, all overrides are AI-driven
     2. request_id logged on every line

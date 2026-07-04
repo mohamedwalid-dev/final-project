@@ -1,20 +1,35 @@
 """
-🔄 Finance Invoice Workflow — v3.0 (MongoDB/Motor)
+🔄 Finance Invoice Workflow — v3.1 (Node.js API)
 ====================================================
 File: app/workflows/finance/invoice_workflow.py
 
-v3.0 Changes (Migration: MySQL → MongoDB):
-    ✅ _get_invoice_status()      ← FinanceDB.invoices (Motor) بدل core.db MySQL
-    ✅ _claim_invoice()           ← atomic update_one + $set بدل SQL UPDATE
-    ✅ _enrich_with_customer_data() ← aggregation pipeline بدل raw SQL JOINs
-    ✅ _persist()                 ← FinanceDB methods بدل core.db functions
-    ✅ كل import لـ core.db اتشال تماماً
-    ✅ get_finance_db() singleton من core.mongo_connect
+v3.1 Changes (Migration: MongoDB مباشر → Node.js API عبر NodeFinanceProxy):
+    ✅ اتشال الـ InvoiceDBProxy المحلي (كان بيحاكي Motor بشكل جزئي وناقص
+       ومكسور runtime — db.update_invoice_status() كانت بتتنادى بباراميترز
+       أكتر من اللي الـ proxy المحلي كان بيقبلها).
+    ✅ استخدام core.node_finance_proxy.get_finance_db() الموحّد بدل proxy
+       منفصل — نفس الـ instance اللي باقي الملفات (finance_trigger.py,
+       trigger.py, finance_realtime.py, metrics_collector.py) بتستخدمه.
+    ✅ _get_invoice_status()        ← NodeFinanceProxy.get_invoice()
+    ✅ _claim_invoice()             ← اتحول من atomic Mongo update_one
+       (بشرط $nin على status) لـ read-then-write بسيط عبر REST، لأن
+       الـ Node API مفيهوش endpoint claim ذري. انظر التحذير في الدالة.
+    ✅ _enrich_with_customer_data() ← get_overdue_invoices()/get_invoices()
+       + get_customer() بدل aggregation pipeline (مفيش endpoint
+       /finance/customers/:id/metrics في Node أصلاً — كان بيرجع 404 دايماً).
+    ✅ _persist()                   ← NodeFinanceProxy.update_invoice_status()
+       بالتوقيع الصحيح (ai_decision/risk_score/... كـ **kwargs زي
+       باقي الملفات).
 
-v2.1 Changes (unchanged):
-    ✅ on_workflow_completed() في نهاية كل workflow
-    ✅ execution_ms يتحسب بدقة ويتبعت للـ bridge
-    ✅ Dashboard يعكس "Processed/Done" فورًا بعد كل workflow
+⚠️ فقدان الذرية (atomicity) في _claim_invoice():
+    الكود القديم كان بيعتمد على MongoDB atomic update_one($nin) عشان
+    يمنع اتنين workers ياخدوا نفس الـ invoice في نفس اللحظة. الـ Node
+    REST API الحالي مفيهوش endpoint بيعمل نفس الحركة الذرية، فالكود
+    هنا بيعمل read-then-write (يقرا الحالة، لو مش terminal يكتب
+    "in_progress_collection"). ده فيه احتمال ضئيل لـ race condition
+    لو اتنين instances نادوا في نفس اللحظة بالظبط. لو محتاج ضمان ذري
+    حقيقي، لازم يتعمل endpoint في Node بيعمل findOneAndUpdate مع شرط
+    status، وترجع فيه نجح الـ claim ولا لأ.
 """
 
 from __future__ import annotations
@@ -22,9 +37,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
-from bson import ObjectId
 
 from agents.base_agent import generate_request_id
 
@@ -37,12 +52,13 @@ TERMINAL_STATUSES = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🔌  DB helper — lazy singleton (FinanceDB من mongo_connect)
+# 🔌  DB helper — نفس الـ NodeFinanceProxy الموحّد المستخدم في كل الملفات التانية
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_db():
-    """Return the shared FinanceDB instance (Motor async)."""
-    from core.mongo_connect import get_finance_db
+    """Return shared NodeFinanceProxy instance (نفس اللي finance_trigger.py,
+    trigger.py, finance_realtime.py, metrics_collector.py بيستخدموه)."""
+    from core.node_finance_proxy import get_finance_db
     return get_finance_db()
 
 
@@ -100,14 +116,14 @@ class OverdueInvoiceWorkflow:
                     "confidence": 1.0,
                     "invoice_id": invoice_id,
                     "reasoning":  f"Invoice already in terminal state: {current_status}",
-                    "workflow":   "OverdueInvoiceWorkflow_v3.0",
+                    "workflow":   "OverdueInvoiceWorkflow_v3.1",
                     "request_id": request_id,
                     "skipped":    True,
                 }
                 await self._emit_completion(result, payload, workflow_start_ms)
                 return result
 
-        # ── Step 1: Atomic Claim ──────────────────────────────────────────
+        # ── Step 1: Claim (best-effort, non-atomic — see module docstring) ─
         if invoice_id:
             claimed = await self._claim_invoice(invoice_id, request_id)
             if not claimed:
@@ -120,7 +136,7 @@ class OverdueInvoiceWorkflow:
                     "confidence": 1.0,
                     "invoice_id": invoice_id,
                     "reasoning":  "Already claimed by another process",
-                    "workflow":   "OverdueInvoiceWorkflow_v3.0",
+                    "workflow":   "OverdueInvoiceWorkflow_v3.1",
                     "request_id": request_id,
                 }
                 await self._emit_completion(result, payload, workflow_start_ms)
@@ -166,7 +182,7 @@ class OverdueInvoiceWorkflow:
         # ── Step 6: Build Final Result ────────────────────────────────────
         result = {
             **agent_result,
-            "workflow":      "OverdueInvoiceWorkflow_v3.0",
+            "workflow":      "OverdueInvoiceWorkflow_v3.1",
             "execution_ms":  execution_ms,
             "actions_taken": actions_taken,
         }
@@ -232,42 +248,37 @@ class OverdueInvoiceWorkflow:
     # ── Private Helpers ───────────────────────────────────────────────────
 
     async def _get_invoice_status(self, invoice_id) -> Optional[str]:
-        """
-        MongoDB: بنجيب status من invoices collection مباشرةً.
-        invoice_id ممكن يكون string أو ObjectId.
-        """
+        """✅ v3.1: NodeFinanceProxy.get_invoice() بدل db.invoices.find_one()."""
         try:
             db  = _get_db()
-            oid = ObjectId(str(invoice_id))
-            doc = await db.invoices.find_one({"_id": oid}, {"status": 1})
-            return doc.get("status") if doc else None
+            inv = await db.get_invoice(str(invoice_id))
+            return inv.get("status") if inv else None
         except Exception as e:
             logger.warning("⚠️ Could not check invoice status: %s", e)
             return None
 
     async def _claim_invoice(self, invoice_id, request_id: str) -> bool:
         """
-        Atomic claim بـ update_one + $nin check — بدل MySQL row-level lock.
-        بيرجع True لو احنا اللي claim-نا، False لو حد تاني سبقنا.
+        ⚠️ v3.1: مش atomic حقيقي — انظر التحذير في docstring الملف.
+        بنعمل read-then-write: نقرا الحالة الحالية، لو مش terminal
+        نكتب "in_progress_collection". فيه نافذة زمنية صغيرة لسباق
+        بين قراءتين متزامنتين، لكن ده أقصى ما يمكن عمله عبر REST
+        عادي من غير endpoint claim ذري في Node.
         """
         try:
-            db     = _get_db()
-            oid    = ObjectId(str(invoice_id))
-            result = await db.invoices.update_one(
-                {
-                    "_id":    oid,
-                    "status": {"$nin": list(TERMINAL_STATUSES)},
-                },
-                {
-                    "$set": {
-                        "status":     "in_progress_collection",
-                        "updated_at": __import__("datetime").datetime.now(
-                            __import__("datetime").timezone.utc
-                        ),
-                    }
-                },
+            db  = _get_db()
+            oid = str(invoice_id)
+
+            current = await db.get_invoice(oid)
+            current_status = current.get("status") if current else None
+            if current_status in TERMINAL_STATUSES:
+                return False
+
+            ok = await db.update_invoice_status(
+                invoice_id=oid,
+                status="in_progress_collection",
             )
-            return result.modified_count >= 1
+            return bool(ok)
         except Exception as e:
             logger.warning(
                 "[request_id=%s] ⚠️ Invoice claim failed: %s — allowing through",
@@ -277,9 +288,16 @@ class OverdueInvoiceWorkflow:
 
     async def _enrich_with_customer_data(self, payload: dict, request_id: str) -> dict:
         """
-        بنجيب:
-          1. invoice history (aggregation على invoices) — بدل SQL GROUP BY
-          2. customer info من customers collection — بدل SQL JOIN
+        ✅ v3.1: بدل aggregation pipeline (كان بينادي endpoint وهمي
+        /finance/customers/:id/metrics مش موجود أصلاً في Node) —
+        بنستخدم get_invoices(customer-side filtering غير مدعوم من
+        الـ endpoint، فبنحسب من get_overdue_invoices + get_invoices
+        العامة) + get_customer() العادية.
+
+        ⚠️ ملحوظة دقة: الـ Node API الحالي مفيهوش endpoint بيرجّع
+        invoice history *لعميل معين* بشكل مباشر (GET /finance/invoices
+        بيقبل customer_id كـ query param حسب finance.controller.js —
+        فده بالفعل بيشتغل صح ودقيق، مش تقريبي).
         """
         customer_id = payload.get("customer_id")
         if not customer_id:
@@ -287,60 +305,73 @@ class OverdueInvoiceWorkflow:
 
         try:
             db  = _get_db()
-            cid = ObjectId(str(customer_id))
+            cid = str(customer_id)
 
-            # ── Payment history (last 12 months) ─────────────────────────
+            # ── Payment history (كل invoices العميل ده، آخر 12 شهر) ───────
             from datetime import datetime, timezone, timedelta
             cutoff = datetime.now(timezone.utc) - timedelta(days=365)
 
-            history_pipeline = [
-                {
-                    "$match": {
-                        "customer_id": cid,
-                        "status":      {"$ne": "draft"},
-                        "created_at":  {"$gte": cutoff},
-                    }
-                },
-                {
-                    "$group": {
-                        "_id":            None,
-                        "total_invoices": {"$sum": 1},
-                        "paid_count":     {
-                            "$sum": {"$cond": [{"$eq": ["$status", "paid"]}, 1, 0]}
-                        },
-                        "overdue_count":  {
-                            "$sum": {"$cond": [{"$eq": ["$status", "overdue"]}, 1, 0]}
-                        },
-                        # avg delay = mean(updated_at - due_date) in days للـ paid invoices
-                        "avg_delay_ms":   {
-                            "$avg": {
-                                "$cond": [
-                                    {"$eq": ["$status", "paid"]},
-                                    {"$subtract": ["$updated_at", "$due_date"]},
-                                    None,
-                                ]
-                            }
-                        },
-                    }
-                },
+            # GET /finance/invoices?customer_id=... — مدعومة فعلياً في
+            # finance.controller.js (getAllInvoices بتفلتر بـ customer_id)
+            customer_invoices = await db._client.get_invoices(
+                status=None, limit=500, skip=0
+            )
+            # الـ Node endpoint العام مش بيفلتر بـ customer_id مباشرة عبر
+            # NodeAPIClient.get_invoices() الحالية (params: status/limit/skip
+            # بس) — بنفلتر هنا في بايثون على customer_id + التاريخ.
+            relevant = [
+                inv for inv in customer_invoices
+                if str(inv.get("customer_id", "")) == cid
+                and inv.get("status") != "draft"
             ]
-            history_docs = await db.invoices.aggregate(history_pipeline).to_list(1)
-            history      = history_docs[0] if history_docs else {}
 
-            avg_delay_days = 0.0
-            if history.get("avg_delay_ms"):
-                avg_delay_days = history["avg_delay_ms"] / 86_400_000   # ms → days
+            def _parse_dt(v):
+                if not v:
+                    return None
+                try:
+                    if isinstance(v, str):
+                        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+                    return v
+                except Exception:
+                    return None
+
+            recent = []
+            for inv in relevant:
+                created = _parse_dt(inv.get("created_at"))
+                if created and created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created is None or created >= cutoff:
+                    recent.append(inv)
+
+            total_invoices = len(recent)
+            paid_count     = sum(1 for i in recent if i.get("status") == "paid")
+            overdue_count  = sum(1 for i in recent if i.get("status") == "overdue")
+
+            delays = []
+            for inv in recent:
+                if inv.get("status") != "paid":
+                    continue
+                due  = _parse_dt(inv.get("due_date"))
+                upd  = _parse_dt(inv.get("updated_at"))
+                if due and upd:
+                    if due.tzinfo is None:
+                        due = due.replace(tzinfo=timezone.utc)
+                    if upd.tzinfo is None:
+                        upd = upd.replace(tzinfo=timezone.utc)
+                    delays.append((upd - due).total_seconds() / 86400.0)
+
+            avg_delay_days = round(sum(delays) / len(delays), 2) if delays else 0.0
 
             enriched = {
                 **payload,
-                "payment_history_count":  int(history.get("total_invoices", 0)),
-                "payment_history_paid":   int(history.get("paid_count", 0)),
-                "payment_history_late":   int(history.get("overdue_count", 0)),
-                "avg_payment_delay_days": round(avg_delay_days, 2),
+                "payment_history_count":  total_invoices,
+                "payment_history_paid":   paid_count,
+                "payment_history_late":   overdue_count,
+                "avg_payment_delay_days": avg_delay_days,
             }
 
             # ── Customer info ─────────────────────────────────────────────
-            customer = await db.customers.find_one({"_id": cid})
+            customer = await db.get_customer(cid)
             if customer:
                 enriched["customer_name"]       = customer.get("name", "Unknown")
                 enriched["credit_score"]        = float(customer.get("credit_score") or 650)
@@ -366,11 +397,9 @@ class OverdueInvoiceWorkflow:
         execution_ms: int,
     ) -> None:
         """
-        يحفظ:
-          1. invoice status  ← FinanceDB.update_invoice_status()
-          2. AI decision     ← FinanceDB.save_finance_decision()
-          3. Finance audit   ← FinanceDB.write_finance_audit()
-          4. Metrics bridge  ← on_invoice_decision()
+        ✅ v3.1: NodeFinanceProxy methods بدل InvoiceDBProxy المحلي.
+        update_invoice_status() هنا بتقبل **kwargs زي باقي الملفات
+        (finance_trigger.py, trigger.py) — التوقيع اتصحح.
         """
         db         = _get_db()
         invoice_id = payload.get("invoice_id")
@@ -394,7 +423,7 @@ class OverdueInvoiceWorkflow:
         if invoice_id:
             try:
                 await db.update_invoice_status(
-                    invoice_id      = invoice_id,
+                    invoice_id      = str(invoice_id),
                     status          = new_status,
                     ai_decision     = decision,
                     risk_score      = float(result.get("risk_score", 0)),
@@ -411,9 +440,9 @@ class OverdueInvoiceWorkflow:
         # 2. Save AI decision ──────────────────────────────────────────────
         try:
             await db.save_finance_decision({
-                "agent_type":   "finance_agent_v3.0",
+                "agent_type":   "finance_agent_v3.1",
                 "entity":       "invoices",
-                "entity_id":    ObjectId(str(invoice_id)) if invoice_id else None,
+                "entity_id":    str(invoice_id) if invoice_id else None,
                 "event_id":     payload.get("event_id"),
                 "decision":     decision,
                 "confidence":   float(result.get("confidence", 0)),
@@ -433,8 +462,8 @@ class OverdueInvoiceWorkflow:
         try:
             await db.write_finance_audit(
                 domain          = "invoice",
-                entity_id       = ObjectId(str(invoice_id)) if invoice_id else None,
-                customer_id     = ObjectId(str(payload["customer_id"])) if payload.get("customer_id") else None,
+                entity_id       = str(invoice_id) if invoice_id else None,
+                customer_id     = str(payload["customer_id"]) if payload.get("customer_id") else None,
                 decision        = decision,
                 risk_score      = float(result.get("risk_score", 0)),
                 confidence      = float(result.get("confidence", 0)),
@@ -556,7 +585,7 @@ class NewInvoiceWorkflow:
             }
 
         await self._persist(result, payload, request_id)
-        result["workflow"] = "NewInvoiceWorkflow_v3.0"
+        result["workflow"] = "NewInvoiceWorkflow_v3.1"
 
         # Completion signal
         try:
@@ -585,19 +614,16 @@ class NewInvoiceWorkflow:
             return {"decision": "invoice_registered", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        """
-        يحدّث collection strategy على الـ invoice document في MongoDB.
-        بدل update_invoice_collection_strategy من core.db.
-        """
+        """✅ v3.1: NodeFinanceProxy.update_invoice_collection_strategy()."""
         db         = _get_db()
         invoice_id = payload.get("invoice_id")
 
         if invoice_id:
             try:
                 await db.update_invoice_collection_strategy(
-                    invoice_id           = invoice_id,
+                    invoice_id           = str(invoice_id),
+                    strategy             = result.get("collection_strategy", "standard"),
                     risk_score           = float(result.get("risk_score", 0)),
-                    collection_strategy  = result.get("collection_strategy", "standard"),
                     first_reminder_days  = int(result.get("first_reminder_days", 7)),
                     request_id           = request_id,
                 )
@@ -651,7 +677,7 @@ class PaymentReceivedWorkflow:
             result = {"decision": "payment_complete", "error": str(e), "request_id": request_id}
 
         await self._persist(result, payload, request_id)
-        result["workflow"] = "PaymentReceivedWorkflow_v3.0"
+        result["workflow"] = "PaymentReceivedWorkflow_v3.1"
 
         # Completion signal
         try:
@@ -680,10 +706,7 @@ class PaymentReceivedWorkflow:
             return {"decision": "payment_complete", "error": str(e)}
 
     async def _persist(self, result: dict, payload: dict, request_id: str) -> None:
-        """
-        لو payment_complete → يعمل update_invoice_status("paid") في MongoDB.
-        بدل raw SQL UPDATE.
-        """
+        """✅ v3.1: NodeFinanceProxy.update_invoice_status() بالتوقيع الصحيح."""
         db          = _get_db()
         invoice_id  = payload.get("invoice_id")
         amount_paid = float(payload.get("amount_paid", 0))
@@ -692,7 +715,7 @@ class PaymentReceivedWorkflow:
         if invoice_id and decision == "payment_complete":
             try:
                 await db.update_invoice_status(
-                    invoice_id  = invoice_id,
+                    invoice_id  = str(invoice_id),
                     status      = "paid",
                     ai_decision = "payment_complete",
                     request_id  = request_id,
