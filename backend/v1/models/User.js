@@ -19,6 +19,7 @@ export const VALID_USER_DEPARTMENTS = [
   "accounting",
   "hr",
   "sales",
+  "engineering",
   "management",
   "admin",
 ];
