@@ -8,6 +8,8 @@ import ticketRoutes from "./ticketRoutes.js";
 import { Verify, VerifyRole } from "../middleware/verify.js";
 import { sendSuccess } from "../utils/response.js";
 import inventoryRoutes from "./inventoryRoutes.js";
+import hrRoutes from "./hr.routes.js";
+import financeRoutes from "./finance.routes.js";
 
 const Router = (server) => {
   server.get("/v1", (req, res) => {
@@ -29,6 +31,10 @@ const Router = (server) => {
   server.use("/v1/support-chats", Verify, supportChatRoutes);
 
   server.use("/v1/inventory", inventoryRoutes);
+
+  server.use("/v1/hr", Verify, hrRoutes);
+
+  server.use("/v1/finance", Verify, financeRoutes);
 
   server.get("/v1/user", Verify, (req, res) => {
     return sendSuccess(res, [], "Welcome to your Dashboard!", 200);
