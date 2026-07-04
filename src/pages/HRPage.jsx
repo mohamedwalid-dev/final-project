@@ -18,7 +18,9 @@ import {
   Clock3,
   FileText,
   FolderOpen,
+  PencilLine,
   Search,
+  Trash2,
   TrendingUp,
   UserPlus,
   Users,
@@ -105,6 +107,7 @@ function EmployeeCard({ emp, onEdit, onDelete }) {
       <Avatar emp={emp} size={52} />
       <div className={s.empInfo}>
         <p className={s.empName}>{emp.name}</p>
+        {emp.employeeId ? <p className={s.empTitle} style={{ color: "#868E96", fontWeight: 600 }}>{emp.employeeId}</p> : null}
         <p className={s.empTitle} style={{ color: deptColors[emp.dept] ?? "#6C757D" }}>
           {emp.title}
         </p>
@@ -136,6 +139,7 @@ function EmployeeRow({ emp, onEdit, onDelete }) {
           <Avatar emp={emp} size={36} />
           <div>
             <p className={s.empName} style={{ fontSize: 13.5 }}>{emp.name}</p>
+            {emp.employeeId ? <p className={s.empTitle} style={{ fontSize: 12, color: "#868E96" }}>{emp.employeeId}</p> : null}
             <p className={s.empTitle} style={{ fontSize: 12, color: "#868E96" }}>{emp.title}</p>
           </div>
         </div>
@@ -166,10 +170,8 @@ function SkeletonCard() {
   );
 }
 
-function LeaveCard({ request, onAction, responding }) {
-  const isApproving  = responding === "approving";
-  const isDeclining  = responding === "declining";
-  const isBusy       = isApproving || isDeclining;
+function LeaveCard({ request, onEdit, onDelete, responding }) {
+  const isBusy = Boolean(responding);
 
   return (
     <div className={s.leaveCard}>
@@ -186,21 +188,21 @@ function LeaveCard({ request, onAction, responding }) {
       <div className={s.leaveActions}>
         <button
           className={s.approveBtn}
-          onClick={() => onAction(request.id, "approve")}
+          onClick={() => onEdit(request)}
           disabled={isBusy}
-          aria-label={`Approve leave for ${request.name}`}
+          aria-label={`Edit leave for ${request.name}`}
         >
-          {isApproving ? <span className={s.miniSpinner} /> : <CheckCircle2 className={s.btnIcon} aria-hidden="true" />}
-          Approve
+          {isBusy ? <span className={s.miniSpinner} /> : <PencilLine className={s.btnIcon} aria-hidden="true" />}
+          Edit
         </button>
         <button
           className={s.declineBtn}
-          onClick={() => onAction(request.id, "decline")}
+          onClick={() => onDelete(request)}
           disabled={isBusy}
-          aria-label={`Decline leave for ${request.name}`}
+          aria-label={`Delete leave for ${request.name}`}
         >
-          {isDeclining ? <span className={s.miniSpinner} /> : <X className={s.btnIcon} aria-hidden="true" />}
-          Decline
+          {isBusy ? <span className={s.miniSpinner} /> : <Trash2 className={s.btnIcon} aria-hidden="true" />}
+          Delete
         </button>
       </div>
     </div>
@@ -231,9 +233,187 @@ function CapacityBar({ dept, pct, color }) {
 
 const DEPT_OPTIONS = ["Engineering", "Design", "Marketing", "Finance", "HR", "Sales", "Support", "Product"];
 
+function AddLeaveRequestModal({ onClose, onSubmit, employees = [], initialEmployee = null, initialLeaveRequest = null, submitLabel = "Submit Leave Request", title = "New Leave Request" }) {
+  const isEditing = Boolean(initialLeaveRequest);
+  const initialForm = {
+    employeeId: initialEmployee?.employeeId || initialLeaveRequest?.employeeId || "",
+    fullName: initialEmployee?.fullName || initialEmployee?.name || initialLeaveRequest?.fullName || "",
+    leaveType: initialLeaveRequest?.type || initialLeaveRequest?.leaveType || "Annual Leave",
+    leaveBalance: initialLeaveRequest?.balance ?? initialLeaveRequest?.leaveBalance ?? "",
+    leaveStartDate: initialLeaveRequest?.startDate || initialLeaveRequest?.leaveStartDate ? (initialLeaveRequest?.startDate || initialLeaveRequest?.leaveStartDate).slice(0, 10) : "",
+    leaveEndDate: initialLeaveRequest?.endDate || initialLeaveRequest?.leaveEndDate ? (initialLeaveRequest?.endDate || initialLeaveRequest?.leaveEndDate).slice(0, 10) : "",
+    reason: initialLeaveRequest?.reason || "",
+  };
+
+  const [form, setForm] = useState(initialForm);
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(false);
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  useEffect(() => {
+    setForm({
+      employeeId: initialEmployee?.employeeId || initialLeaveRequest?.employeeId || "",
+      fullName: initialEmployee?.fullName || initialEmployee?.name || initialLeaveRequest?.fullName || "",
+      leaveType: initialLeaveRequest?.type || initialLeaveRequest?.leaveType || "Annual Leave",
+      leaveBalance: initialLeaveRequest?.balance ?? initialLeaveRequest?.leaveBalance ?? "",
+      leaveStartDate: initialLeaveRequest?.startDate || initialLeaveRequest?.leaveStartDate ? (initialLeaveRequest?.startDate || initialLeaveRequest?.leaveStartDate).slice(0, 10) : "",
+      leaveEndDate: initialLeaveRequest?.endDate || initialLeaveRequest?.leaveEndDate ? (initialLeaveRequest?.endDate || initialLeaveRequest?.leaveEndDate).slice(0, 10) : "",
+      reason: initialLeaveRequest?.reason || "",
+    });
+  }, [initialEmployee, initialLeaveRequest]);
+
+  const setField = (field, value) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+    setErrors((prev) => { const next = { ...prev }; delete next[field]; return next; });
+  };
+
+  const validate = () => {
+    const errs = {};
+    if (!form.employeeId.trim()) errs.employeeId = "Employee ID is required";
+    if (!form.fullName.trim()) errs.fullName = "Employee name is required";
+    if (!form.leaveType) errs.leaveType = "Leave type is required";
+    if (form.leaveBalance === "" || Number(form.leaveBalance) < 0) errs.leaveBalance = "Leave balance is required";
+    if (!form.leaveStartDate) errs.leaveStartDate = "Start date is required";
+    if (!form.leaveEndDate) errs.leaveEndDate = "End date is required";
+    if (form.leaveEndDate && form.leaveStartDate && new Date(form.leaveEndDate) < new Date(form.leaveStartDate)) {
+      errs.leaveEndDate = "End date cannot be earlier than start date";
+    }
+    if (!form.reason.trim()) errs.reason = "Reason is required";
+    return errs;
+  };
+
+  const handleSubmit = async () => {
+    const errs = validate();
+    if (Object.keys(errs).length > 0) {
+      setErrors(errs);
+      return;
+    }
+
+    setLoading(true);
+    const payload = {
+      fullName: form.fullName.trim(),
+      employeeId: form.employeeId.trim(),
+      leaveType: form.leaveType,
+      leaveBalance: Number(form.leaveBalance),
+      leaveStartDate: form.leaveStartDate,
+      leaveEndDate: form.leaveEndDate,
+      reason: form.reason.trim(),
+    };
+
+    const { error } = await onSubmit(payload);
+    if (error) setErrors({ _form: error });
+    setLoading(false);
+  };
+
+  return (
+    <div
+      className={s.modalOverlay}
+      ref={overlayRef}
+      onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Leave request"
+    >
+      <div className={s.modal}>
+        <div className={s.modalHeader}>
+          <h2 className={s.modalTitle}>{title}</h2>
+          <button className={s.modalClose} onClick={onClose} aria-label="Close">
+            <X className={s.btnIcon} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className={s.modalBody}>
+          {errors._form && <p className={s.formError}>{errors._form}</p>}
+          <div className={s.formGrid}>
+            <div className={s.formGroup}>
+              <label className={s.label}>Employee *</label>
+              {isEditing ? (
+                <input className={s.input} value={form.fullName} readOnly aria-readonly="true" />
+              ) : (
+                <select className={s.input} value={form.employeeId} onChange={(e) => {
+                  const selected = employees.find((employee) => employee.employeeId === e.target.value);
+                  setField("employeeId", e.target.value);
+                  setField("fullName", selected?.fullName || selected?.name || "");
+                }}>
+                  <option value="">Select employee</option>
+                  {employees.map((employee) => (
+                    <option key={employee.id || employee._id} value={employee.employeeId}>{employee.fullName || employee.name}</option>
+                  ))}
+                </select>
+              )}
+              {errors.employeeId && <p className={s.fieldError}>{errors.employeeId}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Employee ID *</label>
+              {isEditing ? (
+                <input className={s.input} value={form.employeeId} readOnly aria-readonly="true" />
+              ) : (
+                <input className={s.input} value={form.employeeId} readOnly aria-readonly="true" placeholder="Select an employee" />
+              )}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Leave Type *</label>
+              <select className={s.input} value={form.leaveType} onChange={(e) => setField("leaveType", e.target.value)}>
+                <option value="Annual Leave">Annual Leave</option>
+                <option value="Sick Leave">Sick Leave</option>
+                <option value="Emergency Leave">Emergency Leave</option>
+                <option value="Unpaid Leave">Unpaid Leave</option>
+                <option value="Maternity Leave">Maternity Leave</option>
+                <option value="Paternity Leave">Paternity Leave</option>
+                <option value="Other">Other</option>
+              </select>
+              {errors.leaveType && <p className={s.fieldError}>{errors.leaveType}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Leave Balance *</label>
+              <input type="number" min="0" className={`${s.input} ${errors.leaveBalance ? s.inputError : ""}`} value={form.leaveBalance} onChange={(e) => setField("leaveBalance", e.target.value)} placeholder="e.g. 12" />
+              {errors.leaveBalance && <p className={s.fieldError}>{errors.leaveBalance}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Start Date *</label>
+              <input type="date" className={`${s.input} ${errors.leaveStartDate ? s.inputError : ""}`} value={form.leaveStartDate} onChange={(e) => setField("leaveStartDate", e.target.value)} />
+              {errors.leaveStartDate && <p className={s.fieldError}>{errors.leaveStartDate}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>End Date *</label>
+              <input type="date" className={`${s.input} ${errors.leaveEndDate ? s.inputError : ""}`} value={form.leaveEndDate} onChange={(e) => setField("leaveEndDate", e.target.value)} />
+              {errors.leaveEndDate && <p className={s.fieldError}>{errors.leaveEndDate}</p>}
+            </div>
+
+            <div className={`${s.formGroup} ${s.formGroupFull}`}>
+              <label className={s.label}>Reason *</label>
+              <textarea className={`${s.input} ${errors.reason ? s.inputError : ""}`} rows="3" value={form.reason} onChange={(e) => setField("reason", e.target.value)} placeholder="Briefly describe the leave request" />
+              {errors.reason && <p className={s.fieldError}>{errors.reason}</p>}
+            </div>
+          </div>
+        </div>
+
+        <div className={s.modalFooter}>
+          <button className={s.btnGhost} onClick={onClose}>Cancel</button>
+          <button className={s.btnPrimary} onClick={handleSubmit} disabled={loading}>
+            {loading ? <><span className={s.miniSpinner} /> {isEditing ? "Updating..." : "Submitting..."}</> : submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLabel = "Add Employee", title = "Add New Employee" }) {
   const initialForm = {
     name: "",
+    employeeId: "",
     title: "",
     dept: "Engineering",
     location: "",
@@ -249,6 +429,7 @@ function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLab
     if (!initialEmployee) return initialForm;
     return {
       name: initialEmployee.fullName || initialEmployee.name || "",
+      employeeId: initialEmployee.employeeId || "",
       title: initialEmployee.jobTitle || initialEmployee.title || "",
       dept: initialEmployee.department || initialEmployee.dept || "Engineering",
       location: initialEmployee.location || "",
@@ -271,6 +452,7 @@ function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLab
     }
     setForm({
       name: initialEmployee.fullName || initialEmployee.name || "",
+      employeeId: initialEmployee.employeeId || "",
       title: initialEmployee.jobTitle || initialEmployee.title || "",
       dept: initialEmployee.department || initialEmployee.dept || "Engineering",
       location: initialEmployee.location || "",
@@ -297,6 +479,8 @@ function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLab
   const validate = () => {
     const errs = {};
     if (!form.name.trim()) errs.name = "Name is required";
+    if (!form.employeeId.trim()) errs.employeeId = "Employee ID is required";
+    else if (form.employeeId.trim().length > 30) errs.employeeId = "Employee ID must be at most 30 characters";
     if (!form.title.trim()) errs.title = "Job title is required";
     if (!form.location.trim()) errs.location = "Location is required";
     if (!form.email.trim()) errs.email = "Email is required";
@@ -320,6 +504,7 @@ function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLab
     setLoading(true);
     const payload = {
       fullName: form.name.trim(),
+      employeeId: form.employeeId.trim(),
       jobTitle: form.title.trim(),
       department: form.dept,
       location: form.location.trim(),
@@ -362,6 +547,14 @@ function AddEmployeeModal({ onClose, onSubmit, initialEmployee = null, submitLab
                 value={form.name} onChange={(e) => setField("name", e.target.value)}
                 placeholder="e.g. Sarah Jenkins" />
               {errors.name && <p className={s.fieldError}>{errors.name}</p>}
+            </div>
+
+            <div className={s.formGroup}>
+              <label className={s.label}>Employee ID *</label>
+              <input className={`${s.input} ${errors.employeeId ? s.inputError : ""}`}
+                value={form.employeeId} onChange={(e) => setField("employeeId", e.target.value)}
+                placeholder="e.g. EMP-1001" />
+              {errors.employeeId && <p className={s.fieldError}>{errors.employeeId}</p>}
             </div>
 
             <div className={s.formGroup}>
@@ -596,22 +789,15 @@ function AbsenceCalendar({ leaveRequests = [] }) {
 
 export default function HRPage() {
   const [activeNav, setActiveNav] = useState("hr");
-  const [showCalendar,   setShowCalendar]   = useState(false);
   const [showCompliance, setShowCompliance] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [employeeNotice, setEmployeeNotice] = useState("");
-  const calendarRef = useRef(null);
+  const [showLeaveRequestModal, setShowLeaveRequestModal] = useState(false);
+  const [editingLeaveRequest, setEditingLeaveRequest] = useState(null);
   const navigate = useNavigate();
 
-  const scrollToCalendar = () => {
-    setShowCalendar(true);
-    setTimeout(() => {
-      calendarRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 50);
-  };
-
   const {
-    employees, leaveRequests, teamCapacity, statCards, departments,
+    employees, allEmployees, leaveRequests, teamCapacity, statCards, departments,
     loadingEmployees, loadingStats, loadingSidebar, error,
     viewMode,      setViewMode,
     activeDept,    setActiveDept,
@@ -623,6 +809,9 @@ export default function HRPage() {
     handleAddEmployee,
     handleUpdateEmployee,
     handleDeleteEmployee,
+    handleAddLeaveRequest,
+    handleUpdateLeaveRequest,
+    handleDeleteLeaveRequest,
     reload,
   } = useHRPage();
 
@@ -659,6 +848,55 @@ export default function HRPage() {
     const result = await handleDeleteEmployee(emp.id || emp._id);
     if (!result.error) {
       setEmployeeNotice("Employee deleted successfully");
+    } else {
+      setEmployeeNotice(result.error);
+    }
+  };
+
+  const handleLeaveRequestSubmit = async (payload, leaveRequest = null) => {
+    const employee = allEmployees.find((item) => item.employeeId === payload.employeeId);
+    if (!employee) {
+      return { error: "Please select a valid employee" };
+    }
+
+    if (leaveRequest) {
+      const result = await handleUpdateLeaveRequest(employee.id || employee._id, leaveRequest.id || leaveRequest._id, payload);
+      if (!result.error) {
+        setEmployeeNotice("Leave request updated successfully");
+        setEditingLeaveRequest(null);
+        setShowLeaveRequestModal(false);
+        return { error: null };
+      }
+      return result;
+    }
+
+    const result = await handleAddLeaveRequest(employee.id || employee._id, payload);
+    if (!result.error) {
+      setEmployeeNotice("Leave request submitted successfully");
+      setShowLeaveRequestModal(false);
+      return { error: null };
+    }
+    return result;
+  };
+
+  const handleLeaveRequestEdit = (request) => {
+    setEditingLeaveRequest(request);
+    setShowLeaveRequestModal(true);
+  };
+
+  const handleLeaveRequestDelete = async (request) => {
+    const confirmed = window.confirm(`Delete leave request for ${request.name || request.fullName}?`);
+    if (!confirmed) return;
+
+    const employee = allEmployees.find((item) => item.employeeId === request.employeeId);
+    if (!employee) {
+      setEmployeeNotice("Unable to find the selected leave request");
+      return;
+    }
+
+    const result = await handleDeleteLeaveRequest(employee.id || employee._id, request.id || request._id);
+    if (!result.error) {
+      setEmployeeNotice("Leave request deleted successfully");
     } else {
       setEmployeeNotice(result.error);
     }
@@ -734,6 +972,17 @@ export default function HRPage() {
                   >
                     <UserPlus className={s.btnIcon} aria-hidden="true" />
                     Add Employee
+                  </button>
+                  <button
+                    className={s.btnOutline}
+                    onClick={() => {
+                      setEditingLeaveRequest(null);
+                      setShowLeaveRequestModal(true);
+                    }}
+                    aria-label="Create leave request"
+                  >
+                    <CalendarCheck className={s.btnIcon} aria-hidden="true" />
+                    Leave Request
                   </button>
                 </div>
               </div>
@@ -861,19 +1110,13 @@ export default function HRPage() {
                     <LeaveCard
                       key={req.id}
                       request={req}
-                      onAction={handleLeaveAction}
+                      onEdit={handleLeaveRequestEdit}
+                      onDelete={handleLeaveRequestDelete}
                       responding={leaveResponding[req.id]}
                     />
                   ))
                 )}
 
-                <button
-                  className={s.sideCardLink}
-                  onClick={scrollToCalendar}
-                  aria-label="View absence calendar"
-                >
-                  View Absence Calendar
-                </button>
               </div>
 
               <div className={s.sideCard}>
@@ -891,18 +1134,28 @@ export default function HRPage() {
                     </div>
                   ))
                 ) : (
-                  teamCapacity.map((tc) => (
-                    <CapacityBar key={tc.dept} dept={tc.dept} pct={tc.pct} color={tc.color} />
-                  ))
+                  teamCapacity.length > 0 ? (
+                    <>
+                      <CapacityBar dept={teamCapacity[0].dept} pct={teamCapacity[0].pct} color={teamCapacity[0].color} />
+                      <div className={s.capSummary}>
+                        <div className={s.capSummaryItem}>
+                          <span className={s.capSummaryLabel}>Total</span>
+                          <strong>{teamCapacity[0].totalEmployees ?? 0}</strong>
+                        </div>
+                        <div className={s.capSummaryItem}>
+                          <span className={s.capSummaryLabel}>On Leave</span>
+                          <strong>{teamCapacity[0].onLeaveEmployees ?? 0}</strong>
+                        </div>
+                        <div className={s.capSummaryItem}>
+                          <span className={s.capSummaryLabel}>Available</span>
+                          <strong>{teamCapacity[0].availableEmployees ?? 0}</strong>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className={s.emptyNote}>No capacity data available</p>
+                  )
                 )}
-
-                <button
-                  className={s.btnFullOutline}
-                  onClick={() => {}}
-                  aria-label="View resource report"
-                >
-                  View Resource Report
-                </button>
               </div>
 
               <div className={s.quickActions}>
@@ -925,8 +1178,8 @@ export default function HRPage() {
             </aside>
           </div>
 
-          {showCalendar && (
-            <div ref={calendarRef} style={{ scrollMarginTop: 24 }}>
+          {leaveRequests.length > 0 && (
+            <div style={{ scrollMarginTop: 24 }}>
               <AbsenceCalendar leaveRequests={leaveRequests} />
             </div>
           )}
@@ -944,6 +1197,21 @@ export default function HRPage() {
           initialEmployee={editingEmployee}
           submitLabel={editingEmployee ? "Update Employee" : "Add Employee"}
           title={editingEmployee ? "Edit Employee" : "Add New Employee"}
+        />
+      )}
+
+      {showLeaveRequestModal && (
+        <AddLeaveRequestModal
+          onClose={() => {
+            setShowLeaveRequestModal(false);
+            setEditingLeaveRequest(null);
+          }}
+          onSubmit={handleLeaveRequestSubmit}
+          employees={allEmployees}
+          initialEmployee={allEmployees[0]}
+          initialLeaveRequest={editingLeaveRequest}
+          submitLabel={editingLeaveRequest ? "Update Leave Request" : "Submit Leave Request"}
+          title={editingLeaveRequest ? "Edit Leave Request" : "New Leave Request"}
         />
       )}
 

@@ -11,6 +11,9 @@ export const ENDPOINTS = {
     DETAIL: (id) => `/employees/${id}`,
     UPDATE: (id) => `/employees/${id}`,
     DELETE: (id) => `/employees/${id}`,
+    LEAVE_REQUESTS: (id) => `/employees/${id}/leave-requests`,
+    LEAVE_REQUEST: (employeeId, leaveRequestId) => `/employees/${employeeId}/leave-requests/${leaveRequestId}`,
+    TEAM_CAPACITY: "/employees/team-capacity",
   },
   PRODUCTS: {
     LIST: "/products",

@@ -9,7 +9,13 @@ export const sanitizeEmployeePayload = (req, _res, next) => {
   const payload = { ...req.body };
 
   if (payload.fullName !== undefined) payload.fullName = payload.fullName.trim();
+  if (payload.employeeId !== undefined) payload.employeeId = payload.employeeId.trim();
   if (payload.department !== undefined) payload.department = payload.department.trim();
+  if (payload.leaveType !== undefined) payload.leaveType = payload.leaveType.trim();
+  if (payload.reason !== undefined) payload.reason = payload.reason.trim();
+  if (payload.leaveBalance !== undefined && payload.leaveBalance !== "") {
+    payload.leaveBalance = Number(payload.leaveBalance);
+  }
   if (payload.jobTitle !== undefined) payload.jobTitle = payload.jobTitle.trim();
   if (payload.location !== undefined) payload.location = payload.location.trim();
   if (payload.workEmail !== undefined) payload.workEmail = payload.workEmail.trim();

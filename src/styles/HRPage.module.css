@@ -696,6 +696,31 @@
 .capRow { margin-bottom: 12px; }
 .capRow:last-of-type { margin-bottom: 14px; }
 
+.capSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.capSummaryItem {
+  background: #F8F9FA;
+  border: 1px solid #E9ECEF;
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.capSummaryLabel {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #6C757D;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 4px;
+}
+
 .capLabel {
   display: flex;
   justify-content: space-between;

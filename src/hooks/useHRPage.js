@@ -58,7 +58,13 @@ export default function useHRPage() {
       if (emp.error) setError(emp.error);
       else {
         const mappedEmployees = (Array.isArray(emp.data) ? emp.data : []).map((item) => buildEmployeeViewModel(item));
+        const mappedLeaveRequests = mappedEmployees.flatMap((employee) => {
+          const requests = Array.isArray(employee.leaveRequests) ? employee.leaveRequests : [];
+          return requests.map((request) => buildLeaveRequestViewModel(request, employee));
+        });
+
         setEmployees(mappedEmployees);
+        setLeaveRequests(mappedLeaveRequests.sort((a, b) => new Date(b.startDate) - new Date(a.startDate)));
 
         const departmentNames = ["All Departments", ...new Set(
           [
@@ -73,11 +79,9 @@ export default function useHRPage() {
 
     // Sidebar (leave + capacity)
     Promise.all([
-      hrService.fetchLeaveRequests(signal),
-      hrService.fetchTeamCapacity(signal),
-    ]).then(([leave, capacity]) => {
-      if (!leave.error)    setLeaveRequests(leave.data    ?? []);
-      if (!capacity.error) setTeamCapacity(capacity.data  ?? []);
+      employeeService.fetchTeamCapacity(signal),
+    ]).then(([capacity]) => {
+      if (!capacity.error) setTeamCapacity(capacity.data ?? []);
       setLoadingSidebar(false);
     });
 
@@ -112,12 +116,9 @@ export default function useHRPage() {
   const handleLeaveAction = useCallback(async (id, action) => {
     setLeaveResponding((prev) => ({ ...prev, [id]: action === "approve" ? "approving" : "declining" }));
 
-    const { error } = await hrService.respondToLeave(id, action);
+    const nextStatus = action === "approve" ? "Approved" : "Rejected";
+    setLeaveRequests((prev) => prev.map((request) => (request.id === id ? { ...request, status: nextStatus } : request)));
 
-    if (!error) {
-      // Optimistic removal from list
-      setLeaveRequests((prev) => prev.filter((r) => r.id !== id));
-    }
     setLeaveResponding((prev) => {
       const next = { ...prev };
       delete next[id];
@@ -142,12 +143,52 @@ export default function useHRPage() {
       startDate: data?.startDate || "",
       dateOfBirth: data?.dateOfBirth || "",
       gender: data?.gender || "",
+      employeeId: data?.employeeId || "",
+      leaveRequests: Array.isArray(data?.leaveRequests) ? data.leaveRequests : [],
       avatar: (name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2) || "EM"),
       color: colors[Math.floor(Math.random() * colors.length)],
       status: data?.status || "active",
     };
 
     return normalized;
+  }, []);
+
+  const buildLeaveRequestViewModel = useCallback((data, employee = null) => {
+    const colors = ["#3B5BDB", "#F59F00", "#2F9E44", "#845EF7", "#FA5252", "#4DABF7"];
+    const memberName = employee?.fullName || employee?.name || data?.fullName || "Employee";
+    const startDate = data?.leaveStartDate ? new Date(data.leaveStartDate) : null;
+    const endDate = data?.leaveEndDate ? new Date(data.leaveEndDate) : null;
+
+    const formatDate = (value) => {
+      if (!value || Number.isNaN(value.getTime())) return "TBD";
+      const month = value.toLocaleString("en", { month: "short" });
+      return `${month} ${value.getDate()}`;
+    };
+
+    const getDayCount = (from, to) => {
+      if (!from || !to || Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return 1;
+      const diff = Math.round((to - from) / 86400000);
+      return Math.max(1, diff + 1);
+    };
+
+    return {
+      ...data,
+      id: data?._id || data?.id,
+      employeeId: data?.employeeId || employee?.employeeId || "",
+      name: memberName,
+      fullName: data?.fullName || memberName,
+      type: data?.leaveType || "Leave",
+      balance: data?.leaveBalance ?? 0,
+      days: getDayCount(startDate, endDate),
+      from: formatDate(startDate),
+      to: formatDate(endDate),
+      status: data?.status || "Pending",
+      startDate: data?.leaveStartDate || "",
+      endDate: data?.leaveEndDate || "",
+      reason: data?.reason || "",
+      avatar: (memberName.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2) || "EM"),
+      color: colors[Math.abs((memberName || "").split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)) % colors.length],
+    };
   }, []);
 
   // ── Add Employee ──────────────────────────────────────────────────────────────
@@ -157,29 +198,70 @@ export default function useHRPage() {
       const normalized = buildEmployeeViewModel(data, formData.fullName || formData.name);
       setEmployees((prev) => [normalized, ...prev]);
       setShowAddEmployee(false);
+      loadAll();
       return { error: null };
     }
     return { error };
-  }, [buildEmployeeViewModel]);
+  }, [buildEmployeeViewModel, loadAll]);
 
   const handleUpdateEmployee = useCallback(async (id, formData) => {
     const { data, error } = await employeeService.updateEmployee(id, formData);
     if (!error && data) {
       const normalized = buildEmployeeViewModel(data, formData.fullName || formData.name);
       setEmployees((prev) => prev.map((item) => (item.id === id || item._id === id ? normalized : item)));
+      loadAll();
       return { error: null };
     }
     return { error };
-  }, [buildEmployeeViewModel]);
+  }, [buildEmployeeViewModel, loadAll]);
 
   const handleDeleteEmployee = useCallback(async (id) => {
     const { error } = await employeeService.deleteEmployee(id);
     if (!error) {
       setEmployees((prev) => prev.filter((item) => item.id !== id && item._id !== id));
+      loadAll();
       return { error: null };
     }
     return { error };
-  }, []);
+  }, [loadAll]);
+
+  const handleAddLeaveRequest = useCallback(async (employeeId, formData) => {
+    const { data, error } = await employeeService.createLeaveRequest(employeeId, formData);
+    if (!error && data) {
+      const normalized = buildLeaveRequestViewModel(data);
+      setLeaveRequests((prev) => [normalized, ...prev]);
+      setEmployees((prev) => prev.map((item) => {
+        const itemId = item.id || item._id;
+        if (itemId !== employeeId) return item;
+        return {
+          ...item,
+          leaveRequests: [...(item.leaveRequests || []), data],
+        };
+      }));
+      loadAll();
+      return { error: null };
+    }
+    return { error };
+  }, [buildLeaveRequestViewModel, loadAll]);
+
+  const handleUpdateLeaveRequest = useCallback(async (employeeId, leaveRequestId, formData) => {
+    const { data, error } = await employeeService.updateLeaveRequest(employeeId, leaveRequestId, formData);
+    if (!error && data) {
+      loadAll();
+      return { error: null };
+    }
+    return { error };
+  }, [loadAll]);
+
+  const handleDeleteLeaveRequest = useCallback(async (employeeId, leaveRequestId) => {
+    const { error } = await employeeService.deleteLeaveRequest(employeeId, leaveRequestId);
+    if (!error) {
+      setLeaveRequests((prev) => prev.filter((item) => item.id !== leaveRequestId && item._id !== leaveRequestId));
+      loadAll();
+      return { error: null };
+    }
+    return { error };
+  }, [loadAll]);
 
   return {
     // Data
@@ -206,6 +288,9 @@ export default function useHRPage() {
     handleAddEmployee,
     handleUpdateEmployee,
     handleDeleteEmployee,
+    handleAddLeaveRequest,
+    handleUpdateLeaveRequest,
+    handleDeleteLeaveRequest,
     reload: loadAll,
   };
 }

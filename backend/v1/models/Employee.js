@@ -1,11 +1,61 @@
 
 import mongoose from 'mongoose';
 
+const leaveRequestSchema = new mongoose.Schema({
+  fullName: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  employeeId: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  leaveType: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  leaveBalance: {
+    type: Number,
+    required: true,
+    min: 0,
+  },
+  leaveStartDate: {
+    type: Date,
+    required: true,
+  },
+  leaveEndDate: {
+    type: Date,
+    required: true,
+  },
+  reason: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  status: {
+    type: String,
+    enum: ["Pending", "Approved", "Rejected"],
+    default: "Pending",
+  },
+}, {
+  timestamps: true,
+});
+
 const employeeSchema = new mongoose.Schema({
   fullName: {
     type: String,
     required: true,
     trim: true,
+  },
+  employeeId: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true,
+    index: true,
   },
   department: {
     type: String,
@@ -49,6 +99,7 @@ const employeeSchema = new mongoose.Schema({
     enum: ["Male", "Female", "Prefer not to say"],
     trim: true,
   },
+  leaveRequests: [leaveRequestSchema],
 }, {
   timestamps: true,
 });
