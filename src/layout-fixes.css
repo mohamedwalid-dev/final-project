@@ -1,0 +1,49 @@
+/* layout-fixes.css
+   Import this AFTER index.css in main.jsx:
+   import './index.css'
+   import './layout-fixes.css'
+*/
+
+/* The Navbar is `fixed`, so it is removed from normal document flow.
+   Anything under it needs enough top offset to clear its real height. */
+
+#main-navbar {
+  height: auto;
+}
+
+/* Hero section (id="home") must start below the fixed navbar.
+   Navbar is ~72-96px tall depending on scroll state (py-5 vs py-3).
+   We give a safe fixed offset instead of relying only on Tailwind's pt-32/pt-40,
+   because those paddings apply *inside* the section, not as a true offset
+   guaranteeing separation from a `fixed` sibling. */
+
+#landing-page-root main {
+  padding-top: 0;
+}
+
+#home {
+  padding-top: 7rem;   /* ~112px, clears the tallest navbar state */
+}
+
+@media (min-width: 768px) {
+  #home {
+    padding-top: 8rem; /* ~128px on desktop, matches md:pt-32 baseline + buffer */
+  }
+}
+
+/* Make sure the fixed navbar always paints above everything, including
+   any absolutely positioned floating cards inside the Hero/DashboardPreview. */
+#main-navbar {
+  z-index: 100;
+}
+
+/* Recharts containers sometimes measure 0/negative width when their parent
+   is a flex/grid item without an explicit min-width. This forces a safe floor. */
+.recharts-responsive-container {
+  width: 100% !important;
+  min-width: 0;
+}
+
+.recharts-wrapper {
+  width: 100% !important;
+}

@@ -4,6 +4,7 @@ import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import Login from "./pages/auth/Login";
 import Register from "./pages/auth/Register";
+import LandingPage        from "./pages/LandingPage";
 import DashboardPage      from "./pages/Dashboardpage";
 import Finance            from "./pages/Finance";
 import CreateInvoicePage  from "./pages/CreateInvoicePage";
@@ -22,12 +23,12 @@ function App() {
       <AuthProvider>
         <Routes>
           {/* Public routes */}
+          <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
 
           {/* Protected routes */}
           <Route element={<ProtectedRoute />}>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/finance" element={<Finance />} />
 
@@ -45,7 +46,7 @@ function App() {
           </Route>
 
           {/* 404 fallback */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
